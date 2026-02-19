@@ -173,3 +173,9 @@ Cargo.lock
 *.pdb
 
 # End of https://www.toptal.com/developers/gitignore/api/node,rust,linux
+
+# Tauri
+src-tauri/target/
+
+# Claude Code
+.a5c/

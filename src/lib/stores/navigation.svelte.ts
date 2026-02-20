@@ -1,7 +1,11 @@
 // Navigation state machine — single source of truth for active screen
 // Uses Svelte 5 runes (class-based singleton to allow reassignment)
 
-type ProjectListScreen = { kind: 'project-list'; skipAutoOpen?: boolean }
+type ProjectListScreen = {
+  kind: 'project-list';
+  skipAutoOpen?: boolean;
+  resumeProject?: { slug: string; name: string };
+}
 type StackOverviewScreen = { kind: 'stack-overview'; projectSlug: string; projectName: string }
 type StackFocusScreen = { kind: 'stack-focus'; projectSlug: string; stackId: number; projectName: string }
 type SingleViewScreen = { kind: 'single-view'; projectSlug: string; stackId: number; photoId: number; projectName: string }
@@ -22,7 +26,11 @@ class Navigation {
         } else if (s.kind === 'stack-focus') {
             this.navigate({ kind: 'stack-overview', projectSlug: s.projectSlug, projectName: s.projectName })
         } else if (s.kind === 'stack-overview') {
-            this.navigate({ kind: 'project-list', skipAutoOpen: true })
+          this.navigate({
+            kind: 'project-list',
+            skipAutoOpen: true,
+            resumeProject: { slug: s.projectSlug, name: s.projectName },
+          })
         }
         // project-list: no further back
     }

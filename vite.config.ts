@@ -4,7 +4,6 @@ import path from "path";
 
 const host = process.env.TAURI_DEV_HOST;
 
-// https://vitejs.dev/config/
 export default defineConfig(async () => ({
   plugins: [svelte()],
 
@@ -14,25 +13,31 @@ export default defineConfig(async () => ({
     },
   },
 
-  // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
-  //
-  // 1. prevent vite from obscuring rust errors
+  // Vitest config
+  test: {
+    environment: "jsdom",
+    globals: true,
+    setupFiles: ["./src/test/setup.ts"],
+    include: ["src/**/*.test.ts"],
+    alias: [
+      // Force Svelte to use the browser (client) build in test — without this,
+      // jsdom resolves the server build and `mount()` throws lifecycle_function_unavailable
+      {
+        find: /^svelte$/,
+        replacement: path.resolve(
+          __dirname,
+          "node_modules/svelte/src/index-client.js"
+        ),
+      },
+    ],
+  },
+
   clearScreen: false,
-  // 2. tauri expects a fixed port, fail if that port is not available
   server: {
     port: 1420,
     strictPort: true,
     host: host || false,
-    hmr: host
-      ? {
-          protocol: "ws",
-          host,
-          port: 1421,
-        }
-      : undefined,
-    watch: {
-      // 3. tell vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**"],
-    },
+    hmr: host ? { protocol: "ws", host, port: 1421 } : undefined,
+    watch: { ignored: ["**/src-tauri/**"] },
   },
 }));

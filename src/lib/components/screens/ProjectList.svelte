@@ -39,19 +39,24 @@
   onMount(async () => {
     try {
       const currentScreen = navigation.current
-      const skipAutoOpen = currentScreen.kind === 'project-list' && currentScreen.skipAutoOpen === true
-      if (!skipAutoOpen) {
-        // First launch: auto-open last project
+      if (currentScreen.kind === 'project-list' && currentScreen.skipAutoOpen === true) {
+        // Came back via Escape/back — show Resume card from nav state (no Rust call needed)
+        if (currentScreen.resumeProject) {
+          lastProject = {
+            id: 0,
+            name: currentScreen.resumeProject.name,
+            slug: currentScreen.resumeProject.slug,
+            created_at: '',
+            last_opened_at: null,
+          }
+        }
+      } else {
+        // First launch: auto-open last project if one exists
         const last = await getLastProject()
         if (last) {
           navigate({ kind: 'stack-overview', projectSlug: last.slug, projectName: last.name })
           return
         }
-      } else {
-        // Came back via back()/Escape — show Resume card but do NOT navigate away
-        try {
-          lastProject = await getLastProject()
-        } catch { /* ignore */ }
       }
       projects = await listProjects()
     } catch (e) {

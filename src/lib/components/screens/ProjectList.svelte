@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { navigate } from '$lib/stores/navigation.svelte.js'
+  import { navigate, navigation } from '$lib/stores/navigation.svelte.js'
   import {
     listProjects,
     getLastProject,
@@ -12,6 +12,7 @@
   } from '$lib/api/index.js'
 
   let projects = $state<Project[]>([])
+  let lastProject = $state<Project | null>(null)
   let showNewForm = $state(false)
   let newName = $state('')
   let suggestedSlug = $state('')
@@ -37,10 +38,20 @@
 
   onMount(async () => {
     try {
-      const last = await getLastProject()
-      if (last) {
-        navigate({ kind: 'stack-overview', projectSlug: last.slug, projectName: last.name })
-        return
+      const currentScreen = navigation.current
+      const skipAutoOpen = currentScreen.kind === 'project-list' && currentScreen.skipAutoOpen === true
+      if (!skipAutoOpen) {
+        // First launch: auto-open last project
+        const last = await getLastProject()
+        if (last) {
+          navigate({ kind: 'stack-overview', projectSlug: last.slug, projectName: last.name })
+          return
+        }
+      } else {
+        // Came back via back()/Escape — show Resume card but do NOT navigate away
+        try {
+          lastProject = await getLastProject()
+        } catch { /* ignore */ }
       }
       projects = await listProjects()
     } catch (e) {
@@ -91,6 +102,21 @@
 
 <div class="min-h-screen bg-gray-950 text-gray-100 p-8">
   <h1 class="text-3xl font-bold mb-8 text-white">GemKeep</h1>
+
+  {#if lastProject}
+    <div class="mb-6 bg-blue-950/40 border border-blue-800/60 rounded-lg px-4 py-3 flex items-center justify-between max-w-lg">
+      <div>
+        <div class="text-xs text-blue-400 uppercase tracking-wide mb-0.5">Resume</div>
+        <div class="text-white font-medium">{lastProject.name}</div>
+      </div>
+      <button
+        class="bg-blue-600 hover:bg-blue-500 text-white px-4 py-1.5 rounded text-sm font-medium"
+        onclick={() => lastProject && handleOpen(lastProject)}
+      >
+        Open →
+      </button>
+    </div>
+  {/if}
 
   <!-- New Project Section -->
   <div class="mb-8">

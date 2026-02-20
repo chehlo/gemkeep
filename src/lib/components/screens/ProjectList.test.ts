@@ -14,6 +14,14 @@ const ICELAND: Project = {
   created_at: '2026-01-01T00:00:00Z', last_opened_at: '2026-01-15T10:00:00Z',
 }
 
+const WEDDING: Project = {
+  id: 1,              // ← same id as ICELAND — exactly what Rust returns (each DB starts at id=1)
+  name: 'Wedding',
+  slug: 'wedding',
+  created_at: '2026-02-01T00:00:00Z',
+  last_opened_at: null,
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   navigate({ kind: 'project-list' })
@@ -86,6 +94,30 @@ describe('ProjectList — after back() from StackOverview (skipAutoOpen)', () =>
     await user.click(screen.getByText('Open →'))
     await waitFor(() => {
       expect(navigation.current.kind).toBe('stack-overview')
+    })
+  })
+})
+
+describe('ProjectList — multi-project list (realistic data)', () => {
+  it('renders two projects both with id=1 without duplicate-key error', async () => {
+    navigate({ kind: 'project-list' })
+    mockInvoke.mockResolvedValueOnce(null)                    // get_last_project → null
+    mockInvoke.mockResolvedValueOnce([ICELAND, WEDDING])      // list_projects
+    render(ProjectList)
+    await waitFor(() => {
+      expect(screen.getByText('Iceland 2024')).toBeInTheDocument()
+      expect(screen.getByText('Wedding')).toBeInTheDocument()
+    })
+  })
+
+  it('each project row shows its own unique slug', async () => {
+    navigate({ kind: 'project-list' })
+    mockInvoke.mockResolvedValueOnce(null)                    // get_last_project → null
+    mockInvoke.mockResolvedValueOnce([ICELAND, WEDDING])      // list_projects
+    render(ProjectList)
+    await waitFor(() => {
+      expect(screen.getByText(/iceland-2024/)).toBeInTheDocument()
+      expect(screen.getByText(/wedding ·/)).toBeInTheDocument()
     })
   })
 })

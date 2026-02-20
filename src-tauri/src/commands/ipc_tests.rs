@@ -107,8 +107,8 @@ mod tests {
         assert_eq!(arr.len(), 1, "list_projects should return 1 project");
         assert_eq!(arr[0]["slug"], "test");
         assert!(
-            elapsed.as_millis() < 1000,
-            "list_projects took {}ms after open_project — possible SQLite contention",
+            elapsed.as_millis() < 500,
+            "list_projects took {}ms after open_project — possible SQLite contention (< 500ms tightened from 1000ms to catch earlier regressions)",
             elapsed.as_millis()
         );
     }

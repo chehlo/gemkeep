@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
+  import { onMount, onDestroy } from 'svelte'
   import { navigate, navigation } from '$lib/stores/navigation.svelte.js'
   import {
     listProjects,
@@ -37,32 +37,43 @@
   })
 
   onMount(async () => {
+    const screen = navigation.current
+    console.log('[ProjectList] onMount — kind:', screen.kind,
+      'skipAutoOpen:', (screen as any).skipAutoOpen ?? 'undefined',
+      'resumeProject:', JSON.stringify((screen as any).resumeProject ?? null))
     try {
-      const currentScreen = navigation.current
-      if (currentScreen.kind === 'project-list' && currentScreen.skipAutoOpen === true) {
-        // Came back via Escape/back — show Resume card from nav state (no Rust call needed)
-        if (currentScreen.resumeProject) {
+      if (screen.kind === 'project-list' && screen.skipAutoOpen === true) {
+        console.log('[ProjectList] back-from-overview path')
+        if (screen.resumeProject) {
           lastProject = {
             id: 0,
-            name: currentScreen.resumeProject.name,
-            slug: currentScreen.resumeProject.slug,
+            name: screen.resumeProject.name,
+            slug: screen.resumeProject.slug,
             created_at: '',
             last_opened_at: null,
           }
         }
       } else {
-        // First launch: auto-open last project if one exists
+        console.log('[ProjectList] first-launch path — calling getLastProject')
         const last = await getLastProject()
+        console.log('[ProjectList] getLastProject returned:', last?.slug ?? null)
         if (last) {
+          console.log('[ProjectList] auto-navigating to stack-overview')
           navigate({ kind: 'stack-overview', projectSlug: last.slug, projectName: last.name })
           return
         }
       }
+      console.log('[ProjectList] calling listProjects')
       projects = await listProjects()
+      console.log('[ProjectList] listProjects done —', projects.length, 'projects')
     } catch (e) {
+      console.error('[ProjectList] onMount error:', e)
       error = String(e)
     }
+    console.log('[ProjectList] onMount complete, projects:', projects.length)
   })
+
+  onDestroy(() => { console.log('[ProjectList] destroyed') })
 
   async function handleCreate() {
     if (!newName.trim() || isCreating) return

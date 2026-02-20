@@ -5,6 +5,7 @@ use tauri::State;
 
 // Shared helper: open a project by slug, update AppState
 fn open_project_inner(slug_str: &str, state: &AppState) -> Result<Project, String> {
+    tracing::info!("IPC open_project_inner: slug={}", slug_str);
     let home = &state.gemkeep_home;
     let dir = manager::project_dir(home, slug_str);
     if !dir.exists() {
@@ -74,6 +75,7 @@ pub fn create_project(name: String, state: State<'_, AppState>) -> Result<Projec
 
 #[tauri::command]
 pub fn list_projects(state: State<'_, AppState>) -> Result<Vec<Project>, String> {
+    tracing::info!("IPC list_projects: start");
     let home = &state.gemkeep_home;
     let projects_dir = home.join("projects");
     if !projects_dir.exists() {
@@ -103,6 +105,7 @@ pub fn list_projects(state: State<'_, AppState>) -> Result<Vec<Project>, String>
             Err(e) => tracing::warn!("Cannot open {:?}: {}", db_path, e),
         }
     }
+    tracing::info!("IPC list_projects: returning {} projects", projects.len());
     Ok(projects)
 }
 
@@ -113,6 +116,7 @@ pub fn open_project(slug: String, state: State<'_, AppState>) -> Result<Project,
 
 #[tauri::command]
 pub fn get_last_project(state: State<'_, AppState>) -> Result<Option<Project>, String> {
+    tracing::info!("IPC get_last_project: start");
     let home = &state.gemkeep_home;
     let config = manager::read_config(home).map_err(|e| e.to_string())?;
     let slug_str = match config.last_opened_slug {

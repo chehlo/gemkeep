@@ -179,3 +179,7 @@ src-tauri/target/
 
 # Claude Code
 .a5c/
+
+# Playwright
+playwright-report/
+test-results/

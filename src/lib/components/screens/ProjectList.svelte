@@ -186,7 +186,7 @@
     <div>
       <h2 class="text-lg font-semibold text-gray-300 mb-3">Recent Projects</h2>
       <div class="border border-gray-700 rounded-lg overflow-hidden">
-        {#each projects as project (project.id)}
+        {#each projects as project (project.slug)}
           <div class="flex items-center justify-between px-4 py-3 border-b border-gray-800 last:border-0 hover:bg-gray-900">
             <div class="flex-1">
               <div class="font-medium text-white">{project.name}</div>

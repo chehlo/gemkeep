@@ -90,10 +90,7 @@ pub fn list_projects(state: State<'_, AppState>) -> Result<Vec<Project>, String>
             tracing::warn!("Missing project.db in {:?}", entry.path());
             continue;
         }
-        match open_connection(&db_path).and_then(|c| {
-            run_migrations(&c)?;
-            Ok(c)
-        }) {
+        match open_connection(&db_path) {
             Ok(conn) => match repository::list_projects_in_db(&conn) {
                 Ok(mut rows) if rows.len() == 1 => projects.push(rows.remove(0)),
                 Ok(rows) => tracing::warn!(

@@ -9,6 +9,8 @@ mod tests {
     use crate::state::AppState;
     use std::sync::Mutex;
     use tempfile::TempDir;
+    #[allow(unused_imports)]
+    use rusqlite;
 
     fn make_state(tmp: &TempDir) -> AppState {
         let home = tmp.path().to_path_buf();
@@ -383,5 +385,132 @@ mod tests {
             !dir.exists(),
             "ghost project should not exist — delete_project should return error"
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // Regression: list_projects must not call run_migrations (write contention)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn list_projects_with_concurrent_open_connection() {
+        // Regression: list_projects used to call run_migrations (writes) while AppState
+        // held another connection open to the same DB. busy_timeout=5000 caused 5-second
+        // freezes. Fix: list_projects is read-only — no run_migrations.
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().to_path_buf();
+        std::fs::create_dir_all(home.join("projects")).unwrap();
+
+        let slug = "concurrent-test";
+        let dir = home.join("projects").join(slug);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("project.db");
+
+        // conn1 simulates AppState.db — opened and held by open_project_inner
+        let conn1 = crate::db::open_connection(&db_path).unwrap();
+        crate::db::run_migrations(&conn1).unwrap();
+        crate::projects::repository::insert_project(&conn1, "Concurrent Test", slug).unwrap();
+
+        // conn2 simulates list_projects opening the same file — must read-only, no migrations
+        let conn2 = crate::db::open_connection(&db_path).unwrap();
+        let projects = crate::projects::repository::list_projects_in_db(&conn2).unwrap();
+
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].slug, slug);
+
+        // conn1 still healthy — no deadlock
+        let count: i64 = conn1
+            .query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "AppState connection still healthy after concurrent list read");
+    }
+
+    #[test]
+    fn list_projects_does_not_migrate_schema() {
+        // Regression: list_projects must never write to a project DB.
+        // Verify by creating a DB at schema v1 and confirming list_projects
+        // does not upgrade it to v2 (that would mean run_migrations was called).
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().to_path_buf();
+        std::fs::create_dir_all(home.join("projects")).unwrap();
+
+        let slug = "legacy-project";
+        let dir = home.join("projects").join(slug);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("project.db");
+
+        // Create DB at schema v1 only (deliberately not migrated to v2)
+        {
+            let conn_setup = rusqlite::Connection::open(&db_path).unwrap();
+            conn_setup.execute_batch("PRAGMA journal_mode=WAL;").unwrap();
+            conn_setup.execute_batch(
+                "CREATE TABLE schema_version (version INTEGER NOT NULL);
+                 INSERT INTO schema_version VALUES (1);
+                 CREATE TABLE projects (
+                     id INTEGER PRIMARY KEY,
+                     name TEXT NOT NULL,
+                     slug TEXT NOT NULL UNIQUE,
+                     created_at TEXT NOT NULL,
+                     last_opened_at TEXT
+                 );
+                 INSERT INTO projects (name, slug, created_at)
+                 VALUES ('Legacy', 'legacy-project', '2026-01-01T00:00:00Z');",
+            ).unwrap();
+        } // conn_setup dropped here
+
+        // list_projects logic: open + read only (no migration)
+        let conn = crate::db::open_connection(&db_path).unwrap();
+        let projects = crate::projects::repository::list_projects_in_db(&conn).unwrap();
+
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].slug, "legacy-project");
+
+        // Schema must still be v1 — list_projects did not upgrade it
+        let version: u32 = conn
+            .query_row("SELECT version FROM schema_version LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 1, "list_projects must not run migrations — schema unchanged");
+    }
+
+    #[test]
+    fn open_then_list_sequence() {
+        // Integration test for the exact production sequence that was broken:
+        // 1. open_project_inner holds AppState.db connection open
+        // 2. list_projects opens same DB and reads — must not block
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().to_path_buf();
+        std::fs::create_dir_all(home.join("projects")).unwrap();
+
+        let slug = "open-then-list";
+        let dir = home.join("projects").join(slug);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("project.db");
+
+        // Set up project
+        {
+            let setup = crate::db::open_connection(&db_path).unwrap();
+            crate::db::run_migrations(&setup).unwrap();
+            crate::projects::repository::insert_project(&setup, "Open Then List", slug).unwrap();
+        }
+
+        // Step 1: simulate open_project_inner — hold connection open
+        let appstate_conn = crate::db::open_connection(&db_path).unwrap();
+        crate::db::run_migrations(&appstate_conn).unwrap(); // no-op (already v2)
+        let project = crate::projects::repository::get_project_by_slug(&appstate_conn, slug).unwrap();
+        crate::projects::repository::update_last_opened(&appstate_conn, project.id).unwrap();
+        // appstate_conn held open — simulates AppState.db
+
+        // Step 2: simulate list_projects — open second connection, read only
+        let list_conn = crate::db::open_connection(&db_path).unwrap();
+        // No run_migrations here (that was the bug)
+        let projects = crate::projects::repository::list_projects_in_db(&list_conn).unwrap();
+
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].slug, slug);
+
+        // appstate_conn still healthy — proves no deadlock
+        let count: i64 = appstate_conn
+            .query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
     }
 }

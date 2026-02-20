@@ -1,75 +1,88 @@
 pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
-    let version = schema_version(conn).unwrap_or(0);
-    if version >= 1 {
-        return Ok(());
+    // Ensure schema_version table exists
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+         INSERT INTO schema_version SELECT 0 WHERE NOT EXISTS (SELECT 1 FROM schema_version);",
+    )?;
+
+    let version = schema_version(conn)?;
+
+    if version < 1 {
+        conn.execute_batch(
+            "
+            CREATE TABLE IF NOT EXISTS projects (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                slug TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL,
+                last_opened_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS photos (
+                id INTEGER PRIMARY KEY,
+                project_id INTEGER NOT NULL,
+                path TEXT NOT NULL,
+                format TEXT NOT NULL,
+                pair_id INTEGER,
+                stack_id INTEGER,
+                current_status TEXT NOT NULL DEFAULT 'active',
+                capture_time TEXT,
+                camera_model TEXT,
+                lens TEXT,
+                orientation INTEGER,
+                FOREIGN KEY(project_id) REFERENCES projects(id)
+            );
+            CREATE TABLE IF NOT EXISTS stacks (
+                id INTEGER PRIMARY KEY,
+                project_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(project_id) REFERENCES projects(id)
+            );
+            CREATE TABLE IF NOT EXISTS rounds (
+                id INTEGER PRIMARY KEY,
+                project_id INTEGER NOT NULL,
+                scope TEXT NOT NULL,
+                scope_id INTEGER NOT NULL,
+                round_number INTEGER NOT NULL,
+                state TEXT NOT NULL DEFAULT 'open',
+                created_at TEXT NOT NULL,
+                committed_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS decisions (
+                id INTEGER PRIMARY KEY,
+                photo_id INTEGER NOT NULL,
+                round_id INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                FOREIGN KEY(photo_id) REFERENCES photos(id),
+                FOREIGN KEY(round_id) REFERENCES rounds(id)
+            );
+            CREATE TABLE IF NOT EXISTS merges (
+                id INTEGER PRIMARY KEY,
+                project_id INTEGER NOT NULL,
+                merged_stack_id INTEGER,
+                original_stack_ids TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                undone INTEGER NOT NULL DEFAULT 0
+            );
+            UPDATE schema_version SET version = 1;
+            ",
+        )?;
     }
 
-    conn.execute_batch(
-        "
-        CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
-        INSERT INTO schema_version SELECT 0 WHERE NOT EXISTS (SELECT 1 FROM schema_version);
-        -- Sprint 2: project management
-        CREATE TABLE IF NOT EXISTS projects (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            slug TEXT NOT NULL UNIQUE,
-            created_at TEXT NOT NULL,
-            last_opened_at TEXT
-        );
-        -- Sprint 3: photo import
-        CREATE TABLE IF NOT EXISTS photos (
-            id INTEGER PRIMARY KEY,
-            project_id INTEGER NOT NULL,
-            path TEXT NOT NULL,
-            format TEXT NOT NULL,
-            pair_id INTEGER,
-            stack_id INTEGER,
-            current_status TEXT NOT NULL DEFAULT 'active',
-            capture_time TEXT,
-            camera_model TEXT,
-            lens TEXT,
-            orientation INTEGER,
-            FOREIGN KEY(project_id) REFERENCES projects(id)
-        );
-        CREATE TABLE IF NOT EXISTS stacks (
-            id INTEGER PRIMARY KEY,
-            project_id INTEGER NOT NULL,
-            created_at TEXT NOT NULL,
-            FOREIGN KEY(project_id) REFERENCES projects(id)
-        );
-        -- Sprint 6: round engine
-        CREATE TABLE IF NOT EXISTS rounds (
-            id INTEGER PRIMARY KEY,
-            project_id INTEGER NOT NULL,
-            scope TEXT NOT NULL,
-            scope_id INTEGER NOT NULL,
-            round_number INTEGER NOT NULL,
-            state TEXT NOT NULL DEFAULT 'open',
-            created_at TEXT NOT NULL,
-            committed_at TEXT
-        );
-        CREATE TABLE IF NOT EXISTS decisions (
-            id INTEGER PRIMARY KEY,
-            photo_id INTEGER NOT NULL,
-            round_id INTEGER NOT NULL,
-            action TEXT NOT NULL,
-            timestamp TEXT NOT NULL,
-            FOREIGN KEY(photo_id) REFERENCES photos(id),
-            FOREIGN KEY(round_id) REFERENCES rounds(id)
-        );
-        -- Sprint 8: stack management
-        CREATE TABLE IF NOT EXISTS merges (
-            id INTEGER PRIMARY KEY,
-            project_id INTEGER NOT NULL,
-            merged_stack_id INTEGER,
-            original_stack_ids TEXT NOT NULL,
-            timestamp TEXT NOT NULL,
-            undone INTEGER NOT NULL DEFAULT 0
-        );
-        -- Set version
-        UPDATE schema_version SET version = 1;
-        ",
-    )?;
+    if version < 2 {
+        conn.execute_batch(
+            "
+            CREATE TABLE IF NOT EXISTS source_folders (
+                id INTEGER PRIMARY KEY,
+                project_id INTEGER NOT NULL,
+                path TEXT NOT NULL,
+                added_at TEXT NOT NULL,
+                FOREIGN KEY(project_id) REFERENCES projects(id)
+            );
+            UPDATE schema_version SET version = 2;
+            ",
+        )?;
+    }
 
     Ok(())
 }
@@ -97,10 +110,10 @@ mod tests {
     }
 
     #[test]
-    fn test_schema_version_is_1_after_migration() {
+    fn test_schema_version_is_2_after_migration() {
         let conn = in_memory();
         run_migrations(&conn).unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), 1);
+        assert_eq!(schema_version(&conn).unwrap(), 2);
     }
 
     #[test]
@@ -115,6 +128,7 @@ mod tests {
             "rounds",
             "decisions",
             "merges",
+            "source_folders",
         ];
         for table in &tables {
             let count: i64 = conn
@@ -133,6 +147,6 @@ mod tests {
         let conn = in_memory();
         run_migrations(&conn).unwrap();
         assert!(run_migrations(&conn).is_ok()); // second call must succeed
-        assert_eq!(schema_version(&conn).unwrap(), 1);
+        assert_eq!(schema_version(&conn).unwrap(), 2);
     }
 }

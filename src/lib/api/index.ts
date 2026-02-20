@@ -9,10 +9,6 @@ export interface Project {
   last_opened_at: string | null
 }
 
-export async function ping(): Promise<string> {
-  return invoke('ping')
-}
-
 export async function suggestSlug(name: string): Promise<string> {
   return invoke('suggest_slug', { name })
 }

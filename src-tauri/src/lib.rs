@@ -14,7 +14,6 @@ pub fn run() {
     tauri::Builder::default()
         .manage(AppState::new(home))
         .invoke_handler(tauri::generate_handler![
-            commands::dev::ping,
             commands::projects::suggest_slug,
             commands::projects::create_project,
             commands::projects::list_projects,

@@ -7,6 +7,7 @@ mod tests {
     use crate::db::{open_connection, run_migrations};
     use crate::projects::{manager, model::Project, repository};
     use crate::state::AppState;
+    use std::path::Path;
     use std::sync::Mutex;
     use tempfile::TempDir;
     #[allow(unused_imports)]
@@ -24,7 +25,7 @@ mod tests {
 
     /// Helper: create a real project on disk + DB + insert row.
     /// Returns the Project and leaves state NOT updated (simulates what create_project command does).
-    fn create_project_on_disk(home: &std::path::Path, name: &str, slug: &str) -> Project {
+    fn create_project_on_disk(home: &Path, name: &str, slug: &str) -> Project {
         let dir = manager::project_dir(home, slug);
         std::fs::create_dir_all(&dir).unwrap();
         let db_path = dir.join("project.db");
@@ -35,23 +36,15 @@ mod tests {
         p
     }
 
-    // -------------------------------------------------------------------------
-    // Multi-project: create 3, list all, open each
-    // -------------------------------------------------------------------------
-
-    #[test]
-    fn test_create_multiple_projects_all_listed() {
-        let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path();
-        std::fs::create_dir_all(home.join("projects")).unwrap();
-
-        create_project_on_disk(home, "Iceland 2024", "iceland-2024");
-        create_project_on_disk(home, "Wedding 2023", "wedding-2023");
-        create_project_on_disk(home, "Portrait", "portrait");
-
-        // Simulate list_projects by scanning dirs and opening each DB
+    /// Helper: scan project directories under `home/projects`, open each DB, and
+    /// return all valid projects (exactly one row per DB).
+    fn scan_projects(home: &Path) -> Vec<Project> {
         let mut found = vec![];
-        for entry in std::fs::read_dir(home.join("projects")).unwrap().flatten() {
+        let entries = match std::fs::read_dir(home.join("projects")) {
+            Ok(e) => e,
+            Err(_) => return found,
+        };
+        for entry in entries.flatten() {
             if !entry.path().is_dir() {
                 continue;
             }
@@ -69,6 +62,24 @@ mod tests {
                 }
             }
         }
+        found
+    }
+
+    // -------------------------------------------------------------------------
+    // Multi-project: create 3, list all, open each
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_create_multiple_projects_all_listed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        std::fs::create_dir_all(home.join("projects")).unwrap();
+
+        create_project_on_disk(home, "Iceland 2024", "iceland-2024");
+        create_project_on_disk(home, "Wedding 2023", "wedding-2023");
+        create_project_on_disk(home, "Portrait", "portrait");
+
+        let mut found = scan_projects(home);
         found.sort_by(|a, b| a.slug.cmp(&b.slug));
         assert_eq!(found.len(), 3);
         let slugs: Vec<&str> = found.iter().map(|p| p.slug.as_str()).collect();
@@ -133,25 +144,7 @@ mod tests {
         assert!(manager::project_dir(home, "gamma").exists());
 
         // List still works — only 2 valid projects
-        let mut found = vec![];
-        for entry in std::fs::read_dir(home.join("projects")).unwrap().flatten() {
-            if !entry.path().is_dir() {
-                continue;
-            }
-            let db_path = entry.path().join("project.db");
-            if !db_path.exists() {
-                continue;
-            }
-            if let Ok(conn) = open_connection(&db_path) {
-                if run_migrations(&conn).is_ok() {
-                    if let Ok(rows) = repository::list_projects_in_db(&conn) {
-                        if rows.len() == 1 {
-                            found.push(rows.into_iter().next().unwrap());
-                        }
-                    }
-                }
-            }
-        }
+        let found = scan_projects(home);
         assert_eq!(found.len(), 2);
         assert!(!found.iter().any(|p| p.slug == "beta"));
     }
@@ -254,25 +247,7 @@ mod tests {
         // Corrupt: dir exists but no project.db
         std::fs::create_dir_all(home.join("projects").join("corrupt-no-db")).unwrap();
 
-        let mut found = vec![];
-        for entry in std::fs::read_dir(home.join("projects")).unwrap().flatten() {
-            if !entry.path().is_dir() {
-                continue;
-            }
-            let db_path = entry.path().join("project.db");
-            if !db_path.exists() {
-                continue; // skip — as list_projects command does
-            }
-            if let Ok(conn) = open_connection(&db_path) {
-                if run_migrations(&conn).is_ok() {
-                    if let Ok(rows) = repository::list_projects_in_db(&conn) {
-                        if rows.len() == 1 {
-                            found.push(rows.into_iter().next().unwrap());
-                        }
-                    }
-                }
-            }
-        }
+        let found = scan_projects(home);
         assert_eq!(found.len(), 1, "Only the valid project should appear");
         assert_eq!(found[0].slug, "valid");
     }
@@ -290,33 +265,14 @@ mod tests {
         std::fs::create_dir_all(&corrupt_dir).unwrap();
         std::fs::write(corrupt_dir.join("project.db"), b"not a sqlite database").unwrap();
 
-        // list scan — corrupt DB should not crash
-        let mut count = 0;
-        for entry in std::fs::read_dir(home.join("projects")).unwrap().flatten() {
-            if !entry.path().is_dir() {
-                continue;
-            }
-            let db_path = entry.path().join("project.db");
-            if !db_path.exists() {
-                continue;
-            }
-            match open_connection(&db_path) {
-                Ok(conn) => {
-                    if run_migrations(&conn).is_ok() {
-                        if let Ok(rows) = repository::list_projects_in_db(&conn) {
-                            if rows.len() == 1 {
-                                count += 1;
-                            }
-                        }
-                    }
-                }
-                Err(_) => {} // corrupt DB — skipped, no crash
-            }
-        }
+        // list scan — corrupt DB should not crash; scan_projects silently skips failures
+        let found = scan_projects(home);
         assert_eq!(
-            count, 1,
+            found.len(),
+            1,
             "Only the valid project counted; corrupt skipped without crash"
         );
+        assert_eq!(found[0].slug, "good");
     }
 
     // -------------------------------------------------------------------------

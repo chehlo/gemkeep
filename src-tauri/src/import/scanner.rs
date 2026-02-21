@@ -153,4 +153,25 @@ mod tests {
         assert_eq!(detect_format(Path::new("a.cr3")), Some(PhotoFormat::Raw));
         assert_eq!(detect_format(Path::new("a.arw")), Some(PhotoFormat::Raw));
     }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_scan_permission_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = make_tmp();
+        let subdir = tmp.path().join("restricted");
+        std::fs::create_dir_all(&subdir).unwrap();
+        // Create a readable JPEG in parent dir
+        let parent_file = touch(tmp.path(), "visible.jpg");
+        // Make subdir unreadable
+        std::fs::set_permissions(&subdir, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let (files, _errors) = scan_directory(tmp.path());
+        // Restore permissions so TempDir cleanup works
+        std::fs::set_permissions(&subdir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // scan_directory must succeed (return a vec, not panic) even when a subdir is unreadable
+        assert!(
+            files.iter().any(|f| f.path == parent_file),
+            "must still find files in accessible directories"
+        );
+    }
 }

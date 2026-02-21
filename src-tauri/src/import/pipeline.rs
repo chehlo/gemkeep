@@ -1,6 +1,7 @@
 use crate::import::{exif, pairs, scanner, stacks, thumbnails};
 use crate::photos::model::{ImportStats, IndexingStatus, PhotoFormat, ScannedFile};
 use crate::photos::repository;
+use rayon::prelude::*;
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,6 +11,7 @@ use std::sync::{Arc, Mutex};
 ///
 /// The pipeline is idempotent: running it twice on the same folder produces no duplicates.
 /// Existing photos are skipped; stacks and logical_photos are rebuilt from scratch each run.
+#[allow(clippy::too_many_arguments)]
 pub fn run_pipeline(
     conn: &Connection,
     project_id: i64,
@@ -18,6 +20,7 @@ pub fn run_pipeline(
     burst_gap_secs: u64,
     status: Arc<Mutex<IndexingStatus>>,
     cancel: Arc<AtomicBool>,
+    pause: Arc<AtomicBool>,
 ) -> ImportStats {
     let mut stats = ImportStats::default();
     let cache_dir = project_dir.join("cache").join("thumbnails");
@@ -45,8 +48,6 @@ pub fn run_pipeline(
             log_error(&mut stats, e);
         }
         scanned_paths.extend(paths);
-
-        update_status(&status, |s| s.total = stats.total_files_scanned);
     }
 
     tracing::info!(
@@ -65,6 +66,12 @@ pub fn run_pipeline(
             }
         };
 
+    // Set total to ALL scanned files so re-index shows real progress too
+    update_status(&status, |s| {
+        s.total = scanned_paths.len();
+        s.processed = 0;
+    });
+
     // ── STEP 3: Extract EXIF + build ScannedFile list ─────────────────────────
     if cancel.load(Ordering::SeqCst) {
         update_status(&status, |s| s.cancelled = true);
@@ -75,6 +82,23 @@ pub fn run_pipeline(
     let mut new_files: Vec<ScannedFile> = Vec::new();
 
     for sp in scanned_paths {
+        if cancel.load(Ordering::SeqCst) {
+            update_status(&status, |s| s.cancelled = true);
+            stats.cancelled = true;
+            return stats;
+        }
+        while pause.load(Ordering::SeqCst) {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            if cancel.load(Ordering::SeqCst) {
+                break;
+            }
+        }
+        if cancel.load(Ordering::SeqCst) {
+            update_status(&status, |s| s.cancelled = true);
+            stats.cancelled = true;
+            return stats;
+        }
+
         let path_str = sp.path.to_string_lossy().to_string();
         if existing_paths.contains(&path_str) {
             stats.skipped_existing += 1;
@@ -196,8 +220,8 @@ pub fn run_pipeline(
         }
     }
 
-    // (lp_id, path, format) for thumbnail generation after DB writes
-    let mut lp_thumb_targets: Vec<(i64, PathBuf, PhotoFormat)> = Vec::new();
+    // (lp_id, path, format, orientation) for thumbnail generation after DB writes
+    let mut lp_thumb_targets: Vec<(i64, PathBuf, PhotoFormat, Option<u16>)> = Vec::new();
 
     for (group, stack_idx) in &assigned {
         let stack_db_id = match stack_id_map.get(*stack_idx).and_then(|o| *o) {
@@ -212,21 +236,8 @@ pub fn run_pipeline(
 
         let representative = group.representative();
         let representative_path = representative.path.to_string_lossy().to_string();
-        let rep_fmt = photo_format_str(&representative.format);
 
-        let representative_id = match repository::insert_photo(
-            conn,
-            &representative_path,
-            rep_fmt,
-            representative
-                .capture_time
-                .as_ref()
-                .map(|t| t.to_rfc3339())
-                .as_deref(),
-            representative.orientation,
-            representative.camera_model.as_deref(),
-            representative.lens.as_deref(),
-        ) {
+        let representative_id = match insert_scanned_file(conn, representative) {
             Ok(id) => id,
             Err(e) => {
                 let msg = format!("pipeline: insert photo {:?}: {}", representative.path, e);
@@ -277,20 +288,7 @@ pub fn run_pipeline(
 
             if let Some(other) = other_opt {
                 let other_path = other.path.to_string_lossy().to_string();
-                let other_fmt = photo_format_str(&other.format);
-                match repository::insert_photo(
-                    conn,
-                    &other_path,
-                    other_fmt,
-                    other
-                        .capture_time
-                        .as_ref()
-                        .map(|t| t.to_rfc3339())
-                        .as_deref(),
-                    other.orientation,
-                    other.camera_model.as_deref(),
-                    other.lens.as_deref(),
-                ) {
+                match insert_scanned_file(conn, other) {
                     Ok(other_id) => {
                         if let Err(e) = repository::set_logical_photo_id(conn, other_id, lp_id) {
                             tracing::warn!("set logical_photo_id on other {}: {}", other_id, e);
@@ -312,6 +310,7 @@ pub fn run_pipeline(
             lp_id,
             representative.path.clone(),
             representative.format.clone(),
+            representative.orientation,
         ));
     }
 
@@ -340,19 +339,49 @@ pub fn run_pipeline(
         return stats;
     }
 
-    for (lp_id, path, format) in &lp_thumb_targets {
-        if cancel.load(Ordering::SeqCst) {
-            break;
-        }
-        // Non-fatal; thumbnail_path remains NULL if this returns None
-        thumbnails::generate_thumbnail(path, format, *lp_id, &cache_dir);
-    }
+    let n_threads = std::thread::available_parallelism()
+        .map(|n| n.get().saturating_sub(2).max(1))
+        .unwrap_or(1);
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(n_threads)
+        .build()
+        .unwrap_or_else(|_| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(1)
+                .build()
+                .unwrap()
+        });
+    pool.install(|| {
+        lp_thumb_targets
+            .par_iter()
+            .for_each(|(lp_id, path, format, orientation)| {
+                if !cancel.load(Ordering::SeqCst) {
+                    thumbnails::generate_thumbnail(path, format, *lp_id, &cache_dir, *orientation);
+                }
+            });
+    });
 
     // Mark thumbnails done
     update_status(&status, |s| {
         s.thumbnails_running = false;
     });
     stats
+}
+
+/// Insert a ScannedFile into the photos table and return its row id.
+/// Converts the in-memory representation to the column types expected by the DB.
+fn insert_scanned_file(conn: &Connection, file: &ScannedFile) -> rusqlite::Result<i64> {
+    let path = file.path.to_string_lossy();
+    let capture_time_rfc = file.capture_time.as_ref().map(|t| t.to_rfc3339());
+    repository::insert_photo(
+        conn,
+        &path,
+        photo_format_str(&file.format),
+        capture_time_rfc.as_deref(),
+        file.orientation,
+        file.camera_model.as_deref(),
+        file.lens.as_deref(),
+    )
 }
 
 fn photo_format_str(format: &PhotoFormat) -> &'static str {

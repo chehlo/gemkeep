@@ -14,6 +14,8 @@ pub struct AppState {
     pub indexing_status: Arc<Mutex<IndexingStatus>>,
     /// Set to true to signal the background thread to stop.
     pub cancel_indexing: Arc<AtomicBool>,
+    /// Set to true to pause the background indexing thread.
+    pub pause_indexing: Arc<AtomicBool>,
 }
 
 impl AppState {
@@ -24,6 +26,7 @@ impl AppState {
             gemkeep_home,
             indexing_status: Arc::new(Mutex::new(IndexingStatus::default())),
             cancel_indexing: Arc::new(AtomicBool::new(false)),
+            pause_indexing: Arc::new(AtomicBool::new(false)),
         }
     }
 }

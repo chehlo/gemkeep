@@ -92,6 +92,7 @@
     try {
       await deleteProject(slug)
       deleteConfirm = null
+      if (lastProject?.slug === slug) lastProject = null
       projects = await listProjects()
     } catch (e) {
       error = String(e)

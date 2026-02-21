@@ -8,11 +8,20 @@ fn default_burst_gap() -> u64 {
 }
 
 /// Global app config stored in ~/.gem-keep/config.json
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
     pub last_opened_slug: Option<String>,
     #[serde(default = "default_burst_gap")]
     pub burst_gap_secs: u64,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            last_opened_slug: None,
+            burst_gap_secs: default_burst_gap(),
+        }
+    }
 }
 
 pub fn gemkeep_home() -> PathBuf {
@@ -129,10 +138,23 @@ mod tests {
     }
 
     #[test]
+    fn test_config_default_burst_gap_is_3() {
+        // REGRESSION: Config::default() must use burst_gap_secs=3 (not u64::default()=0)
+        // Using 0 would silently disable burst grouping on every project open/create.
+        let config = Config::default();
+        assert_eq!(
+            config.burst_gap_secs, 3,
+            "Config::default() must have burst_gap_secs=3, got {}",
+            config.burst_gap_secs
+        );
+    }
+
+    #[test]
     fn test_read_config_missing_file() {
         let tmp = temp_home();
         let config = read_config(tmp.path()).unwrap();
         assert!(config.last_opened_slug.is_none());
+        assert_eq!(config.burst_gap_secs, 3, "default burst_gap_secs must be 3");
     }
 
     #[test]
@@ -145,6 +167,25 @@ mod tests {
         };
         write_config(home, &config).unwrap();
         let loaded = read_config(home).unwrap();
+        assert_eq!(loaded.last_opened_slug, Some("my-project".to_string()));
+        assert_eq!(loaded.burst_gap_secs, 3, "burst_gap_secs must survive round-trip");
+    }
+
+    #[test]
+    fn test_burst_gap_preserved_when_updating_slug() {
+        // REGRESSION: updating last_opened_slug must not reset burst_gap_secs to 0
+        let tmp = temp_home();
+        let home = tmp.path();
+        // Write initial config with custom burst_gap_secs
+        let initial = Config { last_opened_slug: None, burst_gap_secs: 5 };
+        write_config(home, &initial).unwrap();
+        // Simulate what open_project does: read existing, update slug, write back
+        let mut config = read_config(home).unwrap_or_default();
+        config.last_opened_slug = Some("my-project".to_string());
+        write_config(home, &config).unwrap();
+        // burst_gap_secs must be preserved
+        let loaded = read_config(home).unwrap();
+        assert_eq!(loaded.burst_gap_secs, 5, "burst_gap_secs must not be reset by slug update");
         assert_eq!(loaded.last_opened_slug, Some("my-project".to_string()));
     }
 

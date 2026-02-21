@@ -16,10 +16,8 @@ fn open_project_inner(slug_str: &str, state: &AppState) -> Result<Project, Strin
     run_migrations(&conn).map_err(|e| e.to_string())?;
     let project = repository::get_project_by_slug(&conn, slug_str).map_err(|e| e.to_string())?;
     repository::update_last_opened(&conn, project.id).map_err(|e| e.to_string())?;
-    let config = manager::Config {
-        last_opened_slug: Some(slug_str.to_string()),
-        ..manager::Config::default()
-    };
+    let mut config = manager::read_config(home).unwrap_or_default();
+    config.last_opened_slug = Some(slug_str.to_string());
     manager::write_config(home, &config).map_err(|e| e.to_string())?;
     manager::append_operation_log(home, slug_str, &format!("PROJECT_OPENED slug={}", slug_str));
     // Lock order: db first, then active_project
@@ -70,10 +68,8 @@ pub fn create_project(name: String, state: State<'_, AppState>) -> Result<Projec
         &slug_str,
         &format!("PROJECT_CREATED slug={}", slug_str),
     );
-    let config = manager::Config {
-        last_opened_slug: Some(slug_str.clone()),
-        ..manager::Config::default()
-    };
+    let mut config = manager::read_config(home).unwrap_or_default();
+    config.last_opened_slug = Some(slug_str.clone());
     manager::write_config(home, &config).map_err(|e| e.to_string())?;
     // Lock order: db first, then active_project
     *state

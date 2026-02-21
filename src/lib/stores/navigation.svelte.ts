@@ -14,6 +14,8 @@ export type Screen = ProjectListScreen | StackOverviewScreen | StackFocusScreen 
 
 class Navigation {
     current = $state<Screen>({ kind: 'project-list' })
+    // Saved when leaving StackOverview → StackFocus, restored on return
+    stackOverviewFocusIndex = $state<number | null>(null)
 
     navigate(to: Screen): void {
         this.current = to

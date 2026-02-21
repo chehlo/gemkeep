@@ -1,10 +1,11 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte'
+  import { onMount, onDestroy, tick } from 'svelte'
   import { open } from '@tauri-apps/plugin-dialog'
   import { navigation, back, navigate } from '$lib/stores/navigation.svelte.js'
   import {
     addSourceFolder, removeSourceFolder, listSourceFolders,
-    startIndexing, cancelIndexing, getIndexingStatus, listStacks, readThumbnail,
+    startIndexing, cancelIndexing, pauseIndexing, resumeIndexing,
+    getIndexingStatus, listStacks, getThumbnailUrl,
     type SourceFolder, type IndexingStatus, type StackSummary
   } from '$lib/api/index.js'
 
@@ -17,64 +18,83 @@
   )
 
   // State
+  let initialLoading = $state(true)
   let sourceFolders = $state<SourceFolder[]>([])
-  let status = $state<IndexingStatus>({ running: false, thumbnails_running: false, total: 0, processed: 0, errors: 0, cancelled: false, last_stats: null })
+  let status = $state<IndexingStatus>({ running: false, thumbnails_running: false, total: 0, processed: 0, errors: 0, cancelled: false, paused: false, last_stats: null })
   let stacks = $state<StackSummary[]>([])
-  let thumbnailUrls = $state<Record<number, string>>({})
   let focusedIndex = $state(0)
   let pollInterval: ReturnType<typeof setInterval> | null = null
   let showErrors = $state(false)
 
   // Load initial state
   onMount(async () => {
-    await loadAll()
     window.addEventListener('keydown', handleKey)
+    let restoreIdx: number | null = null
+    try {
+      restoreIdx = await loadAll()
+    } catch (e) {
+      console.error("loadAll failed:", e)
+    } finally {
+      initialLoading = false
+      if (restoreIdx !== null) {
+        // tick() waits for Svelte to flush the DOM update (initialLoading=false → cards render)
+        await tick()
+        const cards = document.querySelectorAll('[data-stack-card]')
+        cards[restoreIdx]?.scrollIntoView({ block: 'nearest', behavior: 'instant' })
+      }
+    }
   })
 
   onDestroy(() => {
     window.removeEventListener('keydown', handleKey)
     if (pollInterval) clearInterval(pollInterval)
-    Object.values(thumbnailUrls).forEach(url => URL.revokeObjectURL(url))
   })
 
-  async function loadThumbnailsForStacks() {
-    for (const stack of stacks) {
-      if (stack.thumbnail_path && !thumbnailUrls[stack.stack_id]) {
-        const url = await readThumbnail(stack.thumbnail_path)
-        if (url) {
-          thumbnailUrls = { ...thumbnailUrls, [stack.stack_id]: url }
-        }
-      }
-    }
-  }
-
-  $effect(() => {
-    stacks
-    loadThumbnailsForStacks()
-  })
-
-  async function loadAll() {
-    if (!projectSlug) return
+  async function loadAll(): Promise<number | null> {
+    if (!projectSlug) return null
     sourceFolders = await listSourceFolders(projectSlug)
     stacks = await listStacks(projectSlug)
+
+    // Restore focus position when returning from StackFocus.
+    // Return the index so onMount can scroll after DOM renders (via tick()).
+    let restoreIdx: number | null = null
+    const savedIdx = navigation.stackOverviewFocusIndex
+    if (savedIdx !== null && savedIdx >= 0) {
+      navigation.stackOverviewFocusIndex = null
+      if (savedIdx < stacks.length) {
+        focusedIndex = savedIdx
+        restoreIdx = savedIdx
+      }
+    }
+
     status = await getIndexingStatus(projectSlug)
-    if (status.running || status.thumbnails_running) startPolling()
+    if (status.running || status.thumbnails_running) {
+      startPolling()
+    } else if (sourceFolders.length > 0 && stacks.length === 0) {
+      // Auto-start indexing when folders are set but no stacks yet
+      await handleIndex()
+    }
+
+    return restoreIdx
   }
 
   function startPolling() {
     if (pollInterval) return
-    pollInterval = setInterval(async () => {
-      status = await getIndexingStatus(projectSlug)
-      // Reload stacks while any background work runs (picks up new thumbnails)
+    const poll = async () => {
+      const newStatus = await getIndexingStatus(projectSlug)
+      if (newStatus == null) return
+      status = newStatus
       if (status.running || status.thumbnails_running) {
         stacks = await listStacks(projectSlug)
-        loadThumbnailsForStacks()
       }
       if (!status.running && !status.thumbnails_running) {
+        stacks = await listStacks(projectSlug)
         clearInterval(pollInterval!)
         pollInterval = null
       }
-    }, 500)
+    }
+    poll()
+    pollInterval = setInterval(poll, 500)
   }
 
   async function handleAddFolder() {
@@ -82,6 +102,10 @@
     if (!path || typeof path !== 'string') return
     await addSourceFolder(projectSlug, path)
     sourceFolders = await listSourceFolders(projectSlug)
+    // Auto-start indexing when user adds the first folder and has no stacks yet
+    if (sourceFolders.length > 0 && stacks.length === 0 && !status.running && !status.thumbnails_running) {
+      await handleIndex()
+    }
   }
 
   async function handleRemoveFolder(id: number) {
@@ -90,21 +114,34 @@
   }
 
   async function handleIndex() {
-    await startIndexing(projectSlug)
-    status = await getIndexingStatus(projectSlug)
-    startPolling()
+    stacks = []
+    status = { ...status, running: true, thumbnails_running: false, processed: 0, total: 0, errors: 0, cancelled: false, paused: false }
+    try {
+      await startIndexing(projectSlug)
+      startPolling()
+    } catch (e) {
+      console.error("startIndexing failed:", e)
+      try { status = await getIndexingStatus(projectSlug) } catch {}
+      try { stacks = await listStacks(projectSlug) } catch {}
+    }
   }
 
   async function handleCancel() {
     await cancelIndexing()
   }
 
+  async function handlePause() {
+    await pauseIndexing()
+  }
+
+  async function handleResume() {
+    await resumeIndexing()
+  }
+
   function handleKey(e: KeyboardEvent) {
     if (e.key === 'Escape') { back(); return }
-    if (e.key === 'i' && sourceFolders.length > 0 && !status.running && stacks.length === 0) {
-      handleIndex()
-      return
-    }
+    if (e.key === 'i' && sourceFolders.length > 0 && !status.running) { handleIndex(); return }
+    if (e.key === 'r' && stacks.length > 0 && !status.running) { handleIndex(); return }
     if (stacks.length > 0 && !status.running) {
       const cols = 4
       if (e.key === 'ArrowRight') { focusedIndex = Math.min(focusedIndex + 1, stacks.length - 1); e.preventDefault() }
@@ -113,6 +150,7 @@
       if (e.key === 'ArrowUp') { focusedIndex = Math.max(focusedIndex - cols, 0); e.preventDefault() }
       if (e.key === 'Enter') {
         const stack = stacks[focusedIndex]
+        navigation.stackOverviewFocusIndex = focusedIndex
         navigate({ kind: 'stack-focus', projectSlug, projectName, stackId: stack.stack_id })
       }
     }
@@ -158,6 +196,10 @@
   </header>
 
   <main class="flex-1 flex flex-col p-6 gap-6">
+
+    {#if initialLoading}
+      <div class="text-sm text-gray-500 animate-pulse">Loading…</div>
+    {:else}
 
     {#if sourceFolders.length === 0 && !status.running}
       <!-- STATE 1: No source folders -->
@@ -227,9 +269,10 @@
       <div class="flex flex-col gap-3 max-w-lg">
         {#if isGeneratingThumbnails}
           <!-- Thumbnail generation phase: EXIF complete, thumbnails in progress -->
-          <div class="text-sm text-gray-300 font-medium">Generating thumbnails…</div>
-          <div class="w-full bg-gray-800 rounded-full h-2 overflow-hidden">
-            <div class="bg-blue-500 h-2 rounded-full animate-pulse w-full"></div>
+          <!-- Use a spinner, NOT a full-width bar — w-full animate-pulse looks like "100% done" -->
+          <div class="flex items-center gap-2">
+            <div class="w-4 h-4 rounded-full border-2 border-blue-500 border-t-transparent animate-spin flex-shrink-0"></div>
+            <div class="text-sm text-gray-300 font-medium">Generating thumbnails…</div>
           </div>
           <div class="text-xs text-gray-500">
             {status.total.toLocaleString()} files indexed
@@ -254,12 +297,29 @@
           </div>
         {/if}
 
-        <button
-          class="self-start px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm rounded transition-colors"
-          onclick={handleCancel}
-        >
-          Cancel
-        </button>
+        <div class="flex items-center gap-2">
+          {#if status.paused}
+            <button
+              class="px-3 py-1.5 bg-blue-700 hover:bg-blue-600 text-white text-sm rounded transition-colors"
+              onclick={handleResume}
+            >
+              Resume
+            </button>
+          {:else}
+            <button
+              class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm rounded transition-colors"
+              onclick={handlePause}
+            >
+              Pause
+            </button>
+          {/if}
+          <button
+            class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm rounded transition-colors"
+            onclick={handleCancel}
+          >
+            Cancel
+          </button>
+        </div>
       </div>
 
     {:else}
@@ -292,6 +352,7 @@
           >
             Re-index
           </button>
+          <span class="text-xs text-gray-600">or press <kbd class="font-mono bg-gray-800 px-1 rounded">r</kbd></span>
         </div>
       </div>
 
@@ -299,10 +360,11 @@
 
       {#if isGeneratingThumbnails}
         <!-- Thumbnail generation phase: stacks visible, thumbnails still loading -->
+        <!-- Use a spinner, NOT a full-width bar — w-full animate-pulse looks like "100% done" -->
         <div class="flex flex-col gap-2 max-w-lg">
-          <div class="text-sm text-gray-300 font-medium">Generating thumbnails…</div>
-          <div class="w-full bg-gray-800 rounded-full h-2 overflow-hidden">
-            <div class="bg-blue-500 h-2 rounded-full animate-pulse w-full"></div>
+          <div class="flex items-center gap-2">
+            <div class="w-4 h-4 rounded-full border-2 border-blue-500 border-t-transparent animate-spin flex-shrink-0"></div>
+            <div class="text-sm text-gray-300 font-medium">Generating thumbnails…</div>
           </div>
           <div class="text-xs text-gray-500">
             {status.total.toLocaleString()} files indexed
@@ -344,23 +406,21 @@
       <div class="grid grid-cols-4 gap-3">
         {#each stacks as stack, i (stack.stack_id)}
           <button
+            data-stack-card
             class="flex flex-col rounded-lg overflow-hidden border transition-all text-left
               {i === focusedIndex
                 ? 'border-blue-500 ring-2 ring-blue-500/30 bg-gray-800'
                 : 'border-gray-800 bg-gray-900 hover:border-gray-600'}"
             onclick={() => {
               focusedIndex = i
+              navigation.stackOverviewFocusIndex = i
               navigate({ kind: 'stack-focus', projectSlug, projectName, stackId: stack.stack_id })
             }}
           >
             <!-- Thumbnail -->
             <div class="aspect-square w-full bg-gray-800 flex items-center justify-center overflow-hidden">
-              {#if thumbnailUrls[stack.stack_id]}
-                <img
-                  src={thumbnailUrls[stack.stack_id]}
-                  alt="Stack {i + 1} thumbnail"
-                  class="w-full h-full object-cover"
-                />
+              {#if stack.thumbnail_path}
+                <img src={getThumbnailUrl(stack.thumbnail_path)} alt="Stack {i + 1} thumbnail" class="w-full h-full object-cover" />
               {:else}
                 <span class="text-3xl text-gray-600">📷</span>
               {/if}
@@ -377,6 +437,8 @@
           </button>
         {/each}
       </div>
+    {/if}
+
     {/if}
 
   </main>

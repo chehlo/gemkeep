@@ -1,5 +1,5 @@
 // All Tauri invoke() calls go through this file — never call invoke() directly elsewhere
-import { invoke } from '@tauri-apps/api/core'
+import { invoke, convertFileSrc } from '@tauri-apps/api/core'
 
 export interface Project {
   id: number
@@ -52,6 +52,7 @@ export interface IndexingStatus {
   processed: number
   errors: number
   cancelled: boolean
+  paused: boolean
   last_stats: ImportStats | null
 }
 
@@ -89,6 +90,14 @@ export async function cancelIndexing(): Promise<void> {
   return invoke('cancel_indexing')
 }
 
+export async function pauseIndexing(): Promise<void> {
+  return invoke('pause_indexing')
+}
+
+export async function resumeIndexing(): Promise<void> {
+  return invoke('resume_indexing')
+}
+
 export async function getIndexingStatus(slug: string): Promise<IndexingStatus> {
   return invoke('get_indexing_status', { slug })
 }
@@ -97,13 +106,20 @@ export async function listStacks(slug: string): Promise<StackSummary[]> {
   return invoke('list_stacks', { slug })
 }
 
-export async function readThumbnail(path: string): Promise<string | null> {
-  try {
-    const bytes = await invoke<number[]>('read_thumbnail', { path })
-    const uint8 = new Uint8Array(bytes)
-    const blob = new Blob([uint8], { type: 'image/jpeg' })
-    return URL.createObjectURL(blob)
-  } catch {
-    return null
-  }
+export interface LogicalPhotoSummary {
+  logical_photo_id: number
+  thumbnail_path:   string | null
+  capture_time:     string | null
+  camera_model:     string | null
+  lens:             string | null
+  has_raw:          boolean
+  has_jpeg:         boolean
+}
+
+export function listLogicalPhotos(slug: string, stackId: number): Promise<LogicalPhotoSummary[]> {
+  return invoke('list_logical_photos', { slug, stackId })
+}
+
+export function getThumbnailUrl(path: string): string {
+  return convertFileSrc(path)
 }

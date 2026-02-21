@@ -42,52 +42,66 @@ pub fn detect_pairs(files: Vec<ScannedFile>) -> Vec<LogicalGroup> {
 
     let mut result = Vec::new();
 
-    for ((dir, base), mut members) in groups {
-        match members.len() {
-            0 => {} // impossible
-            1 => {
-                let f = members.remove(0);
-                result.push(single_group(f));
-            }
-            2 => {
-                let (jpegs, raws): (Vec<_>, Vec<_>) = members
-                    .into_iter()
-                    .partition(|f| f.format == PhotoFormat::Jpeg);
-                if jpegs.len() == 1 && raws.len() == 1 {
-                    // Classic pair
-                    let jpeg = jpegs.into_iter().next().unwrap();
-                    let raw = raws.into_iter().next().unwrap();
-                    result.push(LogicalGroup {
-                        jpeg: Some(jpeg),
-                        raw: Some(raw),
-                        is_pair: true,
-                    });
-                } else {
-                    // e.g. two JPEGs or two RAWs with same base — treat as singles
-                    tracing::warn!(
-                        "two files with same base {:?}/{} but not one JPEG + one RAW — treating as singles",
-                        dir, base
-                    );
-                    for f in jpegs.into_iter().chain(raws) {
-                        result.push(single_group(f));
-                    }
-                }
-            }
-            n => {
-                tracing::warn!(
-                    "{} files with same base {:?}/{} — treating all as singles",
-                    n,
-                    dir,
-                    base
-                );
-                for f in members {
-                    result.push(single_group(f));
-                }
-            }
-        }
+    for ((dir, base), members) in groups {
+        result.extend(resolve_group(&dir, &base, members));
     }
 
     result
+}
+
+/// Dispatch a bucket of same-(dir, base_name) files into LogicalGroup(s).
+fn resolve_group(
+    dir: &std::path::Path,
+    base: &str,
+    members: Vec<ScannedFile>,
+) -> Vec<LogicalGroup> {
+    match members.len() {
+        0 => vec![], // impossible
+        1 => vec![single_group(members.into_iter().next().unwrap())],
+        2 => make_pair(dir, base, members),
+        _ => split_to_singles(dir, base, members),
+    }
+}
+
+/// Form a pair from exactly two files that share the same (dir, base_name).
+///
+/// If the two files are one JPEG + one RAW, returns a paired LogicalGroup.
+/// If both are the same format (two JPEGs or two RAWs), warns and returns two singles.
+fn make_pair(dir: &std::path::Path, base: &str, members: Vec<ScannedFile>) -> Vec<LogicalGroup> {
+    let (jpegs, raws): (Vec<_>, Vec<_>) = members
+        .into_iter()
+        .partition(|f| f.format == PhotoFormat::Jpeg);
+
+    if jpegs.len() == 1 && raws.len() == 1 {
+        vec![LogicalGroup {
+            jpeg: Some(jpegs.into_iter().next().unwrap()),
+            raw: Some(raws.into_iter().next().unwrap()),
+            is_pair: true,
+        }]
+    } else {
+        // e.g. two JPEGs or two RAWs with same base — treat as singles
+        tracing::warn!(
+            "two files with same base {:?}/{} but not one JPEG + one RAW — treating as singles",
+            dir,
+            base
+        );
+        jpegs.into_iter().chain(raws).map(single_group).collect()
+    }
+}
+
+/// Warn and return all members as individual singles (n >= 3 case).
+fn split_to_singles(
+    dir: &std::path::Path,
+    base: &str,
+    members: Vec<ScannedFile>,
+) -> Vec<LogicalGroup> {
+    tracing::warn!(
+        "{} files with same base {:?}/{} — treating all as singles",
+        members.len(),
+        dir,
+        base
+    );
+    members.into_iter().map(single_group).collect()
 }
 
 fn single_group(f: ScannedFile) -> LogicalGroup {

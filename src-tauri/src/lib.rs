@@ -1,3 +1,4 @@
+pub mod asset_scope_tests;
 pub mod commands;
 pub mod db;
 pub mod import;
@@ -28,9 +29,11 @@ pub fn run() {
             commands::import::list_source_folders,
             commands::import::start_indexing,
             commands::import::cancel_indexing,
+            commands::import::pause_indexing,
+            commands::import::resume_indexing,
             commands::import::get_indexing_status,
             commands::import::list_stacks,
-            commands::import::read_thumbnail,
+            commands::import::list_logical_photos,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -631,79 +631,158 @@ StackOverview **must not** auto-navigate. No implicit transitions.
 
 ---
 
-# 19. Tests
+# 19. Testing Architecture
 
-## 19.1 Rust Unit Tests
+Sprint 3 has 10 distinct testing layers. Each layer has a specific test type.
+Some layers cannot be automated (Layer 8); those require a documented manual procedure.
 
-### scanner.rs
-- `test_scan_empty_folder` → empty result, no panic
-- `test_scan_jpeg_and_raw` → only supported extensions returned
-- `test_scan_no_symlinks` → symlinks skipped
-- `test_scan_permission_error` → inaccessible dir logged, not panic
-- `test_extension_case_insensitive` → `.CR2` and `.cr2` both detected
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  L10: E2E Journey  (Playwright, Chromium + injected IPC mock)   │
+│  tests/e2e/import-flow.spec.ts                                   │
+├─────────────────────────────────────────────────────────────────┤
+│  L9:  Frontend UI  (Vitest + @testing-library/svelte + jsdom)   │
+│  src/lib/components/screens/StackOverview.test.ts               │
+├─────────────────────────────────────────────────────────────────┤
+│  L8:  Tauri Runtime (asset:// protocol, WebKitWebView)          │
+│  ❌ CANNOT be automated — only exists inside real Tauri binary  │
+│  → Documented manual checklist: docs/manual-tests.md           │
+├─────────────────────────────────────────────────────────────────┤
+│  L7:  IPC Commands (Rust ↔ TypeScript contract)                 │
+│  src-tauri/src/commands/ipc_tests.rs                            │
+├─────────────────────────────────────────────────────────────────┤
+│  L6:  Database  (SQLite migrations, CRUD, idempotency)          │
+│  Rust integration tests with in-memory SQLite                   │
+├─────────────────────────────────────────────────────────────────┤
+│  L3:  Thumbnail Generation (LibRaw → resize → 256×256 JPEG)    │
+│  Rust unit test: generate from synthetic source → verify output │
+├─────────────────────────────────────────────────────────────────┤
+│  L2:  EXIF Extraction (kamadak-exif + rsraw)                   │
+│  Rust unit test: synthetic JPEG with known EXIF → verify values │
+├─────────────────────────────────────────────────────────────────┤
+│  L1,L4,L5: Scanner, Pairs, Stacks (pure logic + tmpdir)        │
+│  Rust unit tests — fully covered                                │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-### exif.rs
-- `test_exif_jpeg_valid` → extract time/model/lens from JPEG fixture
-- `test_exif_jpeg_no_exif` → JPEG without EXIF → all fields None, no panic
-- `test_exif_jpeg_corrupt` → corrupt JPEG header → all fields None
-- `test_exif_raw_cr2_valid` → extract time from CR2 fixture
-- `test_exif_raw_no_exif` → RAW without embedded EXIF → all fields None
+### 19.1 Rust Unit Tests
 
-### pairs.rs
-- `test_pair_cr2_jpeg` → IMG_0001.cr2 + IMG_0001.jpg → 1 logical_photo (pair)
-- `test_pair_case_insensitive` → IMG_0001.CR2 + IMG_0001.JPG → 1 pair
-- `test_pair_no_match` → IMG_0001.cr2 + IMG_0002.jpg → 2 singles
-- `test_pair_jpeg_only` → 1 JPEG → 1 single logical_photo
-- `test_pair_raw_only` → 1 RAW → 1 single logical_photo
-- `test_pair_three_way` → A.cr2 + A.cr3 + A.jpg → 3 singles + warning
-- `test_pair_cross_directory` → same base in different dirs → NOT a pair
+#### Layer 1 — scanner.rs
+- `test_scan_empty_folder`
+- `test_scan_jpeg_and_raw`
+- `test_scan_no_symlinks`
+- `test_scan_permission_error`
+- `test_extension_case_insensitive`
 
-### stacks.rs
-- `test_stack_burst_3s` → 5 photos within 3s → 1 stack
-- `test_stack_gap` → 3 + gap 10s + 3 → 2 stacks
-- `test_stack_single` → 1 photo → 1 stack
-- `test_stack_no_exif_solo` → 3 photos with None capture_time → 3 solo stacks
-- `test_stack_mixed` → some with time, some without → correct separation
-- `test_stack_configurable_gap` → gap=1s vs gap=10s give different groupings
+#### Layer 2 — exif.rs — CORRECTNESS TESTS (synthetic EXIF)
 
-### pipeline.rs (integration through in-memory SQLite)
-- `test_pipeline_full_run` → tempdir with mixed files → correct ImportStats
-- `test_pipeline_idempotent` → same folder twice → second run: 0 imported
-- `test_pipeline_partial_errors` → 1 corrupt + 9 valid → 9 imported, 1 error
-- `test_pipeline_empty_folder` → 0 imported, no panic
-- `test_pipeline_pairs_persisted` → logical_photo.representative_photo_id is JPEG
-- `test_pipeline_stacks_persisted` → logical_photos have correct stack_id
-- `test_pipeline_cancel` → cancel after 50% → clean state, can re-run
+Tests must verify extracted VALUES, not just "no panic".
+Use a synthetic approach: construct a minimal JPEG with known EXIF in-test.
 
-## 19.2 Frontend Tests (Vitest + @testing-library/svelte)
+- `test_exif_jpeg_extracts_capture_time` — synthetic JPEG with DateTimeOriginal → assert correct UTC DateTime
+- `test_exif_jpeg_extracts_camera_model` — synthetic JPEG with Make+Model → assert correct string
+- `test_exif_jpeg_extracts_orientation` — synthetic JPEG with Orientation=6 → assert Some(6)
+- `test_exif_jpeg_no_exif` — minimal JPEG without EXIF → all fields None, no panic
+- `test_exif_jpeg_corrupt` — truncated JPEG bytes → all fields None, no panic
+
+External cross-validation (manual/debugging): `exiftool <file>` for ground truth
+
+#### Layer 3 — thumbnails.rs — OUTPUT VERIFICATION
+
+Tests must verify the OUTPUT FILE, not just that the function returns Ok.
+
+- `test_thumbnail_generated_is_256x256` — generate thumbnail from synthetic JPEG source, read output file with `image::open()`, assert `img.width() == 256 && img.height() == 256`
+- `test_thumbnail_is_valid_jpeg` — output file starts with JPEG magic bytes FF D8
+- `test_thumbnail_path_created` — output file exists at expected path
+- `test_thumbnail_nonexistent_source` — source file missing → function returns without panic, no output file created
+
+External cross-validation (manual/debugging): `identify <thumb.jpg>` (ImageMagick)
+
+#### Layer 4 — pairs.rs
+- `test_pair_cr2_jpeg`, `test_pair_case_insensitive`, `test_pair_no_match`
+- `test_pair_jpeg_only`, `test_pair_raw_only`, `test_pair_three_way`, `test_pair_cross_directory`
+
+#### Layer 5 — stacks.rs
+- `test_stack_burst_3s`, `test_stack_gap`, `test_stack_single`
+- `test_stack_no_exif_solo`, `test_stack_mixed`, `test_stack_configurable_gap`
+
+### 19.2 Rust Integration Tests
+
+#### Layer 6 — Database (pipeline.rs integration)
+- `test_pipeline_full_run`, `test_pipeline_idempotent`, `test_pipeline_partial_errors`
+- `test_pipeline_empty_folder`, `test_pipeline_pairs_persisted`
+- `test_pipeline_stacks_persisted`, `test_pipeline_cancel`
+
+#### Layer 7 — IPC Commands (ipc_tests.rs)
+- `test_create_project_and_list`, `test_open_project`, `test_ipc_open_then_list_no_freeze`
+
+External cross-validation (manual): `sqlite3 ~/.gem-keep/projects/{slug}/project.db`
+  `.tables`, `SELECT * FROM photos LIMIT 5`, `SELECT COUNT(*) FROM stacks`
+
+### 19.3 Frontend Unit Tests (Vitest)
 
 File: `src/lib/components/screens/StackOverview.test.ts`
+Mock: `src/test/setup.ts` — invoke() + convertFileSrc() both mocked
 
-- `renders no-folders state when source_folders is empty`
-- `renders folder list with × buttons when folders attached`
-- `renders Index button when folders present but not indexed`
-- `renders progress bar and cancel button during indexing` (mock status: running=true)
-- `renders stack grid after indexing` (mock listStacks returns 3 summaries)
-- `renders placeholder icon for stacks without thumbnail`
-- `renders error section when errors > 0`
-- `Esc key navigates back to project list`
-- `Enter key on focused stack card navigates to stack-focus`
+- STATE 1: renders no-folders state
+- STATE 2: auto-starts indexing when folders present + no stacks
+- STATE 2: does NOT auto-start when stacks already exist
+- STATE 2: does NOT auto-start when thumbnails_running=true
+- STATE 3: progress bar and cancel visible during EXIF scan phase
+- STATE 4: stack grid rendered with correct card count
+- STATE 4 + thumbnails_running: "Generating thumbnails…" banner visible
+- STATE 4 + thumbnails_running: progress indicator is NOT full-width (not w-full)
+  WHY: a full-width bar is visually indistinguishable from "100% complete"
+- STATE 4: renders img element with asset:// URL when thumbnail_path is set
+- STATE 4: renders placeholder icon when thumbnail_path is null
+- Keyboard: r key triggers re-index, i key triggers index
 
-## 19.3 E2E Tests (Playwright)
+Also: `src/lib/api/index.test.ts` — getThumbnailUrl calls convertFileSrc correctly
+Also: `src/test/tauri-config.test.ts` — asset protocol scope is an absolute pattern
+
+### 19.4 E2E Tests (Playwright)
 
 File: `tests/e2e/import-flow.spec.ts`
+Environment: Playwright + Chromium. IPC mocked via `page.addInitScript()`.
+NOTE: Chromium has no `asset://` protocol handler. Thumbnail SRC correctness
+is verified at the unit level; E2E verifies the user journey and IPC calls.
 
-**Journey 1 — Full import flow (mocked IPC):**
-1. Create project → navigate to StackOverview → verify State 1 (no folders)
-2. Mock `addSourceFolder` → verify State 2 (folder list shown)
-3. Mock `startIndexing` + `getIndexingStatus` returns progress → verify progress bar
-4. Mock status flips to `running=false` → verify State 4 (stack grid)
-5. Verify N stack cards rendered
+#### Journey 1 — STATE 1 empty state
+1. Create project → navigate to StackOverview → verify STATE 1 (no folders)
+2. Verify "No source folders attached." and Add Folder button present
+3. Verify no progress bar, no stack grid
 
-**Journey 2 — Empty state navigation:**
-1. Open project → StackOverview in State 1
-2. Verify "Add Folder" button present
-3. Verify no indexing controls visible
+#### Journey 2 — Auto-start
+1. Open project where IPC mock returns folders=[FOLDER_A], stacks=[], status=IDLE
+2. Verify start_indexing is called automatically (auto-start)
+
+#### Journey 3 — STATE 3 progress
+1. With folders present and auto-start → verify progress bar visible during indexing
+2. Verify no crash at any state
+
+#### Journey 4 — STATE 4 stack grid
+1. Mock returns stacks=[S1, S2, S3], status=DONE
+2. Verify stack cards are visible
+
+#### Journey 5 — Thumbnail banner is not a static full-width bar
+1. Mock returns thumbnails_running=true
+2. Verify "Generating thumbnails…" visible
+3. Verify the animated element does NOT have class `w-full`
+
+### 19.5 Manual Tests
+
+Documented in: `docs/manual-tests.md`
+
+Trigger: Run manual tests after any change to:
+- `src-tauri/tauri.conf.json` (asset protocol scope)
+- `src-tauri/capabilities/` (permissions)
+- thumbnail path format (`thumbnail_path` returned by `list_stacks`)
+- `getThumbnailUrl` / `convertFileSrc` usage
+
+Tests cover:
+- Asset protocol: thumbnail images load without network errors (Layer 8)
+- Thumbnail visual quality: not blurry, orientation correct
+- End-to-end timing: indexing progress visible, no "stuck at 100%" appearance
 
 ---
 
@@ -729,6 +808,11 @@ File: `tests/e2e/import-flow.spec.ts`
 - [ ] All Vitest tests pass (`npm test`)
 - [ ] `cargo clippy -- -D warnings` clean
 - [ ] `cargo fmt` clean
+- [ ] EXIF correctness: synthetic JPEG tests pass (capture_time, camera_model, orientation)
+- [ ] Thumbnail output: 256×256 JPEG verified by readback in Rust test
+- [ ] UI progress bar: progress indicator does NOT use `w-full` when thumbnails generating
+- [ ] E2E import flow: full journey in `import-flow.spec.ts` passes
+- [ ] Manual tests completed: see `docs/manual-tests.md` checklist
 - [ ] Committed: `feat: sprint-3 photo import, pairs, stacks, stack overview grid`
 
 ---

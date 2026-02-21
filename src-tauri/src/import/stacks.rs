@@ -191,4 +191,31 @@ mod tests {
             "with gap=10s should be 1 stack"
         );
     }
+
+    #[test]
+    fn test_stack_consecutive_not_from_stack_origin() {
+        // WHY: Documents and verifies that stacking compares CONSECUTIVE pairs,
+        // NOT the gap from the first photo in the current stack.
+        //
+        // 5 photos each 2s apart (total span = 8s > burst_gap=3):
+        //   consecutive gaps: 2,2,2,2 — all ≤ 3 → should all be one stack
+        //   distance-from-first: gaps 2,4,6,8 — 4>3 would split after 2nd photo
+        //
+        // This test FAILS if a distance-from-first algorithm is accidentally used.
+        let t = base_time();
+        let groups = vec![
+            make_group(Some(t)),
+            make_group(Some(t + Duration::seconds(2))),
+            make_group(Some(t + Duration::seconds(4))),
+            make_group(Some(t + Duration::seconds(6))),
+            make_group(Some(t + Duration::seconds(8))),
+        ];
+        let assigned = assign_stacks_clean(groups, 3);
+        let indices: Vec<usize> = assigned.iter().map(|(_, i)| *i).collect();
+        assert!(
+            indices.iter().all(|&i| i == 0),
+            "5 photos with 2s consecutive gaps must be in one stack (burst_gap=3), got {:?}",
+            indices
+        );
+    }
 }

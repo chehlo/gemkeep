@@ -213,6 +213,7 @@ pub fn start_indexing(
             .map_err(|_| "lock poisoned".to_string())?;
         *status = IndexingStatus {
             running: true,
+            thumbnails_running: false,
             total: 0,
             processed: 0,
             errors: 0,
@@ -350,6 +351,11 @@ pub fn list_stacks(slug: String, state: State<'_, AppState>) -> Result<Vec<Stack
     }
 
     Ok(summaries)
+}
+
+#[tauri::command]
+pub fn read_thumbnail(path: String) -> Result<Vec<u8>, String> {
+    std::fs::read(&path).map_err(|e| e.to_string())
 }
 
 fn enrich_thumbnail_path(

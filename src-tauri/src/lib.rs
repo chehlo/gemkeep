@@ -30,6 +30,7 @@ pub fn run() {
             commands::import::cancel_indexing,
             commands::import::get_indexing_status,
             commands::import::list_stacks,
+            commands::import::read_thumbnail,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -5,7 +5,10 @@ import "@testing-library/jest-dom";
 
 // Mock @tauri-apps/api/core so invoke() calls return controlled values in tests
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(),
+  invoke: vi.fn((cmd: string) => {
+    if (cmd === 'read_thumbnail') return Promise.resolve([])
+    return Promise.resolve(undefined)
+  }),
   convertFileSrc: vi.fn((path: string) => `asset://${path}`),
 }));
 

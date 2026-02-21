@@ -41,6 +41,7 @@ pub struct ImportStats {
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct IndexingStatus {
     pub running: bool,
+    pub thumbnails_running: bool,
     /// total files discovered (may grow during scan)
     pub total: usize,
     /// files completed

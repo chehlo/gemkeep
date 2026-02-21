@@ -322,11 +322,21 @@ pub fn run_pipeline(
         stats.errors
     );
 
-    // ── STEP 8: Thumbnail generation ──────────────────────────────────────────
+    // After STEP 7 (DB writes complete — stacks ready to display):
+    update_status(&status, |s| {
+        s.running = false; // Frontend can show grid now
+        s.thumbnails_running = true; // Thumbnails still generating in background
+        s.errors = stats.errors;
+        s.last_stats = Some(stats.clone());
+    });
+
+    // ── STEP 8: Thumbnail generation (non-blocking from UI perspective) ───────
     if cancel.load(Ordering::SeqCst) {
-        update_status(&status, |s| s.cancelled = true);
+        update_status(&status, |s| {
+            s.cancelled = true;
+            s.thumbnails_running = false;
+        });
         stats.cancelled = true;
-        update_status_with_stats(&status, &stats, false);
         return stats;
     }
 
@@ -338,8 +348,10 @@ pub fn run_pipeline(
         thumbnails::generate_thumbnail(path, format, *lp_id, &cache_dir);
     }
 
-    // ── Done ──────────────────────────────────────────────────────────────────
-    update_status_with_stats(&status, &stats, false);
+    // Mark thumbnails done
+    update_status(&status, |s| {
+        s.thumbnails_running = false;
+    });
     stats
 }
 
@@ -362,18 +374,6 @@ fn update_status<F: FnOnce(&mut IndexingStatus)>(status: &Arc<Mutex<IndexingStat
     if let Ok(mut lock) = status.lock() {
         f(&mut lock);
     }
-}
-
-fn update_status_with_stats(
-    status: &Arc<Mutex<IndexingStatus>>,
-    stats: &ImportStats,
-    running: bool,
-) {
-    update_status(status, |s| {
-        s.running = running;
-        s.errors = stats.errors;
-        s.last_stats = Some(stats.clone());
-    });
 }
 
 /// Load existing photos from DB and reconstruct ScannedFile structs for re-stacking.

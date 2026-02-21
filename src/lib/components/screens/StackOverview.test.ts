@@ -12,15 +12,15 @@ const FOLDER_A: SourceFolder = { id: 1, path: '/home/user/Photos/Iceland' }
 const FOLDER_B: SourceFolder = { id: 2, path: '/home/user/Photos/Drone' }
 
 const IDLE_STATUS: IndexingStatus = {
-  running: false, total: 0, processed: 0, errors: 0, cancelled: false, last_stats: null
+  running: false, thumbnails_running: false, total: 0, processed: 0, errors: 0, cancelled: false, last_stats: null
 }
 
 const RUNNING_STATUS: IndexingStatus = {
-  running: true, total: 1290, processed: 340, errors: 0, cancelled: false, last_stats: null
+  running: true, thumbnails_running: false, total: 1290, processed: 340, errors: 0, cancelled: false, last_stats: null
 }
 
 const DONE_STATUS: IndexingStatus = {
-  running: false, total: 1290, processed: 1290, errors: 0, cancelled: false,
+  running: false, thumbnails_running: false, total: 1290, processed: 1290, errors: 0, cancelled: false,
   last_stats: {
     total_files_scanned: 1290, imported: 1280, skipped_existing: 0,
     skipped_unsupported: 10, errors: 0, pairs_detected: 640,
@@ -98,8 +98,8 @@ describe('StackOverview — state 2: folders attached, not indexed', () => {
   })
 })
 
-const THUMBNAIL_STATUS: IndexingStatus = {
-  running: true, total: 1290, processed: 1290, errors: 0, cancelled: false, last_stats: null
+const THUMBNAIL_RUNNING_STATUS: IndexingStatus = {
+  running: false, thumbnails_running: true, total: 1290, processed: 1290, errors: 0, cancelled: false, last_stats: null
 }
 
 describe('StackOverview — state 3: indexing in progress', () => {
@@ -120,22 +120,27 @@ describe('StackOverview — state 3: indexing in progress', () => {
     // No Index Photos button
     expect(screen.queryByText('Index Photos')).not.toBeInTheDocument()
   })
+})
 
-  it('renders "Generating thumbnails…" when processed >= total but still running', async () => {
-    mockInvoke.mockResolvedValueOnce([FOLDER_A])      // list_source_folders
-    mockInvoke.mockResolvedValueOnce([])              // list_stacks
-    mockInvoke.mockResolvedValueOnce(THUMBNAIL_STATUS) // processed=total, running=true
+describe('StackOverview — state 4 with thumbnails_running', () => {
+  it('renders stacks grid and "Generating thumbnails…" when running=false and thumbnails_running=true', async () => {
+    mockInvoke.mockResolvedValueOnce([FOLDER_A])                    // list_source_folders
+    mockInvoke.mockResolvedValueOnce([STACK_1, STACK_2, STACK_3])   // list_stacks
+    mockInvoke.mockResolvedValueOnce(THUMBNAIL_RUNNING_STATUS)      // get_indexing_status
 
     render(StackOverview)
 
     await waitFor(() => {
-      expect(screen.getByText('Generating thumbnails…')).toBeInTheDocument()
+      expect(screen.getByText('Stack #1')).toBeInTheDocument()
     })
-    expect(screen.getByText('Cancel')).toBeInTheDocument()
-    // EXIF progress text not shown in thumbnail phase
-    expect(screen.queryByText(/1,290.*1,290/)).not.toBeInTheDocument()
-    // File count is shown differently
+    // Stacks grid is visible
+    expect(screen.getByText('Stack #2')).toBeInTheDocument()
+    expect(screen.getByText('Stack #3')).toBeInTheDocument()
+    // Thumbnail generation banner is visible
+    expect(screen.getByText('Generating thumbnails…')).toBeInTheDocument()
     expect(screen.getByText(/1,290 files indexed/)).toBeInTheDocument()
+    // Index complete summary is also visible
+    expect(screen.getByText('Index complete.')).toBeInTheDocument()
   })
 })
 

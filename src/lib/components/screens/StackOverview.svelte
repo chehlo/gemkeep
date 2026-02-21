@@ -1,11 +1,10 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte'
-  import { convertFileSrc } from '@tauri-apps/api/core'
   import { open } from '@tauri-apps/plugin-dialog'
   import { navigation, back, navigate } from '$lib/stores/navigation.svelte.js'
   import {
     addSourceFolder, removeSourceFolder, listSourceFolders,
-    startIndexing, cancelIndexing, getIndexingStatus, listStacks,
+    startIndexing, cancelIndexing, getIndexingStatus, listStacks, readThumbnail,
     type SourceFolder, type IndexingStatus, type StackSummary
   } from '$lib/api/index.js'
 
@@ -19,8 +18,9 @@
 
   // State
   let sourceFolders = $state<SourceFolder[]>([])
-  let status = $state<IndexingStatus>({ running: false, total: 0, processed: 0, errors: 0, cancelled: false, last_stats: null })
+  let status = $state<IndexingStatus>({ running: false, thumbnails_running: false, total: 0, processed: 0, errors: 0, cancelled: false, last_stats: null })
   let stacks = $state<StackSummary[]>([])
+  let thumbnailUrls = $state<Record<number, string>>({})
   let focusedIndex = $state(0)
   let pollInterval: ReturnType<typeof setInterval> | null = null
   let showErrors = $state(false)
@@ -34,6 +34,23 @@
   onDestroy(() => {
     window.removeEventListener('keydown', handleKey)
     if (pollInterval) clearInterval(pollInterval)
+    Object.values(thumbnailUrls).forEach(url => URL.revokeObjectURL(url))
+  })
+
+  async function loadThumbnailsForStacks() {
+    for (const stack of stacks) {
+      if (stack.thumbnail_path && !thumbnailUrls[stack.stack_id]) {
+        const url = await readThumbnail(stack.thumbnail_path)
+        if (url) {
+          thumbnailUrls = { ...thumbnailUrls, [stack.stack_id]: url }
+        }
+      }
+    }
+  }
+
+  $effect(() => {
+    stacks
+    loadThumbnailsForStacks()
   })
 
   async function loadAll() {
@@ -41,17 +58,21 @@
     sourceFolders = await listSourceFolders(projectSlug)
     stacks = await listStacks(projectSlug)
     status = await getIndexingStatus(projectSlug)
-    if (status.running) startPolling()
+    if (status.running || status.thumbnails_running) startPolling()
   }
 
   function startPolling() {
     if (pollInterval) return
     pollInterval = setInterval(async () => {
       status = await getIndexingStatus(projectSlug)
-      if (!status.running) {
+      // Reload stacks while any background work runs (picks up new thumbnails)
+      if (status.running || status.thumbnails_running) {
+        stacks = await listStacks(projectSlug)
+        loadThumbnailsForStacks()
+      }
+      if (!status.running && !status.thumbnails_running) {
         clearInterval(pollInterval!)
         pollInterval = null
-        stacks = await listStacks(projectSlug)
       }
     }, 500)
   }
@@ -102,11 +123,8 @@
     return Math.round((status.processed / status.total) * 100)
   }
 
-  // True once EXIF scan phase is done but thumbnail generation is still running.
-  // The pipeline sets processed=total after EXIF, then spends time on thumbnails.
-  const isGeneratingThumbnails = $derived(
-    status.running && status.total > 0 && status.processed >= status.total
-  )
+  // True while thumbnails are being generated in the background.
+  const isGeneratingThumbnails = $derived(status.thumbnails_running)
 
   function formatDate(iso: string | null): string {
     if (!iso) return '(no EXIF)'
@@ -245,7 +263,7 @@
       </div>
 
     {:else}
-      <!-- STATE 4: Indexed, stacks visible -->
+      <!-- STATE 4: Indexed, stacks visible (thumbnails may still be generating) -->
       <div class="flex flex-col gap-3">
         <div class="text-xs font-medium text-gray-500 uppercase tracking-wider">Source Folders</div>
         <ul class="flex flex-col gap-1">
@@ -278,6 +296,22 @@
       </div>
 
       <hr class="border-gray-800" />
+
+      {#if isGeneratingThumbnails}
+        <!-- Thumbnail generation phase: stacks visible, thumbnails still loading -->
+        <div class="flex flex-col gap-2 max-w-lg">
+          <div class="text-sm text-gray-300 font-medium">Generating thumbnails…</div>
+          <div class="w-full bg-gray-800 rounded-full h-2 overflow-hidden">
+            <div class="bg-blue-500 h-2 rounded-full animate-pulse w-full"></div>
+          </div>
+          <div class="text-xs text-gray-500">
+            {status.total.toLocaleString()} files indexed
+            {#if status.errors > 0}
+              <span class="text-red-400 ml-2">{status.errors} error{status.errors === 1 ? '' : 's'}</span>
+            {/if}
+          </div>
+        </div>
+      {/if}
 
       <!-- Summary line -->
       <div class="flex flex-col gap-2">
@@ -321,9 +355,9 @@
           >
             <!-- Thumbnail -->
             <div class="aspect-square w-full bg-gray-800 flex items-center justify-center overflow-hidden">
-              {#if stack.thumbnail_path}
+              {#if thumbnailUrls[stack.stack_id]}
                 <img
-                  src={convertFileSrc(stack.thumbnail_path)}
+                  src={thumbnailUrls[stack.stack_id]}
                   alt="Stack {i + 1} thumbnail"
                   class="w-full h-full object-cover"
                 />

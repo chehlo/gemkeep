@@ -47,6 +47,7 @@ export interface ImportStats {
 
 export interface IndexingStatus {
   running: boolean
+  thumbnails_running: boolean
   total: number
   processed: number
   errors: number
@@ -94,4 +95,15 @@ export async function getIndexingStatus(slug: string): Promise<IndexingStatus> {
 
 export async function listStacks(slug: string): Promise<StackSummary[]> {
   return invoke('list_stacks', { slug })
+}
+
+export async function readThumbnail(path: string): Promise<string | null> {
+  try {
+    const bytes = await invoke<number[]>('read_thumbnail', { path })
+    const uint8 = new Uint8Array(bytes)
+    const blob = new Blob([uint8], { type: 'image/jpeg' })
+    return URL.createObjectURL(blob)
+  } catch {
+    return null
+  }
 }

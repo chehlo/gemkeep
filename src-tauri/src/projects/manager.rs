@@ -3,9 +3,16 @@ use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+fn default_burst_gap() -> u64 {
+    3
+}
+
+/// Global app config stored in ~/.gem-keep/config.json
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct Config {
     pub last_opened_slug: Option<String>,
+    #[serde(default = "default_burst_gap")]
+    pub burst_gap_secs: u64,
 }
 
 pub fn gemkeep_home() -> PathBuf {
@@ -134,6 +141,7 @@ mod tests {
         let home = tmp.path();
         let config = Config {
             last_opened_slug: Some("my-project".to_string()),
+            ..Config::default()
         };
         write_config(home, &config).unwrap();
         let loaded = read_config(home).unwrap();

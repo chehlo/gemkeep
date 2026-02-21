@@ -8,12 +8,12 @@
 mod tests {
     use crate::commands::projects::*;
     use crate::state::AppState;
+    use tauri::ipc::CallbackFn;
     use tauri::test::{mock_builder, mock_context, noop_assets};
     use tauri::webview::InvokeRequest;
-    use tauri::ipc::CallbackFn;
     use tempfile::TempDir;
 
-    fn create_project_on_disk(home: &std::path::PathBuf, name: &str, slug: &str) {
+    fn create_project_on_disk(home: &std::path::Path, name: &str, slug: &str) {
         let dir = home.join("projects").join(slug);
         std::fs::create_dir_all(&dir).unwrap();
         let db_path = dir.join("project.db");
@@ -96,14 +96,17 @@ mod tests {
 
         // Step 2: list_projects — verify it responds and is not frozen
         let start = std::time::Instant::now();
-        let list_result = tauri::test::get_ipc_response(
-            &wv,
-            invoke_req("list_projects", serde_json::json!({})),
-        );
+        let list_result =
+            tauri::test::get_ipc_response(&wv, invoke_req("list_projects", serde_json::json!({})));
         let elapsed = start.elapsed();
-        assert!(list_result.is_ok(), "list_projects should succeed after open_project");
+        assert!(
+            list_result.is_ok(),
+            "list_projects should succeed after open_project"
+        );
         let list_val: serde_json::Value = list_result.unwrap().deserialize().unwrap();
-        let arr = list_val.as_array().expect("list_projects should return an array");
+        let arr = list_val
+            .as_array()
+            .expect("list_projects should return an array");
         assert_eq!(arr.len(), 1, "list_projects should return 1 project");
         assert_eq!(arr[0]["slug"], "test");
         assert!(

@@ -18,13 +18,20 @@ fn open_project_inner(slug_str: &str, state: &AppState) -> Result<Project, Strin
     repository::update_last_opened(&conn, project.id).map_err(|e| e.to_string())?;
     let config = manager::Config {
         last_opened_slug: Some(slug_str.to_string()),
+        ..manager::Config::default()
     };
     manager::write_config(home, &config).map_err(|e| e.to_string())?;
     manager::append_operation_log(home, slug_str, &format!("PROJECT_OPENED slug={}", slug_str));
     // Lock order: db first, then active_project
-    let mut db_lock = state.db.lock().map_err(|_| "state lock poisoned".to_string())?;
+    let mut db_lock = state
+        .db
+        .lock()
+        .map_err(|_| "state lock poisoned".to_string())?;
     *db_lock = Some(conn);
-    *state.active_project.lock().map_err(|_| "state lock poisoned".to_string())? = Some(project.clone());
+    *state
+        .active_project
+        .lock()
+        .map_err(|_| "state lock poisoned".to_string())? = Some(project.clone());
     Ok(project)
 }
 
@@ -65,11 +72,18 @@ pub fn create_project(name: String, state: State<'_, AppState>) -> Result<Projec
     );
     let config = manager::Config {
         last_opened_slug: Some(slug_str.clone()),
+        ..manager::Config::default()
     };
     manager::write_config(home, &config).map_err(|e| e.to_string())?;
     // Lock order: db first, then active_project
-    *state.db.lock().map_err(|_| "state lock poisoned".to_string())? = Some(conn);
-    *state.active_project.lock().map_err(|_| "state lock poisoned".to_string())? = Some(project.clone());
+    *state
+        .db
+        .lock()
+        .map_err(|_| "state lock poisoned".to_string())? = Some(conn);
+    *state
+        .active_project
+        .lock()
+        .map_err(|_| "state lock poisoned".to_string())? = Some(project.clone());
     Ok(project)
 }
 
@@ -141,8 +155,14 @@ pub fn delete_project(slug: String, state: State<'_, AppState>) -> Result<(), St
     }
     // Clear AppState if this is the active project — lock db first, then active_project
     {
-        let mut db_lock = state.db.lock().map_err(|_| "state lock poisoned".to_string())?;
-        let mut ap_lock = state.active_project.lock().map_err(|_| "state lock poisoned".to_string())?;
+        let mut db_lock = state
+            .db
+            .lock()
+            .map_err(|_| "state lock poisoned".to_string())?;
+        let mut ap_lock = state
+            .active_project
+            .lock()
+            .map_err(|_| "state lock poisoned".to_string())?;
         if ap_lock.as_ref().map(|p| p.slug == slug).unwrap_or(false) {
             *db_lock = None;
             *ap_lock = None;

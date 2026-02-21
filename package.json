@@ -12,7 +12,8 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.10.1"
+    "@tauri-apps/api": "^2.10.1",
+    "@tauri-apps/plugin-dialog": "^2.6.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",

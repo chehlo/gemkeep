@@ -1,4 +1,5 @@
-#[cfg(test)] mod integration_tests;
+#[cfg(test)]
+mod integration_tests;
 pub mod manager;
 pub mod model;
 pub mod repository;

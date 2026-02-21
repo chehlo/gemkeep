@@ -84,6 +84,43 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
         )?;
     }
 
+    if version < 3 {
+        conn.execute_batch(
+            "
+            DROP TABLE IF EXISTS decisions;
+            DROP TABLE IF EXISTS photos;
+            CREATE TABLE IF NOT EXISTS logical_photos (
+                id                       INTEGER PRIMARY KEY,
+                project_id               INTEGER NOT NULL REFERENCES projects(id),
+                representative_photo_id  INTEGER REFERENCES photos(id),
+                stack_id                 INTEGER REFERENCES stacks(id),
+                current_status           TEXT NOT NULL DEFAULT 'undecided'
+            );
+            CREATE TABLE photos (
+                id               INTEGER PRIMARY KEY,
+                path             TEXT NOT NULL UNIQUE,
+                format           TEXT NOT NULL,
+                capture_time     TEXT,
+                orientation      INTEGER,
+                camera_model     TEXT,
+                lens             TEXT,
+                logical_photo_id INTEGER REFERENCES logical_photos(id)
+            );
+            CREATE TABLE decisions (
+                id               INTEGER PRIMARY KEY,
+                logical_photo_id INTEGER NOT NULL REFERENCES logical_photos(id),
+                round_id         INTEGER NOT NULL REFERENCES rounds(id),
+                action           TEXT NOT NULL,
+                timestamp        TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_photos_capture_time ON photos(capture_time);
+            CREATE INDEX IF NOT EXISTS idx_logical_stack ON logical_photos(stack_id);
+            CREATE INDEX IF NOT EXISTS idx_logical_project ON logical_photos(project_id);
+            UPDATE schema_version SET version = 3;
+            ",
+        )?;
+    }
+
     Ok(())
 }
 
@@ -110,10 +147,10 @@ mod tests {
     }
 
     #[test]
-    fn test_schema_version_is_2_after_migration() {
+    fn test_schema_version_is_3_after_migration() {
         let conn = in_memory();
         run_migrations(&conn).unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), 2);
+        assert_eq!(schema_version(&conn).unwrap(), 3);
     }
 
     #[test]
@@ -129,6 +166,7 @@ mod tests {
             "decisions",
             "merges",
             "source_folders",
+            "logical_photos",
         ];
         for table in &tables {
             let count: i64 = conn
@@ -147,6 +185,6 @@ mod tests {
         let conn = in_memory();
         run_migrations(&conn).unwrap();
         assert!(run_migrations(&conn).is_ok()); // second call must succeed
-        assert_eq!(schema_version(&conn).unwrap(), 2);
+        assert_eq!(schema_version(&conn).unwrap(), 3);
     }
 }

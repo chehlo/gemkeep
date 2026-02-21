@@ -7,20 +7,15 @@ mod tests {
     use crate::db::{open_connection, run_migrations};
     use crate::projects::{manager, model::Project, repository};
     use crate::state::AppState;
-    use std::path::Path;
-    use std::sync::Mutex;
-    use tempfile::TempDir;
     #[allow(unused_imports)]
     use rusqlite;
+    use std::path::Path;
+    use tempfile::TempDir;
 
     fn make_state(tmp: &TempDir) -> AppState {
         let home = tmp.path().to_path_buf();
         std::fs::create_dir_all(home.join("projects")).unwrap();
-        AppState {
-            db: Mutex::new(None),
-            active_project: Mutex::new(None),
-            gemkeep_home: home,
-        }
+        AppState::new(home)
     }
 
     /// Helper: create a real project on disk + DB + insert row.
@@ -296,6 +291,7 @@ mod tests {
         // Write config pointing to a slug that has no directory
         let config = manager::Config {
             last_opened_slug: Some("ghost-project".to_string()),
+            ..manager::Config::default()
         };
         manager::write_config(home, &config).unwrap();
 
@@ -377,7 +373,10 @@ mod tests {
         let count: i64 = conn1
             .query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(count, 1, "AppState connection still healthy after concurrent list read");
+        assert_eq!(
+            count, 1,
+            "AppState connection still healthy after concurrent list read"
+        );
     }
 
     #[test]
@@ -397,9 +396,12 @@ mod tests {
         // Create DB at schema v1 only (deliberately not migrated to v2)
         {
             let conn_setup = rusqlite::Connection::open(&db_path).unwrap();
-            conn_setup.execute_batch("PRAGMA journal_mode=WAL;").unwrap();
-            conn_setup.execute_batch(
-                "CREATE TABLE schema_version (version INTEGER NOT NULL);
+            conn_setup
+                .execute_batch("PRAGMA journal_mode=WAL;")
+                .unwrap();
+            conn_setup
+                .execute_batch(
+                    "CREATE TABLE schema_version (version INTEGER NOT NULL);
                  INSERT INTO schema_version VALUES (1);
                  CREATE TABLE projects (
                      id INTEGER PRIMARY KEY,
@@ -410,7 +412,8 @@ mod tests {
                  );
                  INSERT INTO projects (name, slug, created_at)
                  VALUES ('Legacy', 'legacy-project', '2026-01-01T00:00:00Z');",
-            ).unwrap();
+                )
+                .unwrap();
         } // conn_setup dropped here
 
         // list_projects logic: open + read only (no migration)
@@ -422,9 +425,14 @@ mod tests {
 
         // Schema must still be v1 — list_projects did not upgrade it
         let version: u32 = conn
-            .query_row("SELECT version FROM schema_version LIMIT 1", [], |r| r.get(0))
+            .query_row("SELECT version FROM schema_version LIMIT 1", [], |r| {
+                r.get(0)
+            })
             .unwrap();
-        assert_eq!(version, 1, "list_projects must not run migrations — schema unchanged");
+        assert_eq!(
+            version, 1,
+            "list_projects must not run migrations — schema unchanged"
+        );
     }
 
     #[test]
@@ -451,7 +459,8 @@ mod tests {
         // Step 1: simulate open_project_inner — hold connection open
         let appstate_conn = crate::db::open_connection(&db_path).unwrap();
         crate::db::run_migrations(&appstate_conn).unwrap(); // no-op (already v2)
-        let project = crate::projects::repository::get_project_by_slug(&appstate_conn, slug).unwrap();
+        let project =
+            crate::projects::repository::get_project_by_slug(&appstate_conn, slug).unwrap();
         crate::projects::repository::update_last_opened(&appstate_conn, project.id).unwrap();
         // appstate_conn held open — simulates AppState.db
 

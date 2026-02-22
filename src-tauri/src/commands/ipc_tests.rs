@@ -275,6 +275,7 @@ mod tests {
             status,
             cancel,
             pause,
+            None,
         );
 
         // Drop the direct connection so the IPC app can open the same DB

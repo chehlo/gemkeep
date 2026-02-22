@@ -19,5 +19,13 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: vi.fn(),
 }));
 
+// Mock @tauri-apps/api/event so listen/emit don't require a real Tauri runtime.
+// listen() returns a Promise<UnlistenFn> — default resolves with a no-op unlisten.
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn().mockResolvedValue(() => {}),
+  emit: vi.fn(),
+  once: vi.fn(),
+}));
+
 // jsdom doesn't implement scrollIntoView — silence the unhandled rejection
 Element.prototype.scrollIntoView = vi.fn();

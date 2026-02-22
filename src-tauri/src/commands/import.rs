@@ -148,7 +148,7 @@ pub fn list_source_folders(
 pub fn start_indexing(
     slug: String,
     state: State<'_, AppState>,
-    _app_handle: tauri::AppHandle,
+    app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     // Guard: already running?
     {
@@ -231,6 +231,7 @@ pub fn start_indexing(
     let cancel_arc = std::sync::Arc::clone(&state.cancel_indexing);
     let pause_arc = std::sync::Arc::clone(&state.pause_indexing);
     let gemkeep_home = state.gemkeep_home.clone();
+    let app_handle = app_handle.clone();
 
     std::thread::spawn(move || {
         // Open a fresh DB connection in the background thread.
@@ -265,6 +266,7 @@ pub fn start_indexing(
             std::sync::Arc::clone(&status_arc),
             std::sync::Arc::clone(&cancel_arc),
             std::sync::Arc::clone(&pause_arc),
+            Some(app_handle),
         );
 
         // Log completion

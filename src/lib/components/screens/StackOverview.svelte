@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from 'svelte'
+  import { listen } from '@tauri-apps/api/event'
   import { open } from '@tauri-apps/plugin-dialog'
   import { navigation, back, navigate } from '$lib/stores/navigation.svelte.js'
   import {
@@ -25,10 +26,18 @@
   let focusedIndex = $state(0)
   let pollInterval: ReturnType<typeof setInterval> | null = null
   let showErrors = $state(false)
+  let unlistenThumbnail: (() => void) | null = null
 
   // Load initial state
   onMount(async () => {
     window.addEventListener('keydown', handleKey)
+
+    // Progressive thumbnail updates: each thumbnail-ready event triggers a stack reload
+    // so cards show their images as soon as they are written, not all at once.
+    unlistenThumbnail = await listen('thumbnail-ready', async () => {
+      if (projectSlug) stacks = await listStacks(projectSlug)
+    })
+
     let restoreIdx: number | null = null
     try {
       restoreIdx = await loadAll()
@@ -48,6 +57,7 @@
   onDestroy(() => {
     window.removeEventListener('keydown', handleKey)
     if (pollInterval) clearInterval(pollInterval)
+    unlistenThumbnail?.()
   })
 
   async function loadAll(): Promise<number | null> {

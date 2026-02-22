@@ -3,14 +3,25 @@ use crate::photos::model::{ImportStats, IndexingStatus, PhotoFormat, ScannedFile
 use crate::photos::repository;
 use rayon::prelude::*;
 use rusqlite::Connection;
+use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+
+/// Payload emitted on the `thumbnail-ready` event after each thumbnail is written.
+/// Frontend `listen('thumbnail-ready', cb)` receives this to trigger progressive refresh.
+#[derive(Serialize, Clone)]
+pub struct ThumbnailReadyPayload {
+    pub logical_photo_id: i64,
+}
 
 /// Run the full import pipeline. Designed to be called from a background thread.
 ///
 /// The pipeline is idempotent: running it twice on the same folder produces no duplicates.
 /// Existing photos are skipped; stacks and logical_photos are rebuilt from scratch each run.
+///
+/// `app_handle`: pass `Some(handle)` from a Tauri command to emit `thumbnail-ready` events;
+/// pass `None` in tests where no Tauri runtime is available.
 #[allow(clippy::too_many_arguments)]
 pub fn run_pipeline(
     conn: &Connection,
@@ -21,6 +32,7 @@ pub fn run_pipeline(
     status: Arc<Mutex<IndexingStatus>>,
     cancel: Arc<AtomicBool>,
     pause: Arc<AtomicBool>,
+    app_handle: Option<tauri::AppHandle>,
 ) -> ImportStats {
     let mut stats = ImportStats::default();
     let cache_dir = project_dir.join("cache").join("thumbnails");
@@ -356,7 +368,17 @@ pub fn run_pipeline(
             .par_iter()
             .for_each(|(lp_id, path, format, orientation)| {
                 if !cancel.load(Ordering::SeqCst) {
-                    thumbnails::generate_thumbnail(path, format, *lp_id, &cache_dir, *orientation);
+                    if thumbnails::generate_thumbnail(path, format, *lp_id, &cache_dir, *orientation)
+                        .is_some()
+                    {
+                        if let Some(handle) = &app_handle {
+                            use tauri::Emitter;
+                            let _ = handle.emit(
+                                "thumbnail-ready",
+                                ThumbnailReadyPayload { logical_photo_id: *lp_id },
+                            );
+                        }
+                    }
                 }
             });
     });
@@ -478,4 +500,20 @@ fn load_existing_scanned_files(conn: &Connection) -> Vec<ScannedFile> {
     }
 
     files
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ThumbnailReadyPayload;
+
+    #[test]
+    fn test_thumbnail_ready_payload_serializes_correctly() {
+        // WHY (Rule 1): ThumbnailReadyPayload must serialize to exactly
+        // {"logical_photo_id": 42}. The frontend listen('thumbnail-ready', cb)
+        // receives this payload — if the field name changes the JS side silently
+        // gets undefined and the progressive refresh stops working.
+        let payload = ThumbnailReadyPayload { logical_photo_id: 42 };
+        let json = serde_json::to_string(&payload).expect("must serialize");
+        assert_eq!(json, r#"{"logical_photo_id":42}"#);
+    }
 }

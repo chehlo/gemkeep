@@ -2,14 +2,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor, fireEvent } from '@testing-library/svelte'
 import { invoke, convertFileSrc } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import { open } from '@tauri-apps/plugin-dialog'
 import { navigate, navigation } from '$lib/stores/navigation.svelte.js'
 import type { SourceFolder, IndexingStatus, StackSummary } from '$lib/api/index.js'
 import StackOverview from './StackOverview.svelte'
 
 const mockOpen = vi.mocked(open)
-
 const mockInvoke = vi.mocked(invoke)
+const mockListen = vi.mocked(listen)
 
 const FOLDER_A: SourceFolder = { id: 1, path: '/home/user/Photos/Iceland' }
 const FOLDER_B: SourceFolder = { id: 2, path: '/home/user/Photos/Drone' }
@@ -413,5 +414,44 @@ describe('StackOverview — scroll position restore', () => {
 
     // The saved index must be cleared after use (no stale state)
     expect(navigation.stackOverviewFocusIndex).toBeNull()
+  })
+})
+
+describe('StackOverview — thumbnail-ready event (Part C)', () => {
+  it('C2: registers listen("thumbnail-ready") on mount', async () => {
+    // WHY: The component must subscribe to thumbnail-ready on mount so that
+    // progressive thumbnail updates refresh the stack grid card-by-card.
+    // If listen() is never called, all thumbnails appear at once only after
+    // the polling cycle — the progressive UX is broken.
+    mockInvoke.mockResolvedValueOnce([FOLDER_A])   // list_source_folders
+    mockInvoke.mockResolvedValueOnce([STACK_1])    // list_stacks
+    mockInvoke.mockResolvedValueOnce(DONE_STATUS)  // get_indexing_status
+
+    render(StackOverview)
+
+    await waitFor(() => expect(screen.getByText('Stack #1')).toBeInTheDocument())
+
+    expect(mockListen).toHaveBeenCalledWith('thumbnail-ready', expect.any(Function))
+  })
+
+  it('C3: calls unlisten when component is destroyed', async () => {
+    // WHY (Rule 4): The unlisten function returned by listen() must be called
+    // on component destroy to prevent memory leaks and stale event handlers.
+    // Without this, navigating away and back registers duplicate listeners.
+    const mockUnlisten = vi.fn()
+    mockListen.mockResolvedValueOnce(mockUnlisten as any)
+
+    mockInvoke.mockResolvedValueOnce([FOLDER_A])   // list_source_folders
+    mockInvoke.mockResolvedValueOnce([STACK_1])    // list_stacks
+    mockInvoke.mockResolvedValueOnce(DONE_STATUS)  // get_indexing_status
+
+    const { unmount } = render(StackOverview)
+
+    // Wait until listen has been called (meaning unlistenThumbnail is set)
+    await waitFor(() => expect(mockListen).toHaveBeenCalledWith('thumbnail-ready', expect.any(Function)))
+
+    unmount()
+
+    expect(mockUnlisten).toHaveBeenCalled()
   })
 })

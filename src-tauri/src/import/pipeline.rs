@@ -5,7 +5,7 @@ use rayon::prelude::*;
 use rusqlite::Connection;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Payload emitted on the `thumbnail-ready` event after each thumbnail is written.
@@ -33,6 +33,7 @@ pub fn run_pipeline(
     cancel: Arc<AtomicBool>,
     pause: Arc<AtomicBool>,
     app_handle: Option<tauri::AppHandle>,
+    thumbnails_done_counter: Arc<AtomicUsize>,
 ) -> ImportStats {
     let mut stats = ImportStats::default();
     let cache_dir = project_dir.join("cache").join("thumbnails");
@@ -339,7 +340,12 @@ pub fn run_pipeline(
         s.thumbnails_running = true; // Thumbnails still generating in background
         s.errors = stats.errors;
         s.last_stats = Some(stats.clone());
+        s.thumbnails_total = lp_thumb_targets.len();
+        s.thumbnails_done = 0;
     });
+
+    // Reset the live counter to 0 before the pool starts
+    thumbnails_done_counter.store(0, Ordering::SeqCst);
 
     // ── STEP 8: Thumbnail generation (non-blocking from UI perspective) ───────
     if cancel.load(Ordering::SeqCst) {
@@ -367,17 +373,17 @@ pub fn run_pipeline(
         lp_thumb_targets
             .par_iter()
             .for_each(|(lp_id, path, format, orientation)| {
-                if !cancel.load(Ordering::SeqCst) {
-                    if thumbnails::generate_thumbnail(path, format, *lp_id, &cache_dir, *orientation)
+                if !cancel.load(Ordering::SeqCst)
+                    && thumbnails::generate_thumbnail(path, format, *lp_id, &cache_dir, *orientation)
                         .is_some()
-                    {
-                        if let Some(handle) = &app_handle {
-                            use tauri::Emitter;
-                            let _ = handle.emit(
-                                "thumbnail-ready",
-                                ThumbnailReadyPayload { logical_photo_id: *lp_id },
-                            );
-                        }
+                {
+                    thumbnails_done_counter.fetch_add(1, Ordering::Relaxed);
+                    if let Some(handle) = &app_handle {
+                        use tauri::Emitter;
+                        let _ = handle.emit(
+                            "thumbnail-ready",
+                            ThumbnailReadyPayload { logical_photo_id: *lp_id },
+                        );
                     }
                 }
             });

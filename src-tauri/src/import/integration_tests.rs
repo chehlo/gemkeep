@@ -5,7 +5,7 @@ use crate::import::pipeline;
 use crate::photos::model::IndexingStatus;
 use crate::photos::repository;
 use rusqlite::Connection;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tempfile::TempDir;
 
@@ -37,9 +37,19 @@ fn make_pause() -> Arc<AtomicBool> {
     Arc::new(AtomicBool::new(false))
 }
 
+fn make_counter() -> Arc<AtomicUsize> {
+    Arc::new(AtomicUsize::new(0))
+}
+
 fn write_minimal_jpeg(path: &std::path::Path) {
     // Minimal valid JPEG (just SOI + EOI markers)
     std::fs::write(path, [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0xFF, 0xD9]).unwrap();
+}
+
+fn write_valid_jpeg(path: &std::path::Path) {
+    // A real decodable JPEG (50x50 RGB image)
+    let img = image::DynamicImage::new_rgb8(50, 50);
+    img.save(path).unwrap();
 }
 
 /// Write a minimal JPEG to `path` with an APP1/EXIF segment containing
@@ -118,6 +128,7 @@ fn test_pipeline_empty_folder() {
         make_cancel(),
         make_pause(),
         None,
+        make_counter(),
     );
 
     assert_eq!(stats.total_files_scanned, 0);
@@ -144,6 +155,7 @@ fn test_pipeline_full_run() {
         make_cancel(),
         make_pause(),
         None,
+        make_counter(),
     );
 
     assert_eq!(stats.total_files_scanned, 2);
@@ -168,6 +180,7 @@ fn test_pipeline_idempotent() {
         make_cancel(),
         make_pause(),
         None,
+        make_counter(),
     );
     assert_eq!(stats1.imported, 1);
 
@@ -181,6 +194,7 @@ fn test_pipeline_idempotent() {
         make_cancel(),
         make_pause(),
         None,
+        make_counter(),
     );
     // Second run: 0 new imports, 1 skipped
     assert_eq!(stats2.imported, 0);
@@ -209,6 +223,7 @@ fn test_pipeline_stacks_persisted() {
         make_cancel(),
         make_pause(),
         None,
+        make_counter(),
     );
 
     let stacks = repository::list_stacks_summary(&conn, project_id).unwrap();
@@ -240,6 +255,7 @@ fn test_pipeline_thumbnail_path_is_absolute_and_matches_scope() {
         make_cancel(),
         make_pause(),
         None,
+        make_counter(),
     );
 
     // Verify list_stacks_summary produces entries (pipeline persisted stacks)
@@ -299,6 +315,7 @@ fn test_pipeline_pairs_persisted() {
         make_cancel(),
         make_pause(),
         None,
+        make_counter(),
     );
 
     let stacks = repository::list_stacks_summary(&conn, project_id).unwrap();
@@ -337,6 +354,7 @@ fn test_pipeline_cancel() {
         cancel_now,
         make_pause(),
         None,
+        make_counter(),
     );
 
     // Must not panic. State must be consistent (no more stacks than photos).
@@ -368,7 +386,7 @@ fn test_pipeline_partial_errors() {
     pipeline::run_pipeline(
         &conn, project_id, tmp.path(), vec![folder.clone()],
         2, make_status(), make_cancel(), make_pause(),
-        None,
+        None, make_counter(),
     );
 
     let stacks = repository::list_stacks_summary(&conn, project_id).unwrap();
@@ -445,6 +463,7 @@ fn test_pipeline_real_venice_2022() {
         make_cancel(),
         make_pause(),
         None,
+        make_counter(),
     );
 
     eprintln!(
@@ -504,7 +523,7 @@ fn test_pipeline_stacks_from_exif_timestamps() {
         &conn, project_id, tmp.path(), vec![folder],
         3, // burst_gap_secs — all 3 photos are within this window
         make_status(), make_cancel(), make_pause(),
-        None,
+        None, make_counter(),
     );
 
     let stacks = repository::list_stacks_summary(&conn, project_id).unwrap();
@@ -536,7 +555,7 @@ fn test_pipeline_stacks_gap_splits() {
         &conn, project_id, tmp.path(), vec![folder],
         3, // burst_gap_secs
         make_status(), make_cancel(), make_pause(),
-        None,
+        None, make_counter(),
     );
 
     let stacks = repository::list_stacks_summary(&conn, project_id).unwrap();
@@ -544,5 +563,361 @@ fn test_pipeline_stacks_gap_splits() {
         stacks.len(), 2,
         "2 JPEGs 60s apart must produce 2 separate stacks, got {}",
         stacks.len()
+    );
+}
+
+#[test]
+fn test_thumbnails_total_set_on_status_before_pool_runs() {
+    // P1-01: WHY — thumbnails_total must be written to IndexingStatus before the
+    // rayon pool starts. If not, early status polls see thumbnails_total=0 and show
+    // the spinner instead of the progress bar.
+    let (conn, tmp, project_id) = setup();
+    let folder = tmp.path().join("photos");
+    std::fs::create_dir_all(&folder).unwrap();
+
+    write_valid_jpeg(&folder.join("img_001.jpg"));
+    write_valid_jpeg(&folder.join("img_002.jpg"));
+    write_valid_jpeg(&folder.join("img_003.jpg"));
+
+    let status_arc = make_status();
+    let counter = make_counter();
+
+    pipeline::run_pipeline(
+        &conn,
+        project_id,
+        tmp.path(),
+        vec![folder],
+        3,
+        Arc::clone(&status_arc),
+        make_cancel(),
+        make_pause(),
+        None,
+        Arc::clone(&counter),
+    );
+
+    let status = status_arc.lock().unwrap();
+    assert_eq!(
+        status.thumbnails_total, 3,
+        "thumbnails_total must equal the number of logical photos (3), got {}",
+        status.thumbnails_total
+    );
+}
+
+#[test]
+fn test_thumbnails_done_counter_increments_per_successful_thumbnail() {
+    // P1-02: WHY (Rule 1) — each successful generate_thumbnail must increment
+    // thumbnails_done_counter. Without this the progress bar stays at 0%.
+    let (conn, tmp, project_id) = setup();
+    let folder = tmp.path().join("photos");
+    std::fs::create_dir_all(&folder).unwrap();
+
+    write_valid_jpeg(&folder.join("img_001.jpg"));
+    write_valid_jpeg(&folder.join("img_002.jpg"));
+    write_valid_jpeg(&folder.join("img_003.jpg"));
+
+    let counter = make_counter();
+
+    pipeline::run_pipeline(
+        &conn,
+        project_id,
+        tmp.path(),
+        vec![folder],
+        3,
+        make_status(),
+        make_cancel(),
+        make_pause(),
+        None,
+        Arc::clone(&counter),
+    );
+
+    assert_eq!(
+        counter.load(Ordering::Relaxed), 3,
+        "counter must equal 3 after 3 successful thumbnails, got {}",
+        counter.load(Ordering::Relaxed)
+    );
+}
+
+#[test]
+fn test_thumbnails_done_counter_not_incremented_for_failed_thumbnail() {
+    // P1-03: WHY (Rule 4 negative) — generate_thumbnail returns None for corrupt
+    // sources. The counter must NOT be touched.
+    let (conn, tmp, project_id) = setup();
+    let folder = tmp.path().join("photos");
+    std::fs::create_dir_all(&folder).unwrap();
+
+    // Corrupt file: correct extension, not a valid JPEG
+    std::fs::write(folder.join("corrupt.jpg"), b"not a jpeg").unwrap();
+
+    let counter = make_counter();
+
+    pipeline::run_pipeline(
+        &conn,
+        project_id,
+        tmp.path(),
+        vec![folder],
+        3,
+        make_status(),
+        make_cancel(),
+        make_pause(),
+        None,
+        Arc::clone(&counter),
+    );
+
+    assert_eq!(
+        counter.load(Ordering::Relaxed), 0,
+        "counter must remain 0 when all thumbnails fail, got {}",
+        counter.load(Ordering::Relaxed)
+    );
+}
+
+// ── Sprint 2 / P2: resume_thumbnails tests ────────────────────────────────────
+
+#[test]
+fn test_resume_thumbnails_counter_reflects_existing_thumbnails() {
+    // P2-02 (BUG): resume_thumbnails sets thumbnails_total = targets.len() (missing count)
+    // instead of total lp count. So if 2 of 3 thumbnails exist, UI shows "0 / 1" instead
+    // of "2 / 3". This test exposes the bug by asserting the function should return
+    // (targets, total_lp_count) — which it currently does NOT.
+    //
+    // This test MUST FAIL (compile error): find_missing_thumbnail_targets currently returns
+    // Vec<(i64, PathBuf, PhotoFormat, Option<u16>)>, not a (Vec, usize) tuple.
+    // The destructuring below will not compile until the return type is fixed.
+    let (conn, tmp, project_id) = setup();
+    let folder = tmp.path().join("photos");
+    std::fs::create_dir_all(&folder).unwrap();
+
+    write_valid_jpeg(&folder.join("img_001.jpg"));
+    write_valid_jpeg(&folder.join("img_002.jpg"));
+    write_valid_jpeg(&folder.join("img_003.jpg"));
+
+    let cache_dir = tmp.path().join("cache").join("thumbnails");
+
+    // Run full pipeline so all 3 thumbnails are generated
+    pipeline::run_pipeline(
+        &conn,
+        project_id,
+        tmp.path(),
+        vec![folder],
+        3,
+        make_status(),
+        make_cancel(),
+        make_pause(),
+        None,
+        make_counter(),
+    );
+
+    // Verify 3 thumbnails exist
+    let lp_id_map = repository::list_first_lp_ids_for_project(&conn, project_id).unwrap();
+    assert_eq!(lp_id_map.len(), 3, "must have 3 logical photos after pipeline");
+
+    // Delete one thumbnail to simulate partial completion
+    let lp_ids: Vec<i64> = lp_id_map.into_values().collect();
+    let deleted_lp_id = lp_ids[0];
+    let thumb_to_delete = cache_dir.join(format!("{}.jpg", deleted_lp_id));
+    std::fs::remove_file(&thumb_to_delete)
+        .expect("thumbnail must exist to delete it");
+
+    // BUG TEST: find_missing_thumbnail_targets should return (targets, total_lp_count)
+    // but currently only returns Vec. Destructuring as a tuple causes a COMPILE ERROR.
+    // This is the RED state we want — fix the function signature to make this compile.
+    let (targets, total_count) =
+        crate::commands::import::find_missing_thumbnail_targets(&conn, project_id, &cache_dir)
+            .unwrap();
+
+    assert_eq!(targets.len(), 1, "only 1 thumbnail is missing");
+    assert_eq!(total_count, 3, "total_lp_count must be 3, not just missing count");
+    assert_eq!(total_count - targets.len(), 2, "2 thumbnails already existed");
+}
+
+#[test]
+fn test_resume_thumbnails_generates_missing_only() {
+    // P2-03: find_missing_thumbnail_targets must skip thumbnails that already exist
+    // and only return the missing ones. The mtime of existing thumbnails must be unchanged.
+    let (conn, tmp, project_id) = setup();
+    let folder = tmp.path().join("photos");
+    std::fs::create_dir_all(&folder).unwrap();
+
+    write_valid_jpeg(&folder.join("img_001.jpg"));
+    write_valid_jpeg(&folder.join("img_002.jpg"));
+    write_valid_jpeg(&folder.join("img_003.jpg"));
+
+    let cache_dir = tmp.path().join("cache").join("thumbnails");
+
+    // Run full pipeline so all 3 thumbnails are generated
+    pipeline::run_pipeline(
+        &conn,
+        project_id,
+        tmp.path(),
+        vec![folder],
+        3,
+        make_status(),
+        make_cancel(),
+        make_pause(),
+        None,
+        make_counter(),
+    );
+
+    // Collect lp_ids in sorted order for determinism
+    let lp_id_map = repository::list_first_lp_ids_for_project(&conn, project_id).unwrap();
+    assert_eq!(lp_id_map.len(), 3, "must have 3 logical photos");
+    let mut lp_ids: Vec<i64> = lp_id_map.into_values().collect();
+    lp_ids.sort();
+
+    // Record mtime of the FIRST thumbnail before sleeping
+    let thumb_1_path = cache_dir.join(format!("{}.jpg", lp_ids[0]));
+    let mtime_before = std::fs::metadata(&thumb_1_path)
+        .expect("first thumbnail must exist")
+        .modified()
+        .expect("mtime must be available");
+
+    // Sleep so any regeneration would produce a different mtime
+    std::thread::sleep(std::time::Duration::from_millis(20));
+
+    // Delete the LAST thumbnail to simulate partial completion
+    let deleted_lp_id = lp_ids[2];
+    let thumb_to_delete = cache_dir.join(format!("{}.jpg", deleted_lp_id));
+    std::fs::remove_file(&thumb_to_delete)
+        .expect("third thumbnail must exist to delete it");
+
+    // Call the function under test
+    let (missing, _total) = crate::commands::import::find_missing_thumbnail_targets(
+        &conn, project_id, &cache_dir,
+    )
+    .unwrap();
+
+    // Only 1 thumbnail should be missing
+    assert_eq!(missing.len(), 1, "exactly 1 thumbnail is missing");
+
+    // The missing entry must be for the deleted lp_id, not lp_ids[0]
+    let (missing_lp_id, _, _, _) = &missing[0];
+    assert_eq!(
+        *missing_lp_id, deleted_lp_id,
+        "missing lp_id must be {} (the deleted one), got {}",
+        deleted_lp_id, missing_lp_id
+    );
+
+    // The first thumbnail must NOT have been touched (mtime unchanged)
+    let mtime_after = std::fs::metadata(&thumb_1_path)
+        .expect("first thumbnail must still exist")
+        .modified()
+        .expect("mtime must be available");
+    assert_eq!(
+        mtime_before, mtime_after,
+        "find_missing_thumbnail_targets must not modify existing thumbnails"
+    );
+}
+
+#[test]
+fn test_resume_thumbnails_noop_when_all_thumbnails_present() {
+    // P2-04: When all thumbnails exist, find_missing_thumbnail_targets returns empty Vec.
+    let (conn, tmp, project_id) = setup();
+    let folder = tmp.path().join("photos");
+    std::fs::create_dir_all(&folder).unwrap();
+
+    write_valid_jpeg(&folder.join("img_001.jpg"));
+    write_valid_jpeg(&folder.join("img_002.jpg"));
+
+    let cache_dir = tmp.path().join("cache").join("thumbnails");
+
+    // Run full pipeline — all thumbnails generated
+    pipeline::run_pipeline(
+        &conn,
+        project_id,
+        tmp.path(),
+        vec![folder],
+        3,
+        make_status(),
+        make_cancel(),
+        make_pause(),
+        None,
+        make_counter(),
+    );
+
+    // All thumbnails present → result must be empty
+    let (missing, _total) = crate::commands::import::find_missing_thumbnail_targets(
+        &conn, project_id, &cache_dir,
+    )
+    .unwrap();
+
+    assert!(
+        missing.is_empty(),
+        "find_missing_thumbnail_targets must return empty vec when all thumbnails present, got {} entries",
+        missing.len()
+    );
+}
+
+#[test]
+fn test_resume_thumbnails_noop_when_no_logical_photos() {
+    // P2-05: When there are no logical photos in the project, result is empty Vec.
+    let conn = Connection::open_in_memory().unwrap();
+    crate::db::run_migrations(&conn).unwrap();
+
+    conn.execute(
+        "INSERT INTO projects (name, slug, created_at) VALUES ('test', 'test-slug', '2024-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    let project_id: i64 = conn.last_insert_rowid();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let cache_dir = tmp.path().join("cache").join("thumbnails");
+    // cache_dir intentionally does NOT exist
+
+    let (missing, _total) = crate::commands::import::find_missing_thumbnail_targets(
+        &conn, project_id, &cache_dir,
+    )
+    .unwrap();
+
+    assert!(
+        missing.is_empty(),
+        "find_missing_thumbnail_targets must return empty vec when no logical photos exist, got {} entries",
+        missing.len()
+    );
+}
+
+#[test]
+fn test_resume_thumbnails_skips_thumbnails_for_deleted_source() {
+    // P2-06: When thumbnail files exist on disk but source photos are gone,
+    // find_missing_thumbnail_targets returns empty Vec (filesystem is source of truth
+    // for thumbnail existence — it does not verify that sources still exist).
+    let (conn, tmp, project_id) = setup();
+    let folder = tmp.path().join("photos");
+    std::fs::create_dir_all(&folder).unwrap();
+
+    let src1 = folder.join("img_001.jpg");
+    let src2 = folder.join("img_002.jpg");
+    write_valid_jpeg(&src1);
+    write_valid_jpeg(&src2);
+
+    let cache_dir = tmp.path().join("cache").join("thumbnails");
+
+    // Run full pipeline — 2 thumbnails generated
+    pipeline::run_pipeline(
+        &conn,
+        project_id,
+        tmp.path(),
+        vec![folder],
+        3,
+        make_status(),
+        make_cancel(),
+        make_pause(),
+        None,
+        make_counter(),
+    );
+
+    // Delete the source files from disk (thumbnails still exist in cache_dir)
+    std::fs::remove_file(&src1).expect("src1 must exist");
+    std::fs::remove_file(&src2).expect("src2 must exist");
+
+    // Thumbnails still exist → no entries are "missing"
+    let (missing, _total) = crate::commands::import::find_missing_thumbnail_targets(
+        &conn, project_id, &cache_dir,
+    )
+    .unwrap();
+
+    assert!(
+        missing.is_empty(),
+        "find_missing_thumbnail_targets must return empty vec when thumbnails exist (even if sources are deleted), got {} entries",
+        missing.len()
     );
 }

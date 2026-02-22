@@ -54,6 +54,8 @@ export interface IndexingStatus {
   cancelled: boolean
   paused: boolean
   last_stats: ImportStats | null
+  thumbnails_total: number
+  thumbnails_done: number
 }
 
 export interface SourceFolder {
@@ -122,4 +124,8 @@ export function listLogicalPhotos(slug: string, stackId: number): Promise<Logica
 
 export function getThumbnailUrl(path: string): string {
   return convertFileSrc(path)
+}
+
+export async function resumeThumbnails(slug: string): Promise<void> {
+  return invoke('resume_thumbnails', { slug })
 }

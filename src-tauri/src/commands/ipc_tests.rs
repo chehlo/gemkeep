@@ -276,6 +276,7 @@ mod tests {
             cancel,
             pause,
             None,
+            std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         );
 
         // Drop the direct connection so the IPC app can open the same DB
@@ -463,6 +464,72 @@ mod tests {
             status["thumbnails_running"].as_bool(),
             Some(false),
             "idle app must report thumbnails_running=false"
+        );
+    }
+
+    #[test]
+    fn test_get_indexing_status_returns_live_thumbnails_done() {
+        // P1-04: WHY (Rule 1) — get_indexing_status must read the live AtomicUsize,
+        // not a stale snapshot in the Mutex. If the counter isn't injected, the
+        // progress bar always shows 0%.
+        use std::sync::atomic::Ordering;
+        use tauri::Manager;
+
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().to_path_buf();
+        std::fs::create_dir_all(home.join("projects")).unwrap();
+
+        let app = make_app(home);
+        let wv = make_webview(&app);
+
+        // Store 42 directly in the counter (simulating pipeline progress)
+        let state: tauri::State<crate::state::AppState> = app.state();
+        state.thumbnails_done_counter.store(42, Ordering::SeqCst);
+
+        let result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("get_indexing_status", serde_json::json!({})),
+        );
+        assert!(result.is_ok(), "get_indexing_status must succeed");
+        let status: serde_json::Value = result.unwrap().deserialize().unwrap();
+
+        assert_eq!(
+            status["thumbnails_done"].as_u64(),
+            Some(42),
+            "thumbnails_done must reflect the live counter value (42), got: {:?}",
+            status["thumbnails_done"]
+        );
+    }
+
+    #[test]
+    fn test_thumbnails_counters_zero_before_indexing_starts() {
+        // P1-05: WHY (Rule 4 negative) — fresh AppState must have both counters at 0
+        // so the frontend shows the spinner, not a "0/0 (0%)" bar.
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().to_path_buf();
+        std::fs::create_dir_all(home.join("projects")).unwrap();
+
+        let app = make_app(home);
+        let wv = make_webview(&app);
+
+        let result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("get_indexing_status", serde_json::json!({})),
+        );
+        assert!(result.is_ok(), "get_indexing_status must succeed");
+        let status: serde_json::Value = result.unwrap().deserialize().unwrap();
+
+        assert_eq!(
+            status["thumbnails_total"].as_u64(),
+            Some(0),
+            "thumbnails_total must be 0 before indexing starts, got: {:?}",
+            status["thumbnails_total"]
+        );
+        assert_eq!(
+            status["thumbnails_done"].as_u64(),
+            Some(0),
+            "thumbnails_done must be 0 before indexing starts, got: {:?}",
+            status["thumbnails_done"]
         );
     }
 }

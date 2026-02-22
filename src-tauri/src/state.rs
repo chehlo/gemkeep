@@ -2,7 +2,7 @@ use crate::photos::model::IndexingStatus;
 use crate::projects::model::Project;
 use rusqlite::Connection;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::{Arc, Mutex};
 
 // LOCK ORDER: always lock `db` first, then `active_project`. Never reverse.
@@ -16,6 +16,8 @@ pub struct AppState {
     pub cancel_indexing: Arc<AtomicBool>,
     /// Set to true to pause the background indexing thread.
     pub pause_indexing: Arc<AtomicBool>,
+    /// Counts completed thumbnails lock-free; read by get_indexing_status.
+    pub thumbnails_done_counter: Arc<AtomicUsize>,
 }
 
 impl AppState {
@@ -27,6 +29,7 @@ impl AppState {
             indexing_status: Arc::new(Mutex::new(IndexingStatus::default())),
             cancel_indexing: Arc::new(AtomicBool::new(false)),
             pause_indexing: Arc::new(AtomicBool::new(false)),
+            thumbnails_done_counter: Arc::new(AtomicUsize::new(0)),
         }
     }
 }

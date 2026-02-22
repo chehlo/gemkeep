@@ -198,6 +198,7 @@ pub fn start_indexing(
     // Reset cancel and pause flags, then mark as running
     state.cancel_indexing.store(false, Ordering::SeqCst);
     state.pause_indexing.store(false, Ordering::SeqCst);
+    state.thumbnails_done_counter.store(0, Ordering::SeqCst);
     {
         let mut status = state
             .indexing_status
@@ -212,6 +213,8 @@ pub fn start_indexing(
             cancelled: false,
             paused: false,
             last_stats: None,
+            thumbnails_total: 0,
+            thumbnails_done: 0,
         };
     }
 
@@ -230,6 +233,7 @@ pub fn start_indexing(
     let status_arc = std::sync::Arc::clone(&state.indexing_status);
     let cancel_arc = std::sync::Arc::clone(&state.cancel_indexing);
     let pause_arc = std::sync::Arc::clone(&state.pause_indexing);
+    let done_counter = std::sync::Arc::clone(&state.thumbnails_done_counter);
     let gemkeep_home = state.gemkeep_home.clone();
     let app_handle = app_handle.clone();
 
@@ -267,6 +271,7 @@ pub fn start_indexing(
             std::sync::Arc::clone(&cancel_arc),
             std::sync::Arc::clone(&pause_arc),
             Some(app_handle),
+            done_counter,
         );
 
         // Log completion
@@ -328,11 +333,141 @@ pub fn resume_indexing(state: State<'_, AppState>) -> Result<(), String> {
 
 #[tauri::command]
 pub fn get_indexing_status(state: State<'_, AppState>) -> Result<IndexingStatus, String> {
-    state
+    let status_guard = state
         .indexing_status
         .lock()
-        .map_err(|_| "lock poisoned".to_string())
-        .map(|s| s.clone())
+        .map_err(|_| "lock poisoned".to_string())?;
+    let done = state.thumbnails_done_counter.load(Ordering::Relaxed);
+    let mut status = status_guard.clone();
+    status.thumbnails_done = done;
+    Ok(status)
+}
+
+// ── Resume thumbnails ─────────────────────────────────────────────────────────
+
+#[allow(clippy::type_complexity)]
+pub(crate) fn find_missing_thumbnail_targets(
+    conn: &Connection,
+    project_id: i64,
+    cache_dir: &std::path::Path,
+) -> Result<(Vec<(i64, std::path::PathBuf, crate::photos::model::PhotoFormat, Option<u16>)>, usize), String> {
+    // Get all representative lp_ids for this project (values in the map)
+    let lp_id_map = repository::list_first_lp_ids_for_project(conn, project_id)
+        .map_err(|e| e.to_string())?;
+    let all_lp_ids: Vec<i64> = lp_id_map.into_values().collect();
+    let total_lp_count = all_lp_ids.len();
+
+    // Find which thumbnails already exist on disk
+    let existing: std::collections::HashSet<i64> = if cache_dir.exists() {
+        std::fs::read_dir(cache_dir)
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e.ok())
+            .filter_map(|e| {
+                e.file_name()
+                    .to_str()
+                    .and_then(|s| s.strip_suffix(".jpg"))
+                    .and_then(|s| s.parse::<i64>().ok())
+            })
+            .collect()
+    } else {
+        std::collections::HashSet::new()
+    };
+
+    let missing_ids: Vec<i64> = all_lp_ids.into_iter()
+        .filter(|id| !existing.contains(id))
+        .collect();
+
+    if missing_ids.is_empty() {
+        return Ok((vec![], total_lp_count));
+    }
+
+    let missing_targets = repository::list_representative_photos_for_lp_ids(conn, project_id, &missing_ids)
+        .map_err(|e| e.to_string())?;
+    Ok((missing_targets, total_lp_count))
+}
+
+#[tauri::command]
+pub fn resume_thumbnails(
+    slug: String,
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    // Guard: already running?
+    {
+        let status = state.indexing_status.lock()
+            .map_err(|_| "lock poisoned".to_string())?;
+        if status.running || status.thumbnails_running {
+            return Ok(());
+        }
+    }
+
+    // Collect data while holding locks
+    let (lp_targets, cache_dir) = {
+        let (db_guard, project_guard) = with_open_project(&state, &slug)?;
+        let conn = db_guard.as_ref().unwrap();
+        let project = project_guard.as_ref().unwrap();
+        let project_dir = manager::project_dir(&state.gemkeep_home, &slug);
+        let cache_dir = project_dir.join("cache").join("thumbnails");
+
+        let (targets, total_lp_count) = find_missing_thumbnail_targets(conn, project.id, &cache_dir)?;
+
+        if targets.is_empty() {
+            return Ok(());
+        }
+
+        let existing_count = total_lp_count - targets.len();
+
+        // Mark as running
+        {
+            let mut s = state.indexing_status.lock()
+                .map_err(|_| "lock poisoned".to_string())?;
+            s.thumbnails_running = true;
+            s.thumbnails_total = total_lp_count;
+            s.thumbnails_done = 0;
+        }
+        state.thumbnails_done_counter.store(existing_count, Ordering::SeqCst);
+
+        (targets, cache_dir)
+    };
+    std::fs::create_dir_all(&cache_dir).ok();
+
+    // Clone Arcs for the background thread
+    let status_arc = std::sync::Arc::clone(&state.indexing_status);
+    let cancel_arc = std::sync::Arc::clone(&state.cancel_indexing);
+    let done_counter = std::sync::Arc::clone(&state.thumbnails_done_counter);
+    let app_handle = app_handle.clone();
+
+    std::thread::spawn(move || {
+        use rayon::prelude::*;
+        use crate::import::{thumbnails, pipeline::ThumbnailReadyPayload};
+        use tauri::Emitter;
+
+        let n_threads = std::thread::available_parallelism()
+            .map(|n| n.get().saturating_sub(2).max(1))
+            .unwrap_or(1);
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(n_threads)
+            .build()
+            .unwrap_or_else(|_| rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap());
+
+        pool.install(|| {
+            lp_targets.par_iter().for_each(|(lp_id, path, format, orientation)| {
+                if !cancel_arc.load(Ordering::SeqCst)
+                    && thumbnails::generate_thumbnail(path, format, *lp_id, &cache_dir, *orientation).is_some()
+                {
+                    done_counter.fetch_add(1, Ordering::Relaxed);
+                    let _ = app_handle.emit("thumbnail-ready", ThumbnailReadyPayload { logical_photo_id: *lp_id });
+                }
+            });
+        });
+
+        if let Ok(mut s) = status_arc.lock() {
+            s.thumbnails_running = false;
+        }
+    });
+
+    Ok(())
 }
 
 // ── Stack listing ─────────────────────────────────────────────────────────────

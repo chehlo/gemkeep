@@ -6,7 +6,7 @@
   import {
     addSourceFolder, removeSourceFolder, listSourceFolders,
     startIndexing, cancelIndexing, pauseIndexing, resumeIndexing,
-    getIndexingStatus, listStacks, getThumbnailUrl,
+    getIndexingStatus, listStacks, getThumbnailUrl, resumeThumbnails,
     type SourceFolder, type IndexingStatus, type StackSummary
   } from '$lib/api/index.js'
 
@@ -21,7 +21,7 @@
   // State
   let initialLoading = $state(true)
   let sourceFolders = $state<SourceFolder[]>([])
-  let status = $state<IndexingStatus>({ running: false, thumbnails_running: false, total: 0, processed: 0, errors: 0, cancelled: false, paused: false, last_stats: null })
+  let status = $state<IndexingStatus>({ running: false, thumbnails_running: false, total: 0, processed: 0, errors: 0, cancelled: false, paused: false, last_stats: null, thumbnails_total: 0, thumbnails_done: 0 })
   let stacks = $state<StackSummary[]>([])
   let focusedIndex = $state(0)
   let pollInterval: ReturnType<typeof setInterval> | null = null
@@ -83,6 +83,9 @@
     } else if (sourceFolders.length > 0 && stacks.length === 0) {
       // Auto-start indexing when folders are set but no stacks yet
       await handleIndex()
+    } else if (stacks.length > 0 && stacks.some(s => s.thumbnail_path === null)) {
+      // Resume thumbnail generation on re-open when some thumbnails are missing
+      await handleResumeThumbnails()
     }
 
     return restoreIdx
@@ -125,7 +128,7 @@
 
   async function handleIndex() {
     stacks = []
-    status = { ...status, running: true, thumbnails_running: false, processed: 0, total: 0, errors: 0, cancelled: false, paused: false }
+    status = { ...status, running: true, thumbnails_running: false, processed: 0, total: 0, errors: 0, cancelled: false, paused: false, thumbnails_total: 0, thumbnails_done: 0 }
     try {
       await startIndexing(projectSlug)
       startPolling()
@@ -133,6 +136,16 @@
       console.error("startIndexing failed:", e)
       try { status = await getIndexingStatus(projectSlug) } catch {}
       try { stacks = await listStacks(projectSlug) } catch {}
+    }
+  }
+
+  async function handleResumeThumbnails() {
+    if (!projectSlug) return
+    try {
+      await resumeThumbnails(projectSlug)
+      startPolling()
+    } catch (e) {
+      console.error('resumeThumbnails failed:', e)
     }
   }
 
@@ -169,6 +182,11 @@
   function progressPct(): number {
     if (status.total === 0) return 0
     return Math.round((status.processed / status.total) * 100)
+  }
+
+  function thumbnailPct(): number {
+    if (status.thumbnails_total === 0) return 0
+    return Math.round((status.thumbnails_done / status.thumbnails_total) * 100)
   }
 
   // True while thumbnails are being generated in the background.
@@ -278,16 +296,34 @@
 
       <div class="flex flex-col gap-3 max-w-lg">
         {#if isGeneratingThumbnails}
-          <!-- Thumbnail generation phase: EXIF complete, thumbnails in progress -->
-          <!-- Use a spinner, NOT a full-width bar — w-full animate-pulse looks like "100% done" -->
-          <div class="flex items-center gap-2">
-            <div class="w-4 h-4 rounded-full border-2 border-blue-500 border-t-transparent animate-spin flex-shrink-0"></div>
+          <div class="flex flex-col gap-2 max-w-lg">
             <div class="text-sm text-gray-300 font-medium">Generating thumbnails…</div>
-          </div>
-          <div class="text-xs text-gray-500">
-            {status.total.toLocaleString()} files indexed
-            {#if status.errors > 0}
-              <span class="text-red-400 ml-2">{status.errors} error{status.errors === 1 ? '' : 's'}</span>
+            {#if status.thumbnails_total > 0}
+              <!-- Determinate progress bar -->
+              <div class="w-full bg-gray-800 rounded-full h-2">
+                <div
+                  class="bg-blue-500 h-2 rounded-full transition-all duration-300"
+                  style="width: {thumbnailPct()}%"
+                ></div>
+              </div>
+              <div class="text-xs text-gray-500">
+                {status.thumbnails_done.toLocaleString()} / {status.thumbnails_total.toLocaleString()} thumbnails
+                ({thumbnailPct()}%)
+                {#if status.errors > 0}
+                  <span class="text-red-400 ml-2">{status.errors} error{status.errors === 1 ? '' : 's'}</span>
+                {/if}
+              </div>
+            {:else}
+              <!-- Indeterminate spinner (before thumbnails_total is populated) -->
+              <div class="flex items-center gap-2">
+                <div class="w-4 h-4 rounded-full border-2 border-blue-500 border-t-transparent animate-spin flex-shrink-0"></div>
+                <div class="text-xs text-gray-500">
+                  {status.total.toLocaleString()} files indexed
+                  {#if status.errors > 0}
+                    <span class="text-red-400 ml-2">{status.errors} error{status.errors === 1 ? '' : 's'}</span>
+                  {/if}
+                </div>
+              </div>
             {/if}
           </div>
         {:else}
@@ -369,19 +405,35 @@
       <hr class="border-gray-800" />
 
       {#if isGeneratingThumbnails}
-        <!-- Thumbnail generation phase: stacks visible, thumbnails still loading -->
-        <!-- Use a spinner, NOT a full-width bar — w-full animate-pulse looks like "100% done" -->
         <div class="flex flex-col gap-2 max-w-lg">
-          <div class="flex items-center gap-2">
-            <div class="w-4 h-4 rounded-full border-2 border-blue-500 border-t-transparent animate-spin flex-shrink-0"></div>
-            <div class="text-sm text-gray-300 font-medium">Generating thumbnails…</div>
-          </div>
-          <div class="text-xs text-gray-500">
-            {status.total.toLocaleString()} files indexed
-            {#if status.errors > 0}
-              <span class="text-red-400 ml-2">{status.errors} error{status.errors === 1 ? '' : 's'}</span>
-            {/if}
-          </div>
+          <div class="text-sm text-gray-300 font-medium">Generating thumbnails…</div>
+          {#if status.thumbnails_total > 0}
+            <!-- Determinate progress bar -->
+            <div class="w-full bg-gray-800 rounded-full h-2">
+              <div
+                class="bg-blue-500 h-2 rounded-full transition-all duration-300"
+                style="width: {thumbnailPct()}%"
+              ></div>
+            </div>
+            <div class="text-xs text-gray-500">
+              {status.thumbnails_done.toLocaleString()} / {status.thumbnails_total.toLocaleString()} thumbnails
+              ({thumbnailPct()}%)
+              {#if status.errors > 0}
+                <span class="text-red-400 ml-2">{status.errors} error{status.errors === 1 ? '' : 's'}</span>
+              {/if}
+            </div>
+          {:else}
+            <!-- Indeterminate spinner (before thumbnails_total is populated) -->
+            <div class="flex items-center gap-2">
+              <div class="w-4 h-4 rounded-full border-2 border-blue-500 border-t-transparent animate-spin flex-shrink-0"></div>
+              <div class="text-xs text-gray-500">
+                {status.total.toLocaleString()} files indexed
+                {#if status.errors > 0}
+                  <span class="text-red-400 ml-2">{status.errors} error{status.errors === 1 ? '' : 's'}</span>
+                {/if}
+              </div>
+            </div>
+          {/if}
         </div>
       {/if}
 

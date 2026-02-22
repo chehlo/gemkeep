@@ -305,6 +305,51 @@ pub fn list_first_lp_ids_for_project(
     pairs.collect::<rusqlite::Result<std::collections::HashMap<_, _>>>()
 }
 
+/// Return (lp_id, source_path, PhotoFormat, Option<orientation>) for each
+/// logical photo id in lp_ids. Used by resume_thumbnails to find what to generate.
+#[allow(clippy::type_complexity)]
+pub fn list_representative_photos_for_lp_ids(
+    conn: &Connection,
+    project_id: i64,
+    lp_ids: &[i64],
+) -> rusqlite::Result<Vec<(i64, std::path::PathBuf, crate::photos::model::PhotoFormat, Option<u16>)>> {
+    if lp_ids.is_empty() {
+        return Ok(vec![]);
+    }
+    let placeholders: String = lp_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let sql = format!(
+        "SELECT lp.id, p.path, p.format, p.orientation
+           FROM logical_photos lp
+           JOIN photos p ON p.id = lp.representative_photo_id
+          WHERE lp.project_id = ? AND lp.id IN ({})",
+        placeholders
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(project_id)];
+    for id in lp_ids {
+        params.push(Box::new(*id));
+    }
+    let params_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let rows = stmt.query_map(params_refs.as_slice(), |row| {
+        let lp_id: i64 = row.get(0)?;
+        let path_str: String = row.get(1)?;
+        let format_str: String = row.get(2)?;
+        let orientation: Option<u16> = row.get(3)?;
+        Ok((lp_id, path_str, format_str, orientation))
+    })?;
+    let mut result = Vec::new();
+    for row in rows {
+        let (lp_id, path_str, format_str, orientation) = row?;
+        let path = std::path::PathBuf::from(path_str);
+        let format = match format_str.as_str() {
+            "jpeg" => crate::photos::model::PhotoFormat::Jpeg,
+            _ => crate::photos::model::PhotoFormat::Raw,
+        };
+        result.push((lp_id, path, format, orientation));
+    }
+    Ok(result)
+}
+
 /// Load all photo paths for a project (for idempotency checks during pipeline).
 pub fn list_photo_paths_for_project(
     conn: &Connection,
@@ -319,4 +364,68 @@ pub fn list_photo_paths_for_project(
         params![project_id],
         |row| row.get(0),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::run_migrations;
+
+    #[test]
+    fn test_list_representative_photos_for_lp_ids_returns_correct_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        // Insert project
+        conn.execute(
+            "INSERT INTO projects (name, slug, created_at) VALUES ('Test', 'test', '2024-01-01T00:00:00Z')",
+            [],
+        ).unwrap();
+        let project_id: i64 = conn.last_insert_rowid();
+
+        // Insert stack
+        let stack_id = insert_stack(&conn, project_id).unwrap();
+
+        // Insert photo
+        let photo_id = insert_photo(
+            &conn,
+            "/fake/photo.jpg",
+            "jpeg",
+            None,
+            Some(1u16),
+            None,
+            None,
+        ).unwrap();
+
+        // Insert logical_photo
+        let lp_id = insert_logical_photo(&conn, project_id, photo_id, stack_id).unwrap();
+
+        // Call the function under test
+        let result = list_representative_photos_for_lp_ids(&conn, project_id, &[lp_id]).unwrap();
+
+        assert_eq!(result.len(), 1, "should return exactly 1 row");
+        let (row_lp_id, row_path, row_format, row_orientation) = &result[0];
+        assert_eq!(*row_lp_id, lp_id, "lp_id must match");
+        assert_eq!(
+            *row_path,
+            std::path::PathBuf::from("/fake/photo.jpg"),
+            "path must match"
+        );
+        assert_eq!(
+            *row_format,
+            crate::photos::model::PhotoFormat::Jpeg,
+            "format must be Jpeg"
+        );
+        assert_eq!(*row_orientation, Some(1u16), "orientation must be Some(1)");
+    }
+
+    #[test]
+    fn test_list_representative_photos_for_lp_ids_empty_input() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        // Call with empty lp_ids slice — must not produce SQL error from IN ()
+        let result = list_representative_photos_for_lp_ids(&conn, 1, &[]).unwrap();
+        assert_eq!(result, vec![], "empty input must return empty vec");
+    }
 }

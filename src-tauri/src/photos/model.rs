@@ -51,6 +51,10 @@ pub struct IndexingStatus {
     pub paused: bool,
     /// populated when done
     pub last_stats: Option<ImportStats>,
+    /// total thumbnails to generate — set before the rayon pool starts
+    pub thumbnails_total: usize,
+    /// thumbnails completed — read live from AtomicUsize in get_indexing_status
+    pub thumbnails_done: usize,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

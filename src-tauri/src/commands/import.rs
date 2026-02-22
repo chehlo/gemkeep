@@ -350,11 +350,21 @@ pub(crate) fn find_missing_thumbnail_targets(
     conn: &Connection,
     project_id: i64,
     cache_dir: &std::path::Path,
-) -> Result<(Vec<(i64, std::path::PathBuf, crate::photos::model::PhotoFormat, Option<u16>)>, usize), String> {
-    // Get all representative lp_ids for this project (values in the map)
-    let lp_id_map = repository::list_first_lp_ids_for_project(conn, project_id)
-        .map_err(|e| e.to_string())?;
-    let all_lp_ids: Vec<i64> = lp_id_map.into_values().collect();
+) -> Result<
+    (
+        Vec<(
+            i64,
+            std::path::PathBuf,
+            crate::photos::model::PhotoFormat,
+            Option<u16>,
+        )>,
+        usize,
+    ),
+    String,
+> {
+    // Get all lp_ids for this project (one per logical photo, not one per stack)
+    let all_lp_ids =
+        repository::list_all_lp_ids_for_project(conn, project_id).map_err(|e| e.to_string())?;
     let total_lp_count = all_lp_ids.len();
 
     // Find which thumbnails already exist on disk
@@ -374,7 +384,8 @@ pub(crate) fn find_missing_thumbnail_targets(
         std::collections::HashSet::new()
     };
 
-    let missing_ids: Vec<i64> = all_lp_ids.into_iter()
+    let missing_ids: Vec<i64> = all_lp_ids
+        .into_iter()
         .filter(|id| !existing.contains(id))
         .collect();
 
@@ -382,8 +393,9 @@ pub(crate) fn find_missing_thumbnail_targets(
         return Ok((vec![], total_lp_count));
     }
 
-    let missing_targets = repository::list_representative_photos_for_lp_ids(conn, project_id, &missing_ids)
-        .map_err(|e| e.to_string())?;
+    let missing_targets =
+        repository::list_representative_photos_for_lp_ids(conn, project_id, &missing_ids)
+            .map_err(|e| e.to_string())?;
     Ok((missing_targets, total_lp_count))
 }
 
@@ -395,7 +407,9 @@ pub fn resume_thumbnails(
 ) -> Result<(), String> {
     // Guard: already running?
     {
-        let status = state.indexing_status.lock()
+        let status = state
+            .indexing_status
+            .lock()
             .map_err(|_| "lock poisoned".to_string())?;
         if status.running || status.thumbnails_running {
             return Ok(());
@@ -410,7 +424,8 @@ pub fn resume_thumbnails(
         let project_dir = manager::project_dir(&state.gemkeep_home, &slug);
         let cache_dir = project_dir.join("cache").join("thumbnails");
 
-        let (targets, total_lp_count) = find_missing_thumbnail_targets(conn, project.id, &cache_dir)?;
+        let (targets, total_lp_count) =
+            find_missing_thumbnail_targets(conn, project.id, &cache_dir)?;
 
         if targets.is_empty() {
             return Ok(());
@@ -420,13 +435,17 @@ pub fn resume_thumbnails(
 
         // Mark as running
         {
-            let mut s = state.indexing_status.lock()
+            let mut s = state
+                .indexing_status
+                .lock()
                 .map_err(|_| "lock poisoned".to_string())?;
             s.thumbnails_running = true;
             s.thumbnails_total = total_lp_count;
             s.thumbnails_done = 0;
         }
-        state.thumbnails_done_counter.store(existing_count, Ordering::SeqCst);
+        state
+            .thumbnails_done_counter
+            .store(existing_count, Ordering::SeqCst);
 
         (targets, cache_dir)
     };
@@ -439,8 +458,8 @@ pub fn resume_thumbnails(
     let app_handle = app_handle.clone();
 
     std::thread::spawn(move || {
+        use crate::import::{pipeline::ThumbnailReadyPayload, thumbnails};
         use rayon::prelude::*;
-        use crate::import::{thumbnails, pipeline::ThumbnailReadyPayload};
         use tauri::Emitter;
 
         let n_threads = std::thread::available_parallelism()
@@ -449,23 +468,94 @@ pub fn resume_thumbnails(
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(n_threads)
             .build()
-            .unwrap_or_else(|_| rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap());
+            .unwrap_or_else(|_| {
+                rayon::ThreadPoolBuilder::new()
+                    .num_threads(1)
+                    .build()
+                    .unwrap()
+            });
 
         pool.install(|| {
-            lp_targets.par_iter().for_each(|(lp_id, path, format, orientation)| {
-                if !cancel_arc.load(Ordering::SeqCst)
-                    && thumbnails::generate_thumbnail(path, format, *lp_id, &cache_dir, *orientation).is_some()
-                {
-                    done_counter.fetch_add(1, Ordering::Relaxed);
-                    let _ = app_handle.emit("thumbnail-ready", ThumbnailReadyPayload { logical_photo_id: *lp_id });
-                }
-            });
+            lp_targets
+                .par_iter()
+                .for_each(|(lp_id, path, format, orientation)| {
+                    if !cancel_arc.load(Ordering::SeqCst)
+                        && thumbnails::generate_thumbnail(
+                            path,
+                            format,
+                            *lp_id,
+                            &cache_dir,
+                            *orientation,
+                        )
+                        .is_some()
+                    {
+                        done_counter.fetch_add(1, Ordering::Relaxed);
+                        let _ = app_handle.emit(
+                            "thumbnail-ready",
+                            ThumbnailReadyPayload {
+                                logical_photo_id: *lp_id,
+                            },
+                        );
+                    }
+                });
         });
 
         if let Ok(mut s) = status_arc.lock() {
             s.thumbnails_running = false;
         }
     });
+
+    Ok(())
+}
+
+// ── Burst gap ─────────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn get_burst_gap(state: State<'_, AppState>) -> Result<u64, String> {
+    let config = manager::read_config(&state.gemkeep_home).map_err(|e| e.to_string())?;
+    Ok(config.burst_gap_secs)
+}
+
+#[tauri::command]
+pub fn set_burst_gap(secs: u64, state: State<'_, AppState>) -> Result<(), String> {
+    let mut config = manager::read_config(&state.gemkeep_home).map_err(|e| e.to_string())?;
+    config.burst_gap_secs = secs;
+    manager::write_config(&state.gemkeep_home, &config).map_err(|e| e.to_string())
+}
+
+// ── Restack ───────────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn restack(slug: String, state: State<'_, AppState>) -> Result<(), String> {
+    // Get project_id from the open project
+    let project_id = {
+        let guard = state.active_project.lock().unwrap();
+        guard
+            .as_ref()
+            .map(|p| p.id)
+            .ok_or_else(|| "No open project".to_string())?
+    };
+
+    // Read burst gap from config
+    let config = manager::read_config(&state.gemkeep_home).map_err(|e| e.to_string())?;
+
+    // Do restack with DB lock
+    {
+        let db_guard = state.db.lock().unwrap();
+        let conn = db_guard
+            .as_ref()
+            .ok_or_else(|| "No DB connection".to_string())?;
+        pipeline::restack_from_existing_photos(conn, project_id, config.burst_gap_secs)?;
+    }
+
+    // Clear thumbnail cache
+    let cache_dir = manager::project_dir(&state.gemkeep_home, &slug)
+        .join("cache")
+        .join("thumbnails");
+    if cache_dir.exists() {
+        std::fs::remove_dir_all(&cache_dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -485,9 +575,6 @@ pub fn list_stacks(slug: String, state: State<'_, AppState>) -> Result<Vec<Stack
         .join("cache")
         .join("thumbnails");
 
-    // Batch: one SQL query instead of N queries
-    let lp_ids = repository::list_first_lp_ids_for_project(conn, project.id).unwrap_or_default();
-
     // One readdir instead of N exists() calls
     let existing_thumbs: std::collections::HashSet<i64> = if cache_dir.exists() {
         std::fs::read_dir(&cache_dir)
@@ -504,6 +591,14 @@ pub fn list_stacks(slug: String, state: State<'_, AppState>) -> Result<Vec<Stack
     } else {
         std::collections::HashSet::new()
     };
+
+    // Batch: one SQL query instead of N queries — picks best LP with a thumbnail per stack
+    let lp_ids = repository::list_best_lp_id_for_thumbnail_per_stack(
+        conn,
+        project.id,
+        &existing_thumbs,
+    )
+    .unwrap_or_default();
 
     for summary in &mut summaries {
         if let Some(&lp_id) = lp_ids.get(&summary.stack_id) {
@@ -536,6 +631,5 @@ pub fn list_logical_photos(
         .join("cache")
         .join("thumbnails");
 
-    repository::list_logical_photos_by_stack(conn, stack_id, &cache_dir)
-        .map_err(|e| e.to_string())
+    repository::list_logical_photos_by_stack(conn, stack_id, &cache_dir).map_err(|e| e.to_string())
 }

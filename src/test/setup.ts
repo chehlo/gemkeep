@@ -3,13 +3,15 @@
 // Global test setup: extend matchers and mock Tauri IPC
 import "@testing-library/jest-dom";
 
-// Mock @tauri-apps/api/core so invoke() calls return controlled values in tests
+// Mock @tauri-apps/api/core — Rule 9: default must throw on unmocked commands.
+// Every test must explicitly mock every invoke() call the component makes.
+// Silent undefined from exhausted mock queues caused real bugs to escape.
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn((cmd: string) => {
-    if (cmd === 'pause_indexing') return Promise.resolve(undefined)
-    if (cmd === 'resume_indexing') return Promise.resolve(undefined)
-    if (cmd === 'list_logical_photos') return Promise.resolve([])
-    return Promise.resolve(undefined)
+    throw new Error(
+      `Unmocked invoke("${cmd}"). ` +
+      `Add mockInvoke.mockResolvedValueOnce(...) before this call.`
+    )
   }),
   convertFileSrc: vi.fn((path: string) => `asset://localhost${path}`),
 }));

@@ -129,3 +129,15 @@ export function getThumbnailUrl(path: string): string {
 export async function resumeThumbnails(slug: string): Promise<void> {
   return invoke('resume_thumbnails', { slug })
 }
+
+export async function getBurstGap(): Promise<number> {
+  return await invoke<number>('get_burst_gap')
+}
+
+export async function setBurstGap(secs: number): Promise<void> {
+  await invoke('set_burst_gap', { secs })
+}
+
+export async function restack(slug: string): Promise<void> {
+  await invoke('restack', { slug })
+}

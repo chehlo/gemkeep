@@ -133,7 +133,7 @@ pub fn list_stacks_summary(
         conn,
         "SELECT
             s.id                                        AS stack_id,
-            COUNT(lp.id)                                AS logical_photo_count,
+            COUNT(DISTINCT lp.id)                       AS logical_photo_count,
             MIN(p.capture_time)                         AS earliest_capture,
             MAX(CASE WHEN p.format = 'raw'  THEN 1 ELSE 0 END) AS has_raw,
             MAX(CASE WHEN p.format = 'jpeg' THEN 1 ELSE 0 END) AS has_jpeg
@@ -207,12 +207,12 @@ pub fn list_logical_photos_by_stack(
             let has_jpeg: i64 = row.get(5)?;
             Ok(LogicalPhotoSummary {
                 logical_photo_id: row.get(0)?,
-                thumbnail_path:   None, // filled below
-                capture_time:     row.get(1)?,
-                camera_model:     row.get(2)?,
-                lens:             row.get(3)?,
-                has_raw:          has_raw != 0,
-                has_jpeg:         has_jpeg != 0,
+                thumbnail_path: None, // filled below
+                capture_time: row.get(1)?,
+                camera_model: row.get(2)?,
+                lens: row.get(3)?,
+                has_raw: has_raw != 0,
+                has_jpeg: has_jpeg != 0,
             })
         },
     )?;
@@ -305,6 +305,65 @@ pub fn list_first_lp_ids_for_project(
     pairs.collect::<rusqlite::Result<std::collections::HashMap<_, _>>>()
 }
 
+/// Returns Map<stack_id, lp_id> where lp_id is the lowest LP id in the stack
+/// that has a thumbnail on disk. Falls back to MIN(lp.id) if none have thumbnails
+/// (caller can then check if that id is in existing_thumbs → gets None correctly).
+pub fn list_best_lp_id_for_thumbnail_per_stack(
+    conn: &Connection,
+    project_id: i64,
+    existing_thumbs: &std::collections::HashSet<i64>,
+) -> rusqlite::Result<std::collections::HashMap<i64, i64>> {
+    // Get all (stack_id, lp_id) pairs ordered by lp_id ASC
+    let mut stmt = conn.prepare(
+        "SELECT lp.stack_id, lp.id \
+         FROM logical_photos lp \
+         INNER JOIN stacks s ON lp.stack_id = s.id \
+         WHERE s.project_id = ?1 \
+         ORDER BY lp.stack_id, lp.id ASC",
+    )?;
+    let pairs: Vec<(i64, i64)> = stmt
+        .query_map([project_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+
+    let mut result: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
+    for (stack_id, lp_id) in pairs {
+        let entry = result.entry(stack_id);
+        match entry {
+            std::collections::hash_map::Entry::Vacant(e) => {
+                // First LP for this stack — use it as fallback
+                e.insert(lp_id);
+            }
+            std::collections::hash_map::Entry::Occupied(mut e) => {
+                // If we already have a thumbnail for this stack, keep it
+                // Otherwise prefer an LP that has a thumbnail
+                if !existing_thumbs.contains(e.get()) && existing_thumbs.contains(&lp_id) {
+                    e.insert(lp_id);
+                }
+            }
+        }
+    }
+    Ok(result)
+}
+
+/// Returns all logical_photo ids for a project (one per logical photo, not one per stack).
+/// Used by resume_thumbnails to regenerate thumbnails for ALL logical photos.
+pub fn list_all_lp_ids_for_project(
+    conn: &Connection,
+    project_id: i64,
+) -> rusqlite::Result<Vec<i64>> {
+    let mut stmt = conn.prepare(
+        "SELECT lp.id \
+         FROM logical_photos lp \
+         INNER JOIN stacks s ON lp.stack_id = s.id \
+         WHERE s.project_id = ?1 \
+         ORDER BY lp.id ASC",
+    )?;
+    let result = stmt
+        .query_map([project_id], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>();
+    result
+}
+
 /// Return (lp_id, source_path, PhotoFormat, Option<orientation>) for each
 /// logical photo id in lp_ids. Used by resume_thumbnails to find what to generate.
 #[allow(clippy::type_complexity)]
@@ -312,7 +371,14 @@ pub fn list_representative_photos_for_lp_ids(
     conn: &Connection,
     project_id: i64,
     lp_ids: &[i64],
-) -> rusqlite::Result<Vec<(i64, std::path::PathBuf, crate::photos::model::PhotoFormat, Option<u16>)>> {
+) -> rusqlite::Result<
+    Vec<(
+        i64,
+        std::path::PathBuf,
+        crate::photos::model::PhotoFormat,
+        Option<u16>,
+    )>,
+> {
     if lp_ids.is_empty() {
         return Ok(vec![]);
     }
@@ -395,7 +461,8 @@ mod tests {
             Some(1u16),
             None,
             None,
-        ).unwrap();
+        )
+        .unwrap();
 
         // Insert logical_photo
         let lp_id = insert_logical_photo(&conn, project_id, photo_id, stack_id).unwrap();
@@ -427,5 +494,58 @@ mod tests {
         // Call with empty lp_ids slice — must not produce SQL error from IN ()
         let result = list_representative_photos_for_lp_ids(&conn, 1, &[]).unwrap();
         assert_eq!(result, vec![], "empty input must return empty vec");
+    }
+
+    /// BT-00: Regression guard for COUNT(DISTINCT lp.id).
+    /// A stack containing one RAW+JPEG pair (two photos, one logical_photo row) must report
+    /// logical_photo_count = 1, not 2.  Before the fix the LEFT JOIN to `photos` inflated the
+    /// count: COUNT(lp.id) counted both joined rows even though lp.id was the same value twice.
+    #[test]
+    fn test_logical_photo_count_is_one_for_raw_jpeg_pair() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO projects (name, slug, created_at) VALUES ('P', 'p', '2024-01-01T00:00:00Z')",
+            [],
+        ).unwrap();
+        let project_id: i64 = conn.last_insert_rowid();
+        let stack_id = insert_stack(&conn, project_id).unwrap();
+
+        // Two physical files (RAW + JPEG) — one logical photo
+        let raw_id = insert_photo(
+            &conn,
+            "/img/shot.ARW",
+            "raw",
+            Some("2024-01-01T10:00:00Z"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let jpg_id = insert_photo(
+            &conn,
+            "/img/shot.JPG",
+            "jpeg",
+            Some("2024-01-01T10:00:00Z"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        // One logical_photo row (representative = RAW)
+        let lp_id = insert_logical_photo(&conn, project_id, raw_id, stack_id).unwrap();
+        set_logical_photo_id(&conn, raw_id, lp_id).unwrap();
+        set_logical_photo_id(&conn, jpg_id, lp_id).unwrap();
+
+        let summaries = list_stacks_summary(&conn, project_id).unwrap();
+        assert_eq!(summaries.len(), 1, "should be exactly one stack");
+        assert_eq!(
+            summaries[0].logical_photo_count, 1,
+            "RAW+JPEG pair must count as 1 logical photo, not 2"
+        );
+        assert!(summaries[0].has_raw, "has_raw must be true");
+        assert!(summaries[0].has_jpeg, "has_jpeg must be true");
     }
 }

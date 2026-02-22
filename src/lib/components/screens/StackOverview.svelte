@@ -7,6 +7,7 @@
     addSourceFolder, removeSourceFolder, listSourceFolders,
     startIndexing, cancelIndexing, pauseIndexing, resumeIndexing,
     getIndexingStatus, listStacks, getThumbnailUrl, resumeThumbnails,
+    getBurstGap, setBurstGap, restack,
     type SourceFolder, type IndexingStatus, type StackSummary
   } from '$lib/api/index.js'
 
@@ -27,6 +28,9 @@
   let pollInterval: ReturnType<typeof setInterval> | null = null
   let showErrors = $state(false)
   let unlistenThumbnail: (() => void) | null = null
+  let showBurstPanel = $state(false)
+  let burstGapInput = $state(3)
+  let burstRestacking = $state(false)
 
   // Load initial state
   onMount(async () => {
@@ -161,7 +165,39 @@
     await resumeIndexing()
   }
 
+  async function openBurstPanel() {
+    try {
+      burstGapInput = await getBurstGap()
+    } catch (e) {
+      console.warn('getBurstGap failed, using default:', e)
+      burstGapInput = 3
+    }
+    showBurstPanel = true
+  }
+
+  async function saveBurstGap() {
+    burstRestacking = true
+    try {
+      await setBurstGap(Number(burstGapInput))
+      await restack(projectSlug)
+      stacks = await listStacks(projectSlug)
+      showBurstPanel = false
+      // Thumbnails were cleared by restack — regenerate immediately so user
+      // doesn't see blank cards and doesn't get re-triggered on next app open.
+      if (stacks.some(s => s.thumbnail_path === null)) {
+        await handleResumeThumbnails()
+      }
+    } finally {
+      burstRestacking = false
+    }
+  }
+
+  function cancelBurstPanel() {
+    showBurstPanel = false
+  }
+
   function handleKey(e: KeyboardEvent) {
+    if (e.key.toLowerCase() === 'b' && e.ctrlKey) { e.preventDefault(); openBurstPanel(); return }
     if (e.key === 'Escape') { back(); return }
     if (e.key === 'i' && sourceFolders.length > 0 && !status.running) { handleIndex(); return }
     if (e.key === 'r' && stacks.length > 0 && !status.running) { handleIndex(); return }
@@ -504,4 +540,38 @@
     {/if}
 
   </main>
+
+  {#if showBurstPanel}
+    <div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+      <div class="bg-zinc-900 border border-zinc-700 rounded-lg p-6 w-80 shadow-xl">
+        <h2 class="text-white font-semibold mb-4">Burst gap</h2>
+        {#if burstRestacking}
+          <p class="text-zinc-400 text-sm mb-4">Recalculating stacks…</p>
+        {:else}
+          <label class="block text-zinc-400 text-sm mb-2">
+            Gap between bursts (seconds)
+          </label>
+          <input
+            type="number"
+            min="1"
+            max="300"
+            value={burstGapInput}
+            oninput={(e) => { burstGapInput = Number((e.target as HTMLInputElement).value) }}
+            onchange={(e) => { burstGapInput = Number((e.target as HTMLInputElement).value) }}
+            class="w-full bg-zinc-800 text-white border border-zinc-600 rounded px-3 py-2 mb-4"
+          />
+          <div class="flex gap-2 justify-end">
+            <button
+              onclick={cancelBurstPanel}
+              class="px-4 py-2 text-sm text-zinc-400 hover:text-white"
+            >Cancel</button>
+            <button
+              onclick={saveBurstGap}
+              class="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-500 text-white rounded"
+            >Save</button>
+          </div>
+        {/if}
+      </div>
+    </div>
+  {/if}
 </div>

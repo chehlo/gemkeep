@@ -35,6 +35,9 @@ pub fn run() {
             commands::import::list_stacks,
             commands::import::list_logical_photos,
             commands::import::resume_thumbnails,
+            commands::import::get_burst_gap,
+            commands::import::set_burst_gap,
+            commands::import::restack,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

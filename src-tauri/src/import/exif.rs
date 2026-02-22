@@ -330,23 +330,23 @@ mod tests {
         let mut tiff: Vec<u8> = Vec::new();
 
         // TIFF header (8 bytes)
-        tiff.extend_from_slice(b"II");                    // little-endian
-        tiff.extend_from_slice(&[0x2A, 0x00]);            // TIFF magic
-        tiff.extend_from_slice(&8u32.to_le_bytes());      // IFD0 at offset 8
+        tiff.extend_from_slice(b"II"); // little-endian
+        tiff.extend_from_slice(&[0x2A, 0x00]); // TIFF magic
+        tiff.extend_from_slice(&8u32.to_le_bytes()); // IFD0 at offset 8
 
         // IFD0: 2 entries (tags in ascending order: 0x0112 < 0x8769)
-        tiff.extend_from_slice(&2u16.to_le_bytes());      // entry count
+        tiff.extend_from_slice(&2u16.to_le_bytes()); // entry count
 
         // IFD0 entry 0: Orientation (0x0112), SHORT (3), count=1, inline value
         tiff.extend_from_slice(&0x0112u16.to_le_bytes()); // tag
-        tiff.extend_from_slice(&3u16.to_le_bytes());       // type SHORT
-        tiff.extend_from_slice(&1u32.to_le_bytes());       // count
+        tiff.extend_from_slice(&3u16.to_le_bytes()); // type SHORT
+        tiff.extend_from_slice(&1u32.to_le_bytes()); // count
         tiff.extend_from_slice(&(orientation as u32).to_le_bytes()); // value (inline, padded to 4)
 
         // IFD0 entry 1: ExifIFD pointer (0x8769), LONG (4), count=1, offset to ExifIFD
         tiff.extend_from_slice(&0x8769u16.to_le_bytes()); // tag
-        tiff.extend_from_slice(&4u16.to_le_bytes());       // type LONG
-        tiff.extend_from_slice(&1u32.to_le_bytes());       // count
+        tiff.extend_from_slice(&4u16.to_le_bytes()); // type LONG
+        tiff.extend_from_slice(&1u32.to_le_bytes()); // count
         tiff.extend_from_slice(&exif_ifd_offset.to_le_bytes()); // ExifIFD offset
 
         // IFD0 next-IFD pointer
@@ -360,8 +360,8 @@ mod tests {
 
         // ExifIFD entry 0: DateTimeOriginal (0x9003), ASCII (2), count=20, offset to value
         tiff.extend_from_slice(&0x9003u16.to_le_bytes()); // tag
-        tiff.extend_from_slice(&2u16.to_le_bytes());       // type ASCII
-        tiff.extend_from_slice(&20u32.to_le_bytes());      // count (19 chars + null)
+        tiff.extend_from_slice(&2u16.to_le_bytes()); // type ASCII
+        tiff.extend_from_slice(&20u32.to_le_bytes()); // count (19 chars + null)
         tiff.extend_from_slice(&dt_value_offset.to_le_bytes()); // offset to value
 
         // ExifIFD next-IFD pointer
@@ -385,10 +385,7 @@ mod tests {
         jpeg.extend_from_slice(&app1_data);
         jpeg.extend_from_slice(&[0xFF, 0xD9]); // EOI
 
-        let f = tempfile::Builder::new()
-            .suffix(".jpg")
-            .tempfile()
-            .unwrap();
+        let f = tempfile::Builder::new().suffix(".jpg").tempfile().unwrap();
         std::fs::write(f.path(), &jpeg).unwrap();
         f
     }
@@ -455,8 +452,8 @@ mod tests {
         let mut tiff: Vec<u8> = Vec::new();
 
         // TIFF header (8 bytes)
-        tiff.extend_from_slice(b"II");              // little-endian
-        tiff.extend_from_slice(&[0x2A, 0x00]);      // TIFF magic 42
+        tiff.extend_from_slice(b"II"); // little-endian
+        tiff.extend_from_slice(&[0x2A, 0x00]); // TIFF magic 42
         tiff.extend_from_slice(&8u32.to_le_bytes()); // IFD0 at offset 8
 
         // IFD0: 3 entries (tags in ascending order: 0x010F < 0x0110 < 0x0112)
@@ -464,33 +461,41 @@ mod tests {
 
         // Entry 0: Make (0x010F), ASCII (type=2), count=6, offset=50
         tiff.extend_from_slice(&0x010Fu16.to_le_bytes()); // tag
-        tiff.extend_from_slice(&2u16.to_le_bytes());       // type ASCII
-        tiff.extend_from_slice(&6u32.to_le_bytes());       // count (includes null)
+        tiff.extend_from_slice(&2u16.to_le_bytes()); // type ASCII
+        tiff.extend_from_slice(&6u32.to_le_bytes()); // count (includes null)
         tiff.extend_from_slice(&make_offset.to_le_bytes()); // offset to value
 
         // Entry 1: Model (0x0110), ASCII (type=2), count=21, offset=56
         tiff.extend_from_slice(&0x0110u16.to_le_bytes()); // tag
-        tiff.extend_from_slice(&2u16.to_le_bytes());       // type ASCII
-        tiff.extend_from_slice(&21u32.to_le_bytes());      // count (includes null)
+        tiff.extend_from_slice(&2u16.to_le_bytes()); // type ASCII
+        tiff.extend_from_slice(&21u32.to_le_bytes()); // count (includes null)
         tiff.extend_from_slice(&model_offset.to_le_bytes()); // offset to value
 
         // Entry 2: Orientation (0x0112), SHORT (type=3), count=1, inline value=1
         tiff.extend_from_slice(&0x0112u16.to_le_bytes()); // tag
-        tiff.extend_from_slice(&3u16.to_le_bytes());       // type SHORT
-        tiff.extend_from_slice(&1u32.to_le_bytes());       // count
-        tiff.extend_from_slice(&1u32.to_le_bytes());       // inline value (orientation=1)
+        tiff.extend_from_slice(&3u16.to_le_bytes()); // type SHORT
+        tiff.extend_from_slice(&1u32.to_le_bytes()); // count
+        tiff.extend_from_slice(&1u32.to_le_bytes()); // inline value (orientation=1)
 
         // IFD0 next-IFD pointer
         tiff.extend_from_slice(&0u32.to_le_bytes());
 
         // Verify we are at offset 50 (value area starts here)
-        assert_eq!(tiff.len(), make_offset as usize, "Make value must start at offset 50");
+        assert_eq!(
+            tiff.len(),
+            make_offset as usize,
+            "Make value must start at offset 50"
+        );
 
         // Make value: "Canon\0" (6 bytes)
         tiff.extend_from_slice(make_str);
 
         // Verify we are at offset 56 (Model value starts here)
-        assert_eq!(tiff.len(), model_offset as usize, "Model value must start at offset 56");
+        assert_eq!(
+            tiff.len(),
+            model_offset as usize,
+            "Model value must start at offset 56"
+        );
 
         // Model value: "Canon EOS 5D Mark IV\0" (21 bytes)
         tiff.extend_from_slice(model_str);
@@ -507,10 +512,7 @@ mod tests {
         jpeg.extend_from_slice(&app1_data);
         jpeg.extend_from_slice(&[0xFF, 0xD9]); // EOI
 
-        let f = tempfile::Builder::new()
-            .suffix(".jpg")
-            .tempfile()
-            .unwrap();
+        let f = tempfile::Builder::new().suffix(".jpg").tempfile().unwrap();
         std::fs::write(f.path(), &jpeg).unwrap();
         f
     }

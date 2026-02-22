@@ -181,7 +181,11 @@ mod tests {
             "lens",
             "logical_photo_id",
         ] {
-            assert!(cols.contains(&col.to_string()), "photos must have column {}", col);
+            assert!(
+                cols.contains(&col.to_string()),
+                "photos must have column {}",
+                col
+            );
         }
 
         // Old v1 columns must be absent:

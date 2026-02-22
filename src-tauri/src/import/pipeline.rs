@@ -374,15 +374,23 @@ pub fn run_pipeline(
             .par_iter()
             .for_each(|(lp_id, path, format, orientation)| {
                 if !cancel.load(Ordering::SeqCst)
-                    && thumbnails::generate_thumbnail(path, format, *lp_id, &cache_dir, *orientation)
-                        .is_some()
+                    && thumbnails::generate_thumbnail(
+                        path,
+                        format,
+                        *lp_id,
+                        &cache_dir,
+                        *orientation,
+                    )
+                    .is_some()
                 {
                     thumbnails_done_counter.fetch_add(1, Ordering::Relaxed);
                     if let Some(handle) = &app_handle {
                         use tauri::Emitter;
                         let _ = handle.emit(
                             "thumbnail-ready",
-                            ThumbnailReadyPayload { logical_photo_id: *lp_id },
+                            ThumbnailReadyPayload {
+                                logical_photo_id: *lp_id,
+                            },
                         );
                     }
                 }
@@ -508,6 +516,178 @@ fn load_existing_scanned_files(conn: &Connection) -> Vec<ScannedFile> {
     files
 }
 
+/// Re-stack all existing photos for a project without re-scanning the filesystem.
+///
+/// This is steps 4-7 of `run_pipeline` in isolation:
+/// - Clears existing stacks and logical_photos (NULLs `logical_photo_id` on all photos)
+/// - Loads all photos for the project from DB
+/// - Re-runs pair detection and burst-stack assignment
+/// - Writes new stacks and logical_photos rows
+///
+/// Does NOT scan the filesystem (steps 1-3) or generate thumbnails (step 8).
+/// Intended for re-stacking after settings changes (e.g. burst gap).
+pub fn restack_from_existing_photos(
+    conn: &Connection,
+    project_id: i64,
+    burst_gap_secs: u64,
+) -> Result<ImportStats, String> {
+    let mut stats = ImportStats::default();
+
+    // Record the global max stack ID before clearing, so we can seed the rowid sequence
+    // above it after the delete (SQLite without AUTOINCREMENT reuses IDs after DELETE).
+    let max_stack_id_before: i64 = conn
+        .query_row("SELECT COALESCE(MAX(id), 0) FROM stacks", [], |row| {
+            row.get(0)
+        })
+        .unwrap_or(0);
+
+    // Clear stacks — this NULLs logical_photo_id on all photos for this project.
+    repository::clear_stacks_and_logical_photos(conn, project_id)
+        .map_err(|e| format!("restack: clear stacks: {}", e))?;
+
+    // Load all photos now that logical_photo_id is NULL.
+    let all_files = load_existing_scanned_files(conn);
+
+    // Pair detection
+    let groups = pairs::detect_pairs(all_files);
+    let pairs_count = groups.iter().filter(|g| g.is_pair).count();
+    stats.pairs_detected = pairs_count;
+    stats.logical_photos = groups.len();
+
+    // Stack assignment
+    let assigned = stacks::assign_stacks_by_burst(groups, burst_gap_secs);
+    let max_stack_idx = assigned
+        .iter()
+        .map(|(_, i)| *i)
+        .max()
+        .map(|m| m + 1)
+        .unwrap_or(0);
+    stats.stacks_generated = max_stack_idx;
+
+    // Pre-create all stack rows.
+    // We insert the first real stack with an explicit ID = max_stack_id_before + 1
+    // so that SQLite's rowid sequence for this table is seeded above the old IDs.
+    // Without AUTOINCREMENT, SQLite reuses rowids after DELETE (starts from 1 again);
+    // by anchoring the first insert above the previous max, all subsequent inserts
+    // (which use max(existing)+1) will also be above the old IDs.
+    let mut stack_id_map: Vec<Option<i64>> = vec![None; max_stack_idx.max(1)];
+    let mut first_stack_inserted = false;
+    for idx in 0..max_stack_idx {
+        let result = if !first_stack_inserted && max_stack_id_before > 0 {
+            let explicit_id = max_stack_id_before + 1;
+            let now = chrono::Utc::now().to_rfc3339();
+            conn.execute(
+                "INSERT INTO stacks (id, project_id, created_at) VALUES (?1, ?2, ?3)",
+                rusqlite::params![explicit_id, project_id, now],
+            )
+            .map(|_| explicit_id)
+        } else {
+            repository::insert_stack(conn, project_id)
+        };
+        first_stack_inserted = true;
+        match result {
+            Ok(id) => {
+                if idx < stack_id_map.len() {
+                    stack_id_map[idx] = Some(id);
+                }
+            }
+            Err(e) => {
+                log_error(&mut stats, format!("restack: insert stack {}: {}", idx, e));
+            }
+        }
+    }
+
+    // Insert logical_photos and link photos
+    for (group, stack_idx) in &assigned {
+        let stack_db_id = match stack_id_map.get(*stack_idx).and_then(|o| *o) {
+            Some(id) => id,
+            None => {
+                log_error(
+                    &mut stats,
+                    format!("restack: no stack id for index {}", stack_idx),
+                );
+                continue;
+            }
+        };
+
+        let representative = group.representative();
+        let representative_id = match insert_scanned_file(conn, representative) {
+            Ok(id) => id,
+            Err(e) => {
+                log_error(
+                    &mut stats,
+                    format!("restack: insert photo {:?}: {}", representative.path, e),
+                );
+                continue;
+            }
+        };
+
+        let lp_id = match repository::insert_logical_photo(
+            conn,
+            project_id,
+            representative_id,
+            stack_db_id,
+        ) {
+            Ok(id) => id,
+            Err(e) => {
+                log_error(&mut stats, format!("restack: insert logical_photo: {}", e));
+                continue;
+            }
+        };
+
+        if let Err(e) = repository::set_logical_photo_id(conn, representative_id, lp_id) {
+            tracing::warn!(
+                "restack: set_logical_photo_id representative {}: {}",
+                representative_id,
+                e
+            );
+        }
+
+        if group.is_pair {
+            let other_opt = group
+                .raw
+                .as_ref()
+                .filter(|f| f.path != representative.path)
+                .or_else(|| {
+                    group
+                        .jpeg
+                        .as_ref()
+                        .filter(|f| f.path != representative.path)
+                });
+
+            if let Some(other) = other_opt {
+                match insert_scanned_file(conn, other) {
+                    Ok(other_id) => {
+                        if let Err(e) = repository::set_logical_photo_id(conn, other_id, lp_id) {
+                            tracing::warn!(
+                                "restack: set_logical_photo_id other {}: {}",
+                                other_id,
+                                e
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        log_error(
+                            &mut stats,
+                            format!("restack: insert paired photo {:?}: {}", other.path, e),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    tracing::info!(
+        "restack: complete — logical_photos={} pairs={} stacks={} errors={}",
+        stats.logical_photos,
+        stats.pairs_detected,
+        stats.stacks_generated,
+        stats.errors,
+    );
+
+    Ok(stats)
+}
+
 #[cfg(test)]
 mod tests {
     use super::ThumbnailReadyPayload;
@@ -518,7 +698,9 @@ mod tests {
         // {"logical_photo_id": 42}. The frontend listen('thumbnail-ready', cb)
         // receives this payload — if the field name changes the JS side silently
         // gets undefined and the progressive refresh stops working.
-        let payload = ThumbnailReadyPayload { logical_photo_id: 42 };
+        let payload = ThumbnailReadyPayload {
+            logical_photo_id: 42,
+        };
         let json = serde_json::to_string(&payload).expect("must serialize");
         assert_eq!(json, r#"{"logical_photo_id":42}"#);
     }

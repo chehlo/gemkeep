@@ -52,6 +52,73 @@ fn write_valid_jpeg(path: &std::path::Path) {
     img.save(path).unwrap();
 }
 
+/// Write a decodable JPEG with an embedded EXIF timestamp.
+/// Combines write_valid_jpeg (real image data) with write_jpeg_with_timestamp
+/// (EXIF APP1 header) so the file can be both decoded by `image::open()` and
+/// have its capture_time extracted by the EXIF reader.
+///
+/// Strategy: encode a real 50×50 image to a buffer, strip the SOI (first 2 bytes),
+/// then prepend: SOI + APP1(EXIF+timestamp) + remaining JPEG data.
+fn write_valid_jpeg_with_timestamp(path: &std::path::Path, datetime_original: &str) {
+    assert_eq!(
+        datetime_original.len(),
+        19,
+        "EXIF datetime must be 'YYYY:MM:DD HH:MM:SS'"
+    );
+    let mut dt_bytes = datetime_original.as_bytes().to_vec();
+    dt_bytes.push(0); // NUL terminator → 20 bytes
+
+    // Build the TIFF/EXIF block (same layout as write_jpeg_with_timestamp)
+    let mut tiff: Vec<u8> = Vec::new();
+    tiff.extend_from_slice(b"II");
+    tiff.extend_from_slice(&[0x2A, 0x00]);
+    tiff.extend_from_slice(&8u32.to_le_bytes());
+    tiff.extend_from_slice(&2u16.to_le_bytes());
+    tiff.extend_from_slice(&0x0112u16.to_le_bytes());
+    tiff.extend_from_slice(&3u16.to_le_bytes());
+    tiff.extend_from_slice(&1u32.to_le_bytes());
+    tiff.extend_from_slice(&1u32.to_le_bytes());
+    tiff.extend_from_slice(&0x8769u16.to_le_bytes());
+    tiff.extend_from_slice(&4u16.to_le_bytes());
+    tiff.extend_from_slice(&1u32.to_le_bytes());
+    tiff.extend_from_slice(&38u32.to_le_bytes());
+    tiff.extend_from_slice(&0u32.to_le_bytes());
+    tiff.extend_from_slice(&1u16.to_le_bytes());
+    tiff.extend_from_slice(&0x9003u16.to_le_bytes());
+    tiff.extend_from_slice(&2u16.to_le_bytes());
+    tiff.extend_from_slice(&20u32.to_le_bytes());
+    tiff.extend_from_slice(&56u32.to_le_bytes());
+    tiff.extend_from_slice(&0u32.to_le_bytes());
+    tiff.extend_from_slice(&dt_bytes);
+
+    let mut app1_data = b"Exif\x00\x00".to_vec();
+    app1_data.extend_from_slice(&tiff);
+    let app1_len = (app1_data.len() + 2) as u16;
+
+    // Encode a real 50×50 image into a buffer
+    let img = image::DynamicImage::new_rgb8(50, 50);
+    let mut jpeg_buf: Vec<u8> = Vec::new();
+    img.write_to(
+        &mut std::io::Cursor::new(&mut jpeg_buf),
+        image::ImageFormat::Jpeg,
+    )
+    .unwrap();
+
+    // jpeg_buf = [FF D8] [FF E0 APP0...] [...image data...]
+    // We want: [FF D8] [FF E1 APP1(EXIF)] [rest of original JPEG after SOI]
+    // Skip the SOI (first 2 bytes FF D8) from the encoded buffer
+    let rest = &jpeg_buf[2..];
+
+    let mut output: Vec<u8> = Vec::new();
+    output.extend_from_slice(&[0xFF, 0xD8]); // SOI
+    output.extend_from_slice(&[0xFF, 0xE1]); // APP1 marker
+    output.extend_from_slice(&app1_len.to_be_bytes());
+    output.extend_from_slice(&app1_data);
+    output.extend_from_slice(rest); // APP0 + scan data + EOI
+
+    std::fs::write(path, &output).unwrap();
+}
+
 /// Write a minimal JPEG to `path` with an APP1/EXIF segment containing
 /// DateTimeOriginal in the ExifIFD sub-IFD (the layout kamadak-exif requires).
 ///
@@ -61,7 +128,11 @@ fn write_valid_jpeg(path: &std::path::Path) {
 ///   38-55: ExifIFD — 1 entry: DateTimeOriginal(0x9003) count=20 offset=56
 ///   56-75: DateTimeOriginal value (19 ASCII chars + NUL)
 fn write_jpeg_with_timestamp(path: &std::path::Path, datetime_original: &str) {
-    assert_eq!(datetime_original.len(), 19, "EXIF datetime must be 'YYYY:MM:DD HH:MM:SS'");
+    assert_eq!(
+        datetime_original.len(),
+        19,
+        "EXIF datetime must be 'YYYY:MM:DD HH:MM:SS'"
+    );
     let mut dt_bytes = datetime_original.as_bytes().to_vec();
     dt_bytes.push(0); // NUL terminator → 20 bytes
 
@@ -260,7 +331,10 @@ fn test_pipeline_thumbnail_path_is_absolute_and_matches_scope() {
 
     // Verify list_stacks_summary produces entries (pipeline persisted stacks)
     let stacks = repository::list_stacks_summary(&conn, project_id).unwrap();
-    assert!(!stacks.is_empty(), "Pipeline must produce at least one stack");
+    assert!(
+        !stacks.is_empty(),
+        "Pipeline must produce at least one stack"
+    );
 
     // Simulate the thumbnail_path construction that list_stacks command does:
     //   cache_dir.join(format!("{}.jpg", lp_id)).to_string_lossy().into_owned()
@@ -384,9 +458,16 @@ fn test_pipeline_partial_errors() {
     std::fs::write(folder.join("corrupt.jpg"), b"this is not a jpeg").unwrap();
 
     pipeline::run_pipeline(
-        &conn, project_id, tmp.path(), vec![folder.clone()],
-        2, make_status(), make_cancel(), make_pause(),
-        None, make_counter(),
+        &conn,
+        project_id,
+        tmp.path(),
+        vec![folder.clone()],
+        2,
+        make_status(),
+        make_cancel(),
+        make_pause(),
+        None,
+        make_counter(),
     );
 
     let stacks = repository::list_stacks_summary(&conn, project_id).unwrap();
@@ -426,7 +507,10 @@ fn test_pipeline_orientation_end_to_end() {
         Some(6),
     );
 
-    assert!(result.is_some(), "thumbnail must be generated for valid source");
+    assert!(
+        result.is_some(),
+        "thumbnail must be generated for valid source"
+    );
     let thumb = cache_dir.join("100.jpg");
     let output = image::open(&thumb).expect("thumbnail must be readable");
 
@@ -434,7 +518,8 @@ fn test_pipeline_orientation_end_to_end() {
         (output.width(), output.height()),
         (256, 256),
         "thumbnail must be 256×256 (resize_to_fill contract), got {}×{}",
-        output.width(), output.height()
+        output.width(),
+        output.height()
     );
 }
 
@@ -520,15 +605,22 @@ fn test_pipeline_stacks_from_exif_timestamps() {
     write_jpeg_with_timestamp(&folder.join("burst_3.jpg"), "2024:03:15 10:00:02");
 
     pipeline::run_pipeline(
-        &conn, project_id, tmp.path(), vec![folder],
+        &conn,
+        project_id,
+        tmp.path(),
+        vec![folder],
         3, // burst_gap_secs — all 3 photos are within this window
-        make_status(), make_cancel(), make_pause(),
-        None, make_counter(),
+        make_status(),
+        make_cancel(),
+        make_pause(),
+        None,
+        make_counter(),
     );
 
     let stacks = repository::list_stacks_summary(&conn, project_id).unwrap();
     assert_eq!(
-        stacks.len(), 1,
+        stacks.len(),
+        1,
         "3 JPEGs with timestamps 1s apart must produce 1 burst stack, got {} stacks",
         stacks.len()
     );
@@ -549,18 +641,25 @@ fn test_pipeline_stacks_gap_splits() {
 
     // 2 photos 60s apart — well beyond the 3s burst window
     write_jpeg_with_timestamp(&folder.join("early.jpg"), "2024:03:15 10:00:00");
-    write_jpeg_with_timestamp(&folder.join("late.jpg"),  "2024:03:15 10:01:00");
+    write_jpeg_with_timestamp(&folder.join("late.jpg"), "2024:03:15 10:01:00");
 
     pipeline::run_pipeline(
-        &conn, project_id, tmp.path(), vec![folder],
+        &conn,
+        project_id,
+        tmp.path(),
+        vec![folder],
         3, // burst_gap_secs
-        make_status(), make_cancel(), make_pause(),
-        None, make_counter(),
+        make_status(),
+        make_cancel(),
+        make_pause(),
+        None,
+        make_counter(),
     );
 
     let stacks = repository::list_stacks_summary(&conn, project_id).unwrap();
     assert_eq!(
-        stacks.len(), 2,
+        stacks.len(),
+        2,
         "2 JPEGs 60s apart must produce 2 separate stacks, got {}",
         stacks.len()
     );
@@ -631,7 +730,8 @@ fn test_thumbnails_done_counter_increments_per_successful_thumbnail() {
     );
 
     assert_eq!(
-        counter.load(Ordering::Relaxed), 3,
+        counter.load(Ordering::Relaxed),
+        3,
         "counter must equal 3 after 3 successful thumbnails, got {}",
         counter.load(Ordering::Relaxed)
     );
@@ -664,7 +764,8 @@ fn test_thumbnails_done_counter_not_incremented_for_failed_thumbnail() {
     );
 
     assert_eq!(
-        counter.load(Ordering::Relaxed), 0,
+        counter.load(Ordering::Relaxed),
+        0,
         "counter must remain 0 when all thumbnails fail, got {}",
         counter.load(Ordering::Relaxed)
     );
@@ -708,14 +809,17 @@ fn test_resume_thumbnails_counter_reflects_existing_thumbnails() {
 
     // Verify 3 thumbnails exist
     let lp_id_map = repository::list_first_lp_ids_for_project(&conn, project_id).unwrap();
-    assert_eq!(lp_id_map.len(), 3, "must have 3 logical photos after pipeline");
+    assert_eq!(
+        lp_id_map.len(),
+        3,
+        "must have 3 logical photos after pipeline"
+    );
 
     // Delete one thumbnail to simulate partial completion
     let lp_ids: Vec<i64> = lp_id_map.into_values().collect();
     let deleted_lp_id = lp_ids[0];
     let thumb_to_delete = cache_dir.join(format!("{}.jpg", deleted_lp_id));
-    std::fs::remove_file(&thumb_to_delete)
-        .expect("thumbnail must exist to delete it");
+    std::fs::remove_file(&thumb_to_delete).expect("thumbnail must exist to delete it");
 
     // BUG TEST: find_missing_thumbnail_targets should return (targets, total_lp_count)
     // but currently only returns Vec. Destructuring as a tuple causes a COMPILE ERROR.
@@ -725,8 +829,15 @@ fn test_resume_thumbnails_counter_reflects_existing_thumbnails() {
             .unwrap();
 
     assert_eq!(targets.len(), 1, "only 1 thumbnail is missing");
-    assert_eq!(total_count, 3, "total_lp_count must be 3, not just missing count");
-    assert_eq!(total_count - targets.len(), 2, "2 thumbnails already existed");
+    assert_eq!(
+        total_count, 3,
+        "total_lp_count must be 3, not just missing count"
+    );
+    assert_eq!(
+        total_count - targets.len(),
+        2,
+        "2 thumbnails already existed"
+    );
 }
 
 #[test]
@@ -776,14 +887,12 @@ fn test_resume_thumbnails_generates_missing_only() {
     // Delete the LAST thumbnail to simulate partial completion
     let deleted_lp_id = lp_ids[2];
     let thumb_to_delete = cache_dir.join(format!("{}.jpg", deleted_lp_id));
-    std::fs::remove_file(&thumb_to_delete)
-        .expect("third thumbnail must exist to delete it");
+    std::fs::remove_file(&thumb_to_delete).expect("third thumbnail must exist to delete it");
 
     // Call the function under test
-    let (missing, _total) = crate::commands::import::find_missing_thumbnail_targets(
-        &conn, project_id, &cache_dir,
-    )
-    .unwrap();
+    let (missing, _total) =
+        crate::commands::import::find_missing_thumbnail_targets(&conn, project_id, &cache_dir)
+            .unwrap();
 
     // Only 1 thumbnail should be missing
     assert_eq!(missing.len(), 1, "exactly 1 thumbnail is missing");
@@ -834,10 +943,9 @@ fn test_resume_thumbnails_noop_when_all_thumbnails_present() {
     );
 
     // All thumbnails present → result must be empty
-    let (missing, _total) = crate::commands::import::find_missing_thumbnail_targets(
-        &conn, project_id, &cache_dir,
-    )
-    .unwrap();
+    let (missing, _total) =
+        crate::commands::import::find_missing_thumbnail_targets(&conn, project_id, &cache_dir)
+            .unwrap();
 
     assert!(
         missing.is_empty(),
@@ -863,15 +971,540 @@ fn test_resume_thumbnails_noop_when_no_logical_photos() {
     let cache_dir = tmp.path().join("cache").join("thumbnails");
     // cache_dir intentionally does NOT exist
 
-    let (missing, _total) = crate::commands::import::find_missing_thumbnail_targets(
-        &conn, project_id, &cache_dir,
-    )
-    .unwrap();
+    let (missing, _total) =
+        crate::commands::import::find_missing_thumbnail_targets(&conn, project_id, &cache_dir)
+            .unwrap();
 
     assert!(
         missing.is_empty(),
         "find_missing_thumbnail_targets must return empty vec when no logical photos exist, got {} entries",
         missing.len()
+    );
+}
+
+// ── TH: thumbnail coverage tests ─────────────────────────────────────────────
+
+#[test]
+fn test_pipeline_generates_thumbnail_for_each_lp_in_stack() {
+    // TH-A1: WHY (Rule 1) — Pipeline step 5 generates thumbnails for each LP representative.
+    // A 3-LP burst stack must produce 3 thumbnail files (one per LP id), not just 1.
+    // If this fails with count=1, the thumbnail step is only generating for the first LP.
+    let (conn, tmp, project_id) = setup();
+    let folder = tmp.path().join("burst_thumbs");
+    std::fs::create_dir_all(&folder).unwrap();
+
+    // 3 real decodable JPEGs with timestamps 1s apart → 1 burst stack, 3 LPs
+    // write_valid_jpeg_with_timestamp produces files decodable by image::open()
+    // AND with EXIF DateTimeOriginal so the burst-stacking algorithm groups them.
+    write_valid_jpeg_with_timestamp(&folder.join("burst_a.jpg"), "2024:05:01 12:00:00");
+    write_valid_jpeg_with_timestamp(&folder.join("burst_b.jpg"), "2024:05:01 12:00:01");
+    write_valid_jpeg_with_timestamp(&folder.join("burst_c.jpg"), "2024:05:01 12:00:02");
+
+    let cache_dir = tmp.path().join("cache").join("thumbnails");
+
+    pipeline::run_pipeline(
+        &conn,
+        project_id,
+        tmp.path(),
+        vec![folder],
+        10, // burst_gap_secs=10 → all 3 within window → 1 stack
+        make_status(),
+        make_cancel(),
+        make_pause(),
+        None,
+        make_counter(),
+    );
+
+    // Verify 1 burst stack with 3 LPs
+    let stacks = repository::list_stacks_summary(&conn, project_id).unwrap();
+    assert_eq!(
+        stacks.len(),
+        1,
+        "3 JPEGs 1s apart with gap=10 must produce 1 burst stack, got {}",
+        stacks.len()
+    );
+    assert_eq!(
+        stacks[0].logical_photo_count, 3,
+        "burst stack must have 3 logical photos, got {}",
+        stacks[0].logical_photo_count
+    );
+
+    // Rule 1: count actual thumbnail files on disk — must be 3, one per LP
+    let thumb_files: Vec<_> = std::fs::read_dir(&cache_dir)
+        .expect("cache_dir must exist after pipeline")
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.file_name()
+                .to_str()
+                .map(|s| s.ends_with(".jpg"))
+                .unwrap_or(false)
+        })
+        .collect();
+
+    assert_eq!(
+        thumb_files.len(),
+        3,
+        "pipeline must generate 1 thumbnail per LP — expected 3 .jpg files in cache_dir, got {}",
+        thumb_files.len()
+    );
+}
+
+#[test]
+fn test_list_stacks_returns_non_null_when_any_lp_has_thumbnail() {
+    // TH-B1: WHY — list_stacks uses list_first_lp_ids_for_project (MIN(lp.id)) to find
+    // which thumbnail file to show. If the FIRST LP's thumbnail is missing but a
+    // LATER LP's thumbnail exists, the current code returns null (thumbnail_path=None).
+    // This causes spurious resumeThumbnails() calls on every app open (re-trigger bug).
+    //
+    // This test will FAIL because list_first_lp_ids_for_project only checks MIN(lp.id).
+    // After we delete the first LP's thumbnail file, the current logic finds no match
+    // and returns None, even though lp_id[1].jpg and lp_id[2].jpg still exist.
+    let (conn, tmp, project_id) = setup();
+    let folder = tmp.path().join("burst_b1");
+    std::fs::create_dir_all(&folder).unwrap();
+
+    // 3 real decodable JPEGs close together → 1 burst stack, 3 LPs
+    write_valid_jpeg_with_timestamp(&folder.join("b1_a.jpg"), "2024:05:01 14:00:00");
+    write_valid_jpeg_with_timestamp(&folder.join("b1_b.jpg"), "2024:05:01 14:00:01");
+    write_valid_jpeg_with_timestamp(&folder.join("b1_c.jpg"), "2024:05:01 14:00:02");
+
+    let cache_dir = tmp.path().join("cache").join("thumbnails");
+
+    pipeline::run_pipeline(
+        &conn,
+        project_id,
+        tmp.path(),
+        vec![folder],
+        10,
+        make_status(),
+        make_cancel(),
+        make_pause(),
+        None,
+        make_counter(),
+    );
+
+    // Verify we have 1 stack with 3 LPs
+    let stacks = repository::list_stacks_summary(&conn, project_id).unwrap();
+    assert_eq!(stacks.len(), 1, "must have 1 burst stack");
+    assert_eq!(stacks[0].logical_photo_count, 3, "stack must have 3 LPs");
+    let stack_id = stacks[0].stack_id;
+
+    // Get LP ids for this stack, sorted ascending (MIN is first)
+    let mut lp_ids: Vec<i64> = conn
+        .prepare("SELECT id FROM logical_photos WHERE stack_id = ?1 ORDER BY id ASC")
+        .unwrap()
+        .query_map([stack_id], |row| row.get(0))
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect();
+    lp_ids.sort();
+    assert_eq!(lp_ids.len(), 3, "must have 3 LP ids");
+
+    // Delete the FIRST LP's thumbnail (the one MIN(lp.id) would select)
+    let first_lp_thumb = cache_dir.join(format!("{}.jpg", lp_ids[0]));
+    assert!(
+        first_lp_thumb.exists(),
+        "first LP thumbnail must exist before deletion: {}",
+        first_lp_thumb.display()
+    );
+    std::fs::remove_file(&first_lp_thumb).expect("must be able to delete first LP thumbnail");
+
+    // Verify 2nd and 3rd LP thumbnails still exist
+    assert!(
+        cache_dir.join(format!("{}.jpg", lp_ids[1])).exists(),
+        "second LP thumbnail must still exist"
+    );
+    assert!(
+        cache_dir.join(format!("{}.jpg", lp_ids[2])).exists(),
+        "third LP thumbnail must still exist"
+    );
+
+    // Replicate the fixed logic from the list_stacks command:
+    //   1. Build existing_thumbs set from readdir
+    //   2. Get best lp_id per stack from list_best_lp_id_for_thumbnail_per_stack
+    //      (picks lowest LP id that has a thumbnail, falls back to MIN if none do)
+    //   3. For each stack, check if lp_ids[stack_id] is in existing_thumbs
+    let existing_thumbs: std::collections::HashSet<i64> = std::fs::read_dir(&cache_dir)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            e.file_name()
+                .to_str()
+                .and_then(|s| s.strip_suffix(".jpg"))
+                .and_then(|s| s.parse::<i64>().ok())
+        })
+        .collect();
+
+    let lp_id_map = repository::list_best_lp_id_for_thumbnail_per_stack(
+        &conn,
+        project_id,
+        &existing_thumbs,
+    )
+    .unwrap();
+
+    // The fixed list_stacks picks an LP that has a thumbnail
+    let best_lp_id = *lp_id_map.get(&stack_id).unwrap();
+    let current_thumbnail_path: Option<String> = if existing_thumbs.contains(&best_lp_id) {
+        Some(
+            cache_dir
+                .join(format!("{}.jpg", best_lp_id))
+                .to_string_lossy()
+                .into_owned(),
+        )
+    } else {
+        None
+    };
+
+    // TH-B1: After the fix, list_stacks returns Some(...) because it finds lp_ids[1]
+    // or lp_ids[2] which still have thumbnails, even though lp_ids[0] was deleted.
+    assert!(
+        current_thumbnail_path.is_some(),
+        "TH-B1: list_stacks should return non-null when any LP has a thumbnail. \
+        Stack {} has LPs {:?}, first LP {} thumbnail deleted, \
+        but LPs {} and {} still have thumbnails. \
+        best_lp_id = {}, current_thumbnail_path = {:?}",
+        stack_id,
+        lp_ids,
+        lp_ids[0],
+        lp_ids[1],
+        lp_ids[2],
+        best_lp_id,
+        current_thumbnail_path
+    );
+}
+
+#[test]
+fn test_list_stacks_returns_null_when_no_lp_has_thumbnail() {
+    // TH-B2: When ALL thumbnails are deleted, list_stacks must return None for all stacks.
+    // This verifies the baseline behavior (no thumbnails = no thumbnail_path).
+    let (conn, tmp, project_id) = setup();
+    let folder = tmp.path().join("burst_b2");
+    std::fs::create_dir_all(&folder).unwrap();
+
+    write_valid_jpeg_with_timestamp(&folder.join("b2_a.jpg"), "2024:05:01 15:00:00");
+    write_valid_jpeg_with_timestamp(&folder.join("b2_b.jpg"), "2024:05:01 15:00:01");
+
+    let cache_dir = tmp.path().join("cache").join("thumbnails");
+
+    pipeline::run_pipeline(
+        &conn,
+        project_id,
+        tmp.path(),
+        vec![folder],
+        10,
+        make_status(),
+        make_cancel(),
+        make_pause(),
+        None,
+        make_counter(),
+    );
+
+    let stacks = repository::list_stacks_summary(&conn, project_id).unwrap();
+    assert_eq!(stacks.len(), 1, "must have 1 burst stack");
+
+    // Delete ALL thumbnail files (simulating restack clearing thumbnails)
+    std::fs::remove_dir_all(&cache_dir).expect("cache_dir must exist");
+    std::fs::create_dir_all(&cache_dir).expect("must recreate cache_dir");
+
+    // Replicate list_stacks logic: no files → no thumbnails
+    let lp_id_map = repository::list_first_lp_ids_for_project(&conn, project_id).unwrap();
+    let existing_thumbs: std::collections::HashSet<i64> = std::fs::read_dir(&cache_dir)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            e.file_name()
+                .to_str()
+                .and_then(|s| s.strip_suffix(".jpg"))
+                .and_then(|s| s.parse::<i64>().ok())
+        })
+        .collect();
+
+    for summary in &stacks {
+        let thumbnail_path: Option<String> =
+            if let Some(&lp_id) = lp_id_map.get(&summary.stack_id) {
+                if existing_thumbs.contains(&lp_id) {
+                    Some(
+                        cache_dir
+                            .join(format!("{}.jpg", lp_id))
+                            .to_string_lossy()
+                            .into_owned(),
+                    )
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+        assert!(
+            thumbnail_path.is_none(),
+            "TH-B2: list_stacks must return null thumbnail_path when all thumbnails deleted, \
+            got {:?} for stack {}",
+            thumbnail_path,
+            summary.stack_id
+        );
+    }
+}
+
+#[test]
+fn test_resume_thumbnails_regenerates_all_lps_in_multi_lp_stack() {
+    // TH-C1: WHY — find_missing_thumbnail_targets uses list_first_lp_ids_for_project
+    // which only returns MIN(lp.id) per stack. After restack clears all thumbnails,
+    // a 3-LP stack has 3 missing thumbnails but the function only reports 1 (the first).
+    // LPs 2 and 3 never get thumbnails regenerated.
+    //
+    // This test will FAIL because find_missing_thumbnail_targets returns 1 target,
+    // not 3. The fix requires tracking ALL lp_ids per stack (not just MIN).
+    let (conn, tmp, project_id) = setup();
+    let folder = tmp.path().join("burst_c1");
+    std::fs::create_dir_all(&folder).unwrap();
+
+    // 3 real decodable JPEGs close together → 1 burst stack, 3 LPs
+    write_valid_jpeg_with_timestamp(&folder.join("c1_a.jpg"), "2024:05:01 16:00:00");
+    write_valid_jpeg_with_timestamp(&folder.join("c1_b.jpg"), "2024:05:01 16:00:01");
+    write_valid_jpeg_with_timestamp(&folder.join("c1_c.jpg"), "2024:05:01 16:00:02");
+
+    let cache_dir = tmp.path().join("cache").join("thumbnails");
+
+    pipeline::run_pipeline(
+        &conn,
+        project_id,
+        tmp.path(),
+        vec![folder],
+        10, // burst_gap_secs=10 → 1 stack with 3 LPs
+        make_status(),
+        make_cancel(),
+        make_pause(),
+        None,
+        make_counter(),
+    );
+
+    // Verify 3 thumbnail files exist after pipeline
+    let stacks = repository::list_stacks_summary(&conn, project_id).unwrap();
+    assert_eq!(stacks.len(), 1, "must have 1 burst stack");
+    assert_eq!(
+        stacks[0].logical_photo_count, 3,
+        "stack must have 3 LPs"
+    );
+
+    let thumb_count_before = std::fs::read_dir(&cache_dir)
+        .expect("cache_dir must exist")
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.file_name()
+                .to_str()
+                .map(|s| s.ends_with(".jpg"))
+                .unwrap_or(false)
+        })
+        .count();
+    assert_eq!(
+        thumb_count_before, 3,
+        "pipeline must generate 3 thumbnails before simulating restack"
+    );
+
+    // Simulate restack clearing thumbnails — delete ALL thumbnails
+    std::fs::remove_dir_all(&cache_dir).expect("cache_dir must exist");
+    std::fs::create_dir_all(&cache_dir).expect("must recreate empty cache_dir");
+
+    // Call find_missing_thumbnail_targets — it should return ALL 3 LPs as missing
+    let (targets, total_count) =
+        crate::commands::import::find_missing_thumbnail_targets(&conn, project_id, &cache_dir)
+            .unwrap();
+
+    // TH-C1: Currently find_missing_thumbnail_targets uses list_first_lp_ids_for_project
+    // which only returns 1 lp_id per stack (MIN). So targets.len() == 1, not 3.
+    // The fix: use a query that returns ALL lp_ids per stack, not just MIN.
+    assert_eq!(
+        total_count, 3,
+        "TH-C1: total_count must be 3 (all LPs in the project)"
+    );
+    assert_eq!(
+        targets.len(),
+        3,
+        "TH-C1: after restack clears all thumbnails, find_missing_thumbnail_targets \
+        must report all 3 LPs as missing targets — currently FAILS because \
+        list_first_lp_ids_for_project only tracks MIN(lp.id) per stack, \
+        so only 1 target is returned instead of 3. \
+        Got {} targets, total_count={}",
+        targets.len(),
+        total_count
+    );
+}
+
+#[test]
+fn test_resume_thumbnails_skips_stacks_where_thumbnail_exists() {
+    // TH-C2: When all thumbnails exist, find_missing_thumbnail_targets returns empty Vec.
+    // This is the baseline "nothing to do" case.
+    let (conn, tmp, project_id) = setup();
+    let folder = tmp.path().join("burst_c2");
+    std::fs::create_dir_all(&folder).unwrap();
+
+    // 2 real decodable JPEGs with timestamps → 1 burst stack, 2 LPs
+    write_valid_jpeg_with_timestamp(&folder.join("c2_a.jpg"), "2024:05:01 17:00:00");
+    write_valid_jpeg_with_timestamp(&folder.join("c2_b.jpg"), "2024:05:01 17:00:01");
+
+    let cache_dir = tmp.path().join("cache").join("thumbnails");
+
+    pipeline::run_pipeline(
+        &conn,
+        project_id,
+        tmp.path(),
+        vec![folder],
+        10, // burst_gap_secs=10 → 1 stack with 2 LPs
+        make_status(),
+        make_cancel(),
+        make_pause(),
+        None,
+        make_counter(),
+    );
+
+    let stacks = repository::list_stacks_summary(&conn, project_id).unwrap();
+    assert_eq!(stacks.len(), 1, "must have 1 burst stack");
+    assert_eq!(
+        stacks[0].logical_photo_count, 2,
+        "stack must have 2 LPs"
+    );
+
+    // All thumbnails present → targets must be empty
+    let (targets, _total_count) =
+        crate::commands::import::find_missing_thumbnail_targets(&conn, project_id, &cache_dir)
+            .unwrap();
+
+    assert!(
+        targets.is_empty(),
+        "TH-C2: find_missing_thumbnail_targets must return empty when all thumbnails exist, \
+        got {} targets",
+        targets.len()
+    );
+}
+
+// ── Sprint 3 / BT: restack_from_existing_photos tests ────────────────────────
+
+#[test]
+fn test_restack_preserves_all_logical_photos() {
+    // BT-03: WHY — Re-stacking must not lose photos. Same count in, same count out.
+    // Calls pipeline::restack_from_existing_photos() which does NOT exist yet.
+    // This test must FAIL (compile error) until the function is implemented.
+    let (conn, tmp, project_id) = setup();
+    let folder = tmp.path().join("photos");
+    std::fs::create_dir_all(&folder).unwrap();
+
+    // Create 5 JPEG files
+    write_valid_jpeg(&folder.join("img_001.jpg"));
+    write_valid_jpeg(&folder.join("img_002.jpg"));
+    write_valid_jpeg(&folder.join("img_003.jpg"));
+    write_valid_jpeg(&folder.join("img_004.jpg"));
+    write_valid_jpeg(&folder.join("img_005.jpg"));
+
+    // Run pipeline once to populate DB (5 logical_photos)
+    pipeline::run_pipeline(
+        &conn,
+        project_id,
+        tmp.path(),
+        vec![folder],
+        3,
+        make_status(),
+        make_cancel(),
+        make_pause(),
+        None,
+        make_counter(),
+    );
+
+    // Confirm 5 logical_photos exist after initial import
+    let initial_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM logical_photos WHERE project_id = ?1",
+            [project_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        initial_count, 5,
+        "pipeline must produce 5 logical_photos before restack"
+    );
+
+    // Call the NOT-YET-EXISTING function — large gap merges all into 1 stack
+    let _stats = pipeline::restack_from_existing_photos(&conn, project_id, 60u64)
+        .expect("restack_from_existing_photos must succeed");
+
+    // Verify: no photos lost — count must still be 5
+    let after_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM logical_photos WHERE project_id = ?1",
+            [project_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        after_count, 5,
+        "restack must not lose photos: expected 5 logical_photos, got {}",
+        after_count
+    );
+}
+
+#[test]
+fn test_restack_clears_and_rebuilds_stacks() {
+    // BT-04: WHY — Old stack IDs must not persist. Stacks are cleared and rebuilt with new IDs.
+    // Calls pipeline::restack_from_existing_photos() which does NOT exist yet.
+    // This test must FAIL (compile error) until the function is implemented.
+    let (conn, tmp, project_id) = setup();
+    let folder = tmp.path().join("photos");
+    std::fs::create_dir_all(&folder).unwrap();
+
+    // Create 3 JPEG files
+    write_valid_jpeg(&folder.join("img_001.jpg"));
+    write_valid_jpeg(&folder.join("img_002.jpg"));
+    write_valid_jpeg(&folder.join("img_003.jpg"));
+
+    // Run pipeline once to populate DB
+    pipeline::run_pipeline(
+        &conn,
+        project_id,
+        tmp.path(),
+        vec![folder],
+        3,
+        make_status(),
+        make_cancel(),
+        make_pause(),
+        None,
+        make_counter(),
+    );
+
+    // Record old stack IDs from list_stacks_summary
+    let old_stacks = repository::list_stacks_summary(&conn, project_id).unwrap();
+    assert!(
+        !old_stacks.is_empty(),
+        "pipeline must produce at least 1 stack before restack"
+    );
+    let old_stack_ids: std::collections::HashSet<i64> =
+        old_stacks.iter().map(|s| s.stack_id).collect();
+
+    // Call the NOT-YET-EXISTING function — large gap to force all into 1 stack
+    let _stats = pipeline::restack_from_existing_photos(&conn, project_id, 60u64)
+        .expect("restack_from_existing_photos must succeed");
+
+    // Get new stack IDs after restack
+    let new_stacks = repository::list_stacks_summary(&conn, project_id).unwrap();
+    let new_stack_ids: std::collections::HashSet<i64> =
+        new_stacks.iter().map(|s| s.stack_id).collect();
+
+    // Assert: none of the old stack IDs appear in the new set
+    let overlap: std::collections::HashSet<i64> = old_stack_ids
+        .intersection(&new_stack_ids)
+        .copied()
+        .collect();
+    assert!(
+        overlap.is_empty(),
+        "restack must clear old stack IDs — found overlapping IDs: {:?}",
+        overlap
+    );
+
+    // Assert: new stacks exist (at least 1)
+    assert!(
+        !new_stack_ids.is_empty(),
+        "restack must produce at least 1 new stack"
     );
 }
 
@@ -910,10 +1543,9 @@ fn test_resume_thumbnails_skips_thumbnails_for_deleted_source() {
     std::fs::remove_file(&src2).expect("src2 must exist");
 
     // Thumbnails still exist → no entries are "missing"
-    let (missing, _total) = crate::commands::import::find_missing_thumbnail_targets(
-        &conn, project_id, &cache_dir,
-    )
-    .unwrap();
+    let (missing, _total) =
+        crate::commands::import::find_missing_thumbnail_targets(&conn, project_id, &cache_dir)
+            .unwrap();
 
     assert!(
         missing.is_empty(),

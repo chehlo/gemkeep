@@ -6,7 +6,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::commands::import::*;
+    use crate::commands::import::{get_burst_gap, set_burst_gap, *};
     use crate::commands::projects::*;
     use crate::state::AppState;
     use tauri::ipc::CallbackFn;
@@ -39,6 +39,8 @@ mod tests {
                 get_indexing_status,
                 list_stacks,
                 list_logical_photos,
+                get_burst_gap,
+                set_burst_gap,
             ])
             .build(mock_context(noop_assets()))
             .unwrap()
@@ -183,7 +185,9 @@ mod tests {
         );
         assert!(list_result.is_ok(), "list_source_folders should succeed");
         let list_val: serde_json::Value = list_result.unwrap().deserialize().unwrap();
-        let folders = list_val.as_array().expect("list_source_folders must return array");
+        let folders = list_val
+            .as_array()
+            .expect("list_source_folders must return array");
         assert_eq!(folders.len(), 1, "should have exactly 1 source folder");
         assert_eq!(
             folders[0]["path"], photo_dir_str,
@@ -299,12 +303,16 @@ mod tests {
         );
         assert!(stacks_result.is_ok(), "list_stacks should succeed");
         let stacks_val: serde_json::Value = stacks_result.unwrap().deserialize().unwrap();
-        let stacks = stacks_val.as_array().expect("list_stacks must return an array");
+        let stacks = stacks_val
+            .as_array()
+            .expect("list_stacks must return an array");
         assert!(
             !stacks.is_empty(),
             "pipeline must have created at least one stack"
         );
-        let stack_id = stacks[0]["stack_id"].as_i64().expect("stack_id must be i64");
+        let stack_id = stacks[0]["stack_id"]
+            .as_i64()
+            .expect("stack_id must be i64");
 
         // Call list_logical_photos for that stack_id
         let lp_result = tauri::test::get_ipc_response(
@@ -334,10 +342,7 @@ mod tests {
             first["logical_photo_id"].is_number(),
             "logical_photo_id must be a number"
         );
-        assert!(
-            first["has_jpeg"].is_boolean(),
-            "has_jpeg must be a boolean"
-        );
+        assert!(first["has_jpeg"].is_boolean(), "has_jpeg must be a boolean");
         assert!(first["has_raw"].is_boolean(), "has_raw must be a boolean");
     }
 
@@ -388,7 +393,11 @@ mod tests {
         assert!(list_result.is_ok(), "list_source_folders must succeed");
         let folders: serde_json::Value = list_result.unwrap().deserialize().unwrap();
         let folders_arr = folders.as_array().expect("must be array");
-        assert_eq!(folders_arr.len(), 1, "must have exactly one folder after add");
+        assert_eq!(
+            folders_arr.len(),
+            1,
+            "must have exactly one folder after add"
+        );
         let folder_id = folders_arr[0]["id"]
             .as_i64()
             .expect("folder must have an integer id");
@@ -531,5 +540,45 @@ mod tests {
             "thumbnails_done must be 0 before indexing starts, got: {:?}",
             status["thumbnails_done"]
         );
+    }
+
+    #[test]
+    fn test_get_burst_gap_returns_default() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().to_path_buf();
+        std::fs::create_dir_all(home.join("projects")).unwrap();
+
+        let app = make_app(home);
+        let wv = make_webview(&app);
+
+        let result =
+            tauri::test::get_ipc_response(&wv, invoke_req("get_burst_gap", serde_json::json!({})));
+        assert!(result.is_ok(), "get_burst_gap must succeed");
+        let value: u64 = result.unwrap().deserialize().unwrap();
+        assert_eq!(value, 3, "default burst_gap must be 3");
+    }
+
+    #[test]
+    fn test_set_burst_gap_persists_value() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().to_path_buf();
+        std::fs::create_dir_all(home.join("projects")).unwrap();
+
+        let app = make_app(home);
+        let wv = make_webview(&app);
+
+        // Set burst gap to 10
+        let set_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("set_burst_gap", serde_json::json!({ "secs": 10u64 })),
+        );
+        assert!(set_result.is_ok(), "set_burst_gap must succeed");
+
+        // Read it back
+        let get_result =
+            tauri::test::get_ipc_response(&wv, invoke_req("get_burst_gap", serde_json::json!({})));
+        assert!(get_result.is_ok(), "get_burst_gap after set must succeed");
+        let value: u64 = get_result.unwrap().deserialize().unwrap();
+        assert_eq!(value, 10, "burst_gap must be 10 after set_burst_gap(10)");
     }
 }

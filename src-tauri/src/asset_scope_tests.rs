@@ -42,8 +42,7 @@ mod tests {
 
     /// Read the actual scope patterns from tauri.conf.json and expand $HOME.
     fn actual_scope_patterns() -> Vec<String> {
-        let conf_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tauri.conf.json");
+        let conf_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tauri.conf.json");
         let conf: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(&conf_path)
                 .unwrap_or_else(|_| panic!("cannot read {}", conf_path.display())),
@@ -133,8 +132,14 @@ mod tests {
         let pattern_str = format!("{}/.gem-keep/**", home_str);
         let pattern = Pattern::new(&pattern_str).unwrap();
         let paths = [
-            format!("{}/.gem-keep/projects/iceland/cache/thumbnails/1.jpg", home_str),
-            format!("{}/.gem-keep/projects/wedding/cache/thumbnails/42.jpg", home_str),
+            format!(
+                "{}/.gem-keep/projects/iceland/cache/thumbnails/1.jpg",
+                home_str
+            ),
+            format!(
+                "{}/.gem-keep/projects/wedding/cache/thumbnails/42.jpg",
+                home_str
+            ),
             format!("{}/.gem-keep/config.json", home_str),
         ];
         for p in &paths {
@@ -179,8 +184,7 @@ mod tests {
         assert!(
             allowed,
             "scope {:?} must allow actual thumbnail cache path: {}",
-            patterns,
-            thumb_str
+            patterns, thumb_str
         );
     }
 }

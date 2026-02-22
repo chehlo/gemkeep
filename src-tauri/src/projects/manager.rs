@@ -168,7 +168,10 @@ mod tests {
         write_config(home, &config).unwrap();
         let loaded = read_config(home).unwrap();
         assert_eq!(loaded.last_opened_slug, Some("my-project".to_string()));
-        assert_eq!(loaded.burst_gap_secs, 3, "burst_gap_secs must survive round-trip");
+        assert_eq!(
+            loaded.burst_gap_secs, 3,
+            "burst_gap_secs must survive round-trip"
+        );
     }
 
     #[test]
@@ -177,7 +180,10 @@ mod tests {
         let tmp = temp_home();
         let home = tmp.path();
         // Write initial config with custom burst_gap_secs
-        let initial = Config { last_opened_slug: None, burst_gap_secs: 5 };
+        let initial = Config {
+            last_opened_slug: None,
+            burst_gap_secs: 5,
+        };
         write_config(home, &initial).unwrap();
         // Simulate what open_project does: read existing, update slug, write back
         let mut config = read_config(home).unwrap_or_default();
@@ -185,7 +191,10 @@ mod tests {
         write_config(home, &config).unwrap();
         // burst_gap_secs must be preserved
         let loaded = read_config(home).unwrap();
-        assert_eq!(loaded.burst_gap_secs, 5, "burst_gap_secs must not be reset by slug update");
+        assert_eq!(
+            loaded.burst_gap_secs, 5,
+            "burst_gap_secs must not be reset by slug update"
+        );
         assert_eq!(loaded.last_opened_slug, Some("my-project".to_string()));
     }
 

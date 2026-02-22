@@ -1,43 +1,43 @@
-# GemKeep Testing Philosophy
+# GemKeep Testing Methodology
 
-> Written 2026-02-21 as a retrospective on Sprint 3 bugs.
-> Every rule in this document was earned by a real bug escaping to production.
+> Single source of truth for how tests are written in this project.
+> Every rule was earned by a real bug escaping to the running app.
+> Replaces: testing-philosophy.md (Sprint 3 retrospective) + testing-standards.md (aspirational).
 
 ---
 
-## Section 1: The Core Problem — Unit Tests Pass but Systems Break
+## Section 1: The Core Problem — Why Tests Pass but the App Breaks
 
 A passing test suite is not a clean bill of health. It is a record of the things we
 thought to test. The things we did not think to test are the things that break.
 
 In a layered system — Rust backend, SQLite database, Tauri IPC, Svelte frontend — every
-layer can be correct in isolation while the composition is wrong. Unit tests verify
-components against mocked or fixed inputs. Integration gaps are the seams between
-components where real values flow through, and where assumptions made in one layer
-collide with reality delivered by another.
-
-Three integration gap patterns account for most escaped bugs:
+layer can be correct in isolation while the composition is wrong. Four integration gap
+patterns account for most escaped bugs:
 
 **Pattern A: Isolated correctness, wrong runtime inputs.**
 The algorithm is correct. The unit tests prove it — but the tests hardcode the config
 values that are supposed to come from the real config system. In production, the config
-system delivers different (often broken) values. The correct algorithm receives broken
-input and produces broken output. No test ever ran the two together.
+system delivers different (often broken) values. No test ever ran the two together.
 
 **Pattern B: Side-effect clobbering.**
 A function reads a record, modifies one field, and writes it back. Unit tests verify
-that the target field is correct after the write. No test checks that the OTHER fields
-survived. A bug in the struct-update expression silently zeros the untested fields on
-every call.
+that the target field is correct. No test checks that the OTHER fields survived.
 
 **Pattern C: Behavioral regression on the second invocation.**
-A UI flow works correctly the first time. A timing dependency, a DOM lifecycle
-assumption, or an initialization flag behaves differently on the second invocation.
-Tests written to cover a scenario test it once and declare success.
+A UI flow works correctly the first time. A timing dependency or initialization flag
+behaves differently on the second invocation. Tests written to cover a scenario test
+it once and declare success.
 
-Sprint 3 produced seven bugs. All seven fit one of these three patterns. None were
-visible to existing unit tests. The unit tests were not wrong — they were simply not
-testing the right things.
+**Pattern D: The mock sandwich.**
+Frontend tests mock `invoke()` with hardcoded responses. Backend tests call internal
+functions with real data. Nobody tests that the mock responses match what the real backend
+returns. The frontend test says "thumbnails exist" (mock data). The real backend says
+"thumbnails missing" (filesystem check). No test connects the two. This is the root cause
+of the thumbnail re-trigger bug and similar cross-layer failures.
+
+Sprint 3-6 produced multiple bugs fitting these patterns. None were visible to existing
+tests. The tests were not wrong — they were testing the wrong things.
 
 ---
 
@@ -325,21 +325,21 @@ fix to `(p.slug)`.
 
 ---
 
-## Section 3: The Testing Pyramid for GemKeep
-
-Four layers. Each layer has a specific scope, a specific anti-pattern to avoid, and
-specific properties that must be verified.
+## Section 3: The Testing Pyramid
 
 ```
                     ┌──────────────────┐
-                    │   Layer 4: E2E   │  3-5 journeys per sprint
-                    │   (Playwright)   │  Real app, real timing
+                    │  Layer 5: Smoke  │  1 test per sprint
+                    │  (Real binary)   │  cargo tauri dev + Playwright
+                    ├──────────────────┤
+                    │  Layer 4: E2E    │  3-5 journeys per sprint
+                    │  (Playwright)    │  Chromium + mocked IPC
                     ├──────────────────┤
                     │  Layer 3: Comp.  │  Varied data, multi-step
-                    │  (Vitest/jsdom)  │  flows, duplicate IDs
+                    │  (Vitest/jsdom)  │  flows, strict mock hygiene
                     ├──────────────────┤
                     │  Layer 2: Rust   │  Full pipeline, real config
-                    │  Integration     │  flow, idempotency, locks
+                    │  Integration     │  flow, contract tests, IPC
                     ├──────────────────┤
                     │  Layer 1: Rust   │  Pure functions, actual
                     │  Unit Tests      │  output values, Default impls
@@ -348,340 +348,283 @@ specific properties that must be verified.
 
 ### Layer 1: Rust Unit Tests
 
-**Scope:** Pure functions, algorithms, data transformations. Scanner, EXIF extraction,
-pair detection, stack assignment, thumbnail generation, config read/write.
-
-**Must test: actual output values.**
-Do not stop at `assert!(result.is_ok())`. Read back the produced file or value and
-assert its content. If a function generates a thumbnail, open the thumbnail with
-`image::open()` and assert the dimensions. If a function parses EXIF, assert the
-extracted `capture_time` value against a known fixture.
-
-**Must test: Default trait implementations.**
-Any struct with `#[derive(Default)]` or `impl Default` where the default value is not
-the zero-value of the type requires an explicit test:
-
-```rust
-assert_eq!(Config::default().burst_gap_secs, 3);
-```
-
-The reason: `#[serde(default = "fn")]` and `impl Default` are independent. A struct
-can have correct serde deserialization defaults and wrong Rust defaults simultaneously.
-Tests that only exercise the JSON path miss the Rust path.
-
-**Anti-pattern: existence-only assertions.**
-```rust
-// BAD — proves nothing about correctness
-assert!(thumbnail_path.exists());
-assert!(result.is_some());
-assert!(extract_exif(&path).is_ok());
-
-// GOOD — verifies the produced value
-let img = image::open(&thumbnail_path).unwrap();
-assert_eq!(img.width(), 256);
-assert_eq!(img.height(), 256);
-
-let exif = extract_exif(&path).unwrap();
-assert_eq!(exif.orientation, Some(6));
-assert_eq!(exif.capture_time.unwrap().timestamp(), known_unix_ts);
-```
-
-**Coverage target:** 90%+ of business logic.
-
----
+**Scope:** Pure functions, algorithms, data transformations.
+**Tools:** `cargo test`, in `#[cfg(test)] mod tests` blocks.
+**Must test:** Actual output values (Rule 1), Default impls (Rule 2).
 
 ### Layer 2: Rust Integration Tests
 
-**Scope:** Full pipeline end-to-end. Scan → EXIF → pair detection → stack assignment
-→ DB write → DB query. Also: concurrent access, config round-trips, idempotency.
-
-**Must test: config values flow through the full pipeline.**
-Run the pipeline with at least two different values of each configurable parameter and
-assert that the results differ. This is the direct lesson of BUG-05.
-
-```rust
-// Gap of 0: burst grouping disabled
-let stats_a = run_pipeline(..., burst_gap_secs: 0, ...);
-assert_eq!(stats_a.stacks_generated, n_photos);
-
-// Gap of 3: burst grouping enabled
-let stats_b = run_pipeline_fresh(..., burst_gap_secs: 3, ...);
-assert!(stats_b.stacks_generated < n_photos);
-```
-
-**Must test: idempotency.**
-Run the pipeline twice on the same folder. Assert that the second run reports
-`imported = 0`, `skipped_existing = N`, and the stack count is unchanged.
-
-**Must test: SQLite concurrent access with tight thresholds.**
-If a test is intended to prove the system does not deadlock or freeze, the timing
-threshold must be tight. Measure the actual operation time first; set the threshold
-to 3x that measurement. Document the measurement alongside the test.
-
-**Must test: config preserved across operations.**
-Any function that reads config, modifies one field, and writes it back must have a
-test that writes a non-default value to another field, calls the function, re-reads
-the config, and asserts the non-default value was not overwritten.
-
-**Anti-pattern: pipeline tests with all values hardcoded.**
-A pipeline test that calls `run_pipeline(..., burst_gap_secs: 3, ...)` every time
-cannot detect bugs where the real code always uses 0 regardless of what the config
-says. The parameter must vary.
-
----
+**Scope:** Full pipeline end-to-end, IPC command dispatch, contract tests.
+**Tools:** `cargo test`, Tauri mock runtime (`tauri::test`), real SQLite (in-memory).
+**Must test:** Config flow through pipeline (Rule 6), idempotency (Rule 11),
+IPC JSON shape (Rule 10), timing with tight thresholds (Rule 7).
 
 ### Layer 3: Component Tests (Vitest + jsdom)
 
-**Scope:** Svelte component behavior with varied props and state. StackOverview state
-machine transitions, ProjectList rendering, navigation store behavior, keyboard handling.
+**Scope:** Svelte component behavior with varied props and state.
+**Tools:** Vitest 3, @testing-library/svelte, jsdom.
+**Must test:** Realistic mock data (Rule 4), second navigation (Rule 5),
+strict mock hygiene (Rule 9).
 
-**Must test: realistic data with duplicate IDs.**
-Mock data must reflect the real database structure. Two mock projects should both have
-`id: 1` because that is what the real system produces. If a component crashes on
-duplicate numeric IDs, this test catches it immediately.
+### Layer 4: E2E Tests (Playwright, mocked IPC)
 
-```typescript
-const twoProjects = [
-    { id: 1, name: 'Iceland', slug: 'iceland-2024' },
-    { id: 1, name: 'Wedding', slug: 'wedding-2023' },
-];
-```
+**Scope:** Complete user journeys. Real Chromium rendering, mocked IPC.
+**Tools:** Playwright, `page.addInitScript()` for IPC mocking.
+**Must test:** Critical state machine transitions, timing assertions (Rule 7),
+new feature journeys (Rule 8).
 
-**Must test: multi-step flows at least twice.**
-For any UI flow that persists and restores state (scroll position, focused card index,
-form values), test the round trip at least twice with a different target position on
-the second trip. The first trip may succeed by coincidence (retained DOM state). The
-second trip proves the restore mechanism works actively.
+### Layer 5: Smoke Test (Playwright, real binary)
 
-**Must test: DOM API mocking.**
-`scrollIntoView`, `requestAnimationFrame`, `IntersectionObserver`, and similar browser
-APIs must be mocked in `src/test/setup.ts`. Tests that rely on these APIs without mocks
-produce false positives: the function is called but silently does nothing.
-
-**Anti-pattern: single-item mock data.**
-A component test that renders a list with one item cannot detect key collision bugs,
-cannot test list navigation, and gives false confidence about any behavior that is
-only observable with multiple items.
-
-**Anti-pattern: testing only first navigation.**
-```typescript
-// BAD — only proves the happy path once
-await navigateToStack(7);
-await pressEscape();
-expect(getScrollTarget()).toBe(7);
-
-// GOOD — proves the mechanism, not just the first execution
-await navigateToStack(7);
-await pressEscape();
-expect(getScrollTarget()).toBe(7);   // first round trip
-await navigateToStack(12);
-await pressEscape();
-expect(getScrollTarget()).toBe(12);  // second round trip — different target
-```
+**Scope:** One test per sprint that runs against the REAL `cargo tauri dev` binary.
+No mocked IPC. Real SQLite, real filesystem, real asset:// protocol.
+**Tools:** Playwright, cargo tauri dev via webServer config.
+**Must test:** The primary user journey of the sprint, end-to-end with real data.
 
 ---
 
-### Layer 4: E2E Tests (Playwright against cargo tauri dev)
-
-**Scope:** Complete user journeys through the real application. Real Tauri binary, real
-SQLite, real file system (or IPC mocked via `addInitScript` when the real binary is
-not available in CI).
-
-**Required for: any bug that requires multiple layers to reproduce.**
-BUG-05 required a broken config (Layer 1) to produce wrong pipeline input (Layer 2)
-to produce wrong DB output (Layer 2) to produce wrong UI display (Layer 3). No single
-layer's tests could catch it. Only a test that ran all four layers together would have.
-
-**Required for: timing assertions.**
-Timing bugs (BUG-06) are invisible to unit and component tests. They require the real
-IPC stack under realistic concurrency. E2E tests are the only automated layer where
-timing assertions are meaningful.
-
-**Required for: visual DOM-dependent outcomes.**
-Scroll position restoration (BUG-04) depends on cards being in the DOM when
-`scrollIntoView` is called. jsdom does not implement layout. Only a real browser
-(Chromium via Playwright) can verify scroll position.
-
-**Minimum: 3-5 critical paths per sprint.**
-Sprint 3 required at minimum:
-- Journey: open project with burst photos → index → verify at least one stack has count > 1
-- Journey: navigate to stack card → Escape → navigate to different card → Escape → verify position restored
-- Journey: open two projects in sequence → verify no navigation freeze > 200 ms
-
-**Timing threshold rule:** Threshold = 3x actual measured time.
-Document the measurement. A threshold of 1,000 ms when the operation takes 50 ms is
-not a timing assertion — it is a crash detection test. Real timing assertions are
-tight enough to catch degradation before it becomes user-visible.
-
----
-
-## Section 4: Eight Rules for Future Milestones
+## Section 4: Twelve Rules for Writing Tests
 
 ### Rule 1: Test the actual output, not the return type
 
-The return type tells you the function completed. The output value tells you it
-completed correctly. Always read back the produced artifact.
+Read back the produced artifact. If a function generates a thumbnail, open it with
+`image::open()` and assert dimensions. If it writes to DB, re-query and assert values.
 
 ```rust
 // BAD
-assert!(generate_thumbnail(&src, &format, 1, &dir, None).is_ok());
+assert!(generate_thumbnail(&src, ...).is_ok());
 
 // GOOD
-generate_thumbnail(&src, &format, 1, &dir, None).unwrap();
-let img = image::open(dir.join("1.jpg")).expect("thumbnail must exist");
-assert!(img.width() <= 256 && img.height() <= 256, "thumbnail must fit in 256x256");
-assert!(img.width() == 256 || img.height() == 256, "thumbnail must fill one dimension");
+generate_thumbnail(&src, ...).unwrap();
+let img = image::open(dir.join("1.jpg")).unwrap();
+assert_eq!(img.width(), 256);
+assert_eq!(img.height(), 256);
 ```
-
-Applies to: thumbnail generation, EXIF extraction, DB writes (re-query and assert),
-config writes (re-read and assert), any function that produces a file or record.
-
----
 
 ### Rule 2: Test Default implementations explicitly
 
-Every struct with `#[derive(Default)]` or `impl Default` where any field has a
-non-zero or non-empty intended default value must have a dedicated test:
-
+Any struct with `impl Default` where any field has a non-zero intended default:
 ```rust
-// After writing or modifying any struct Default:
 #[test]
-fn test_config_default_values() {
-    let c = Config::default();
-    assert_eq!(c.burst_gap_secs, 3);          // not 0
-    assert!(c.last_opened_slug.is_none());    // obvious, but explicit
+fn test_config_default_burst_gap_is_3() {
+    assert_eq!(Config::default().burst_gap_secs, 3);
 }
 ```
 
-The test name should follow the pattern `test_<struct>_default_<field>_is_<value>`.
-Place it immediately after the `impl Default` block or the `#[derive(Default)]`
-annotation. This makes regression immediately visible when the implementation changes.
-
----
-
 ### Rule 3: Test config survival across operations
 
-Any function that reads a config, modifies one or more fields, and writes it back
-must have a test structured as:
-
-1. Write config with a non-default value for a field the function does NOT modify.
+Any function that reads config, modifies one field, writes back:
+1. Write config with non-default value for a field the function does NOT modify.
 2. Call the function.
-3. Re-read the config.
-4. Assert the non-default value is unchanged.
-
-This is the specific pattern that catches BUG-02 and any future variant of it.
-
-```rust
-// template
-let initial = Config { last_opened_slug: None, burst_gap_secs: 99 };
-write_config(&home, &initial).unwrap();
-update_slug(&home, "some-project").unwrap();   // the function under test
-let loaded = read_config(&home).unwrap();
-assert_eq!(loaded.burst_gap_secs, 99, "field must survive operation");
-```
-
----
+3. Re-read config.
+4. Assert the non-default value survived.
 
 ### Rule 4: Use realistic mock data with duplicates
 
-Mock data must reflect the real system's data generation rules.
-
-SQLite `INTEGER PRIMARY KEY` starts at 1 in every new database. Two projects will both
-have rows with `id = 1`. Any component that uses numeric IDs as rendering keys will
-crash with two projects.
-
-Mock data rule: when testing any list component, include at least 2 items. For
-cross-project data (projects list, project selector), both items must have `id: 1`.
-
-```typescript
-// BAD — single item gives false confidence
-const mockProjects = [{ id: 1, slug: 'iceland', name: 'Iceland 2024' }];
-
-// GOOD — two items, duplicate IDs, distinct slugs
-const mockProjects = [
-    { id: 1, slug: 'iceland-2024', name: 'Iceland 2024' },
-    { id: 1, slug: 'wedding-2023', name: 'Wedding 2023' },
-];
-```
-
----
+SQLite `INTEGER PRIMARY KEY` starts at 1 in every new database. Two projects both have
+`id: 1`. Mock data must reflect this. Lists must have 2+ items.
 
 ### Rule 5: Test the second navigation, not just the first
 
-For any UI flow that saves and restores position (scroll, focus, form field, tab):
-test the full round-trip at least twice. The second test must use a different target
-than the first, so that success requires active restoration rather than passive
-retention of existing DOM state.
-
-```typescript
-// Navigate to position A, return, verify A restored.
-// Navigate to position B (different from A), return, verify B restored.
-// If only the first half passes, the restore mechanism is broken.
-```
-
-This rule directly targets BUG-04. Any timing bug in the restore mechanism will
-manifest on the second navigation because the expected target has changed.
-
----
+For any flow that saves/restores state, test the round trip at least twice with
+different target positions. The second trip proves the mechanism works actively.
 
 ### Rule 6: Pipeline tests must vary config values
 
-Every pipeline integration test must call the pipeline with at least two different
-values of each config parameter and assert that the results differ.
-
-```rust
-// Vary burst_gap_secs — results must differ
-let result_gap0 = run_pipeline_with_gap(0, &photos);
-let result_gap5 = run_pipeline_with_gap(5, &photos);
-assert!(result_gap5.stacks_generated < result_gap0.stacks_generated,
-    "larger gap must produce fewer stacks");
-```
-
-A pipeline test that hardcodes one set of config values cannot detect bugs where the
-pipeline ignores config entirely and uses a hardcoded internal value. The parameter
-must produce observably different behavior.
-
----
+Run the pipeline with at least two different values of each config parameter.
+Assert results differ. A test that hardcodes `burst_gap_secs: 3` every time cannot
+detect bugs where the pipeline ignores config entirely.
 
 ### Rule 7: Performance assertions must be binding
 
-A timing assertion with a threshold of 10x or 20x the measured operation time is not
-a performance test — it is a hang detection test. It will not catch meaningful
-regressions.
-
-Threshold formula: `threshold_ms = measured_ms * 3`
-
-Document the measurement alongside the assertion:
-
+Threshold = 3x actual measured time. Document the measurement:
 ```rust
-// Measured 2026-02-21 on AMD Ryzen 5 5625U: open_project takes ~50ms
-// Threshold: 150ms (3x). If this fails, investigate concurrency or lock contention.
-let start = Instant::now();
-open_project(&state, "test-project").await.unwrap();
-assert!(start.elapsed().as_millis() < 150, "open_project must complete within 150ms");
+// Measured 2026-02-21 on AMD Ryzen 5 5625U: ~50ms
+// Threshold: 150ms (3x)
+assert!(elapsed.as_millis() < 150);
 ```
-
-If the measured time changes (hardware, refactor), update both the comment and the
-threshold together. Never increase the threshold without re-measuring.
-
----
 
 ### Rule 8: New feature = new E2E spec
 
-Each sprint must add at least one Playwright test file covering its primary
-user-facing feature. The E2E spec must exercise the complete user journey, not just
-individual component states.
+Each sprint adds at least one Playwright test covering its primary user-facing feature.
 
-Sprint 3 primary feature: photo import and stack grid display.
-Required E2E: `tests/e2e/import-flow.spec.ts` — open project, add folder, index,
-verify stacks appear, navigate with keyboard.
+### Rule 9: Mock hygiene — default must throw
 
-The E2E spec is part of the Definition of Done. A sprint is not complete if the
-primary feature has no E2E coverage.
+**The setup.ts default mock for `invoke()` must throw on unmocked commands.**
+
+```typescript
+// setup.ts
+invoke: vi.fn((cmd: string) => {
+  throw new Error(
+    `Unmocked invoke("${cmd}"). ` +
+    `Add mockInvoke.mockResolvedValueOnce(...) before this call.`
+  )
+})
+```
+
+**Why:** The previous default (`Promise.resolve(undefined)`) silently swallowed
+unmocked commands. A test could pass while the component received wrong data from
+an exhausted mock queue. With a throwing default:
+- Every test must explicitly mock every command the component calls
+- Any new invoke call added to a component immediately breaks tests until mocked
+- No silent `undefined` flowing through the component as fake data
+
+**Call sequence verification:** After each test, verify the full sequence of calls:
+```typescript
+const calls = mockInvoke.mock.calls.map(c => c[0])
+expect(calls).toEqual([
+  'list_source_folders',
+  'list_stacks',
+  'get_indexing_status',
+])
+```
+
+This catches: wrong call order, extra calls, missing calls, duplicate calls.
+
+### Rule 10: Cross-layer contract tests
+
+**For each IPC command the frontend depends on, a Rust test must verify the
+JSON response shape matches what the frontend expects.**
+
+The mock sandwich problem: frontend tests mock `invoke('list_stacks')` returning
+`{ stack_id, thumbnail_path, ... }`. Backend tests call internal Rust functions.
+Nobody verifies that the Rust `#[tauri::command]` actually produces that JSON shape.
+
+Contract test pattern (in `ipc_tests.rs`):
+```rust
+#[test]
+fn test_list_stacks_json_shape() {
+    // Setup: create project, run pipeline, generate thumbnails
+    let app = make_app(temp_home());
+    // ... setup steps ...
+
+    let response = get_ipc_response::<Vec<serde_json::Value>>(
+        &app, "list_stacks", json!({ "slug": "test" })
+    );
+
+    // Verify shape matches TypeScript StackSummary interface
+    let stack = &response[0];
+    assert!(stack.get("stack_id").unwrap().is_number());
+    assert!(stack.get("logical_photo_count").unwrap().is_number());
+    assert!(stack.get("earliest_capture").is_some()); // nullable string
+    assert!(stack.get("thumbnail_path").is_some());   // nullable string
+}
+```
+
+**When to add contract tests:** Every time a new IPC command is added or an existing
+command's return type changes. The contract test is part of the Definition of Done.
+
+### Rule 11: Idempotency — test every operation twice
+
+Operations that should be idempotent must be tested for idempotency:
+
+```rust
+// Pipeline idempotency
+let stats1 = run_pipeline(&conn, ...);
+assert!(stats1.stacks_generated > 0);
+let stats2 = run_pipeline(&conn, ...); // same folder, same config
+assert_eq!(stats2.stacks_generated, 0, "second run must import nothing");
+```
+
+```typescript
+// Thumbnail resume idempotency: mount with all thumbnails, no resume
+// Unmount, remount — still no resume
+```
+
+```typescript
+// Navigation idempotency: navigate → back → navigate → back
+// Scroll position correct both times
+```
+
+The thumbnail re-trigger bug is an idempotency failure: opening the app should be
+idempotent when thumbnails already exist. No test verified this.
+
+### Rule 12: Real-binary smoke test per sprint
+
+One Playwright test per sprint that runs against the REAL `cargo tauri dev` binary.
+Not mocked IPC. Tests the complete user journey with real data.
+
+```typescript
+// tests/e2e/smoke-real-binary.spec.ts
+test('sprint 4: thumbnails display and persist across app restart', async ({ page }) => {
+    // Real binary, real SQLite, real filesystem
+    // Create project → add folder → index → see thumbnails
+    // Navigate away → come back → thumbnails still there (no re-trigger)
+})
+```
+
+This test is slow (~30s startup + test time). It is the only test that proves all
+layers work together. It does not replace unit or component tests — it is the final
+gate that catches everything the fast tests miss.
+
+Skip in CI with: `test.skip(!process.env.TAURI_DEV, 'requires cargo tauri dev')`
 
 ---
 
-## Section 5: Thumbnail Performance Analysis
+## Section 5: Test Infrastructure
+
+### Rust Tests
+```bash
+cargo test --manifest-path src-tauri/Cargo.toml          # all tests
+cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings  # lint
+cargo fmt --manifest-path src-tauri/Cargo.toml --check   # format check
+```
+
+- Real SQLite (in-memory via `Connection::open_in_memory()`)
+- Real filesystem (tempdir via `tempfile` crate)
+- Tauri mock runtime for IPC tests (`tauri::test::mock_builder`)
+- No repository mocks — real functions, real queries
+
+### Frontend Tests
+```bash
+npm test                    # vitest (jsdom)
+npm run test:e2e           # playwright
+```
+
+- Vitest 3 + @testing-library/svelte + jsdom
+- Config in `vite.config.ts` (test block)
+- Global mock in `src/test/setup.ts`
+- Mock architecture: `invoke()` throws by default (Rule 9)
+
+### setup.ts Pattern
+```typescript
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn((cmd: string) => {
+    throw new Error(`Unmocked invoke("${cmd}")`)
+  }),
+  convertFileSrc: vi.fn((path: string) => `asset://localhost${path}`),
+}))
+
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn().mockResolvedValue(async () => {}),
+  emit: vi.fn().mockResolvedValue(undefined),
+  once: vi.fn().mockResolvedValue(undefined),
+}))
+```
+
+### Test Data Conventions
+- List components: always 2+ items
+- Cross-project data: duplicate `id: 1`
+- Timestamps: use fixed dates, not `Date.now()`
+- File paths: use `/test/...` prefix, never real paths
+
+### IPC Contract Tests (`ipc_tests.rs`)
+```rust
+fn make_app(home: PathBuf) -> tauri::App<tauri::test::MockRuntime> {
+    mock_builder()
+        .manage(AppState::new(home))
+        .invoke_handler(tauri::generate_handler![...all commands...])
+        .build(mock_context(noop_assets()))
+        .unwrap()
+}
+```
+
+Every IPC command used by the frontend must have:
+1. A functional test (command works correctly)
+2. A contract test (JSON shape matches TypeScript interface)
+
+---
+
+## Section 6: Thumbnail Performance Analysis
 
 ### Current Approach and Why It Is Too Slow
 
@@ -746,77 +689,53 @@ Estimated time per photo: 0.05–0.1 s (still 10–20x faster than current appro
 The current `image::open()` approach is correct as a last resort. It should only
 be reached when the file has no embedded thumbnail and DCT scaling is unavailable.
 
-### Sprint 4 Mandatory Item
-
-Before the thumbnail pipeline sprint (Sprint 4), implement EXIF embedded thumbnail
-extraction for JPEG files in `import/thumbnails.rs`. The extraction should:
-
-1. Open the JPEG file and scan for the EXIF APP1 marker.
-2. Locate the embedded thumbnail JPEG within the EXIF IFD1 block.
-3. Decode the embedded thumbnail (it is a full JPEG, so any JPEG decoder works).
-4. If the embedded thumbnail is too small (< 128px on the short side), fall back to
-   Option 2 (DCT scaling) or Option 3 (full decode).
-5. Apply EXIF orientation before writing the output.
-
-The pipeline signature in `pipeline.rs` already passes `orientation` to
-`generate_thumbnail`, so the orientation-application pathway is in place.
-
 ---
 
-## Section 6: Sprint Checklist — Pre-Done Testing Verification
-
-This checklist must be reviewed and checked before marking any sprint as done.
-If any item is unchecked, the sprint is not done.
+## Section 7: Pre-Sprint-Done Checklist
 
 ```
-## Pre-Sprint-Done Testing Checklist
-
 ### Rust Unit Tests
-- [ ] All structs with `#[derive(Default)]` or `impl Default` that have non-zero
-      intended defaults have an explicit test asserting the expected default value.
-      Test name pattern: test_<struct>_default_<field>_is_<value>
-- [ ] All output-producing functions (thumbnail generation, EXIF extraction, config
-      write, DB insert) have tests that READ BACK the produced value and assert its
-      content. No assertion stops at `assert!(result.is_ok())` alone.
-- [ ] Negative paths tested: missing files, corrupt input, empty collections,
-      zero counts, permission errors.
+- [ ] All structs with impl Default that have non-zero defaults: explicit test
+- [ ] All output-producing functions: read back the produced value and assert content
+- [ ] Negative paths tested: missing files, corrupt input, empty collections
 
 ### Rust Integration Tests
-- [ ] Full pipeline tested end-to-end: scan → EXIF → pair → stack → DB → query.
-      The test uses a real (in-memory or tmpdir) SQLite database, not mocked repos.
-- [ ] Pipeline tested with at least 2 different values of each config parameter.
-      Results must differ when parameter differs. This catches "always uses hardcoded
-      value" bugs.
-- [ ] Re-index tested for idempotency: second run produces imported=0,
-      skipped_existing=N, same stack count.
-- [ ] All functions that read-modify-write config have a "non-target field preserved"
-      test: write non-default value → call function → re-read → assert value unchanged.
-- [ ] Any timing assertion has the actual measured time documented in a comment.
-      Threshold set to 3x measured time, not 10x.
+- [ ] Full pipeline tested end-to-end with real (in-memory) SQLite
+- [ ] Pipeline tested with 2+ values of each config parameter (results must differ)
+- [ ] Idempotency: second run of pipeline produces imported=0
+- [ ] Config read-modify-write: non-target fields preserved
+- [ ] Timing thresholds: 3x measured time, measurement documented
+
+### IPC Contract Tests
+- [ ] Every IPC command used by frontend has a JSON shape test in ipc_tests.rs
+- [ ] Shape test verifies field names, types, and null/non-null patterns
+- [ ] New commands added this sprint: contract test written BEFORE frontend mock
 
 ### Component Tests (Vitest)
-- [ ] All list components tested with 2+ items. For cross-project lists, items have
-      duplicate numeric IDs (both id: 1) to catch key-collision bugs.
-- [ ] All stateful UI flows (scroll restore, focus restore, form state) tested with
-      at least 2 complete round trips using different target positions.
-- [ ] scrollIntoView, requestAnimationFrame, IntersectionObserver mocked in
-      src/test/setup.ts. Tests that rely on these APIs without mocks are false positives.
+- [ ] setup.ts default throws on unmocked commands (Rule 9)
+- [ ] All list components tested with 2+ items, cross-project with duplicate IDs
+- [ ] Stateful flows tested with 2+ round trips, different targets
+- [ ] Call sequences verified (not just spot-checked)
+- [ ] Error paths: at least 1 rejection test per component
 
 ### E2E Tests (Playwright)
-- [ ] At least 1 new Playwright spec file added covering this sprint's primary
-      user-facing feature.
-- [ ] Navigation operations have timing assertions (threshold = 3x measured).
-- [ ] Critical journeys verified end-to-end with the real app or a realistic IPC mock
-      injected via addInitScript (not a stub that always returns the happy path).
+- [ ] 1+ new spec file covering this sprint's primary feature
+- [ ] Timing assertions with 3x measured threshold
 
-### Threshold Check
-- [ ] Every timing assertion in the codebase has a comment with the actual measured
-      time and the derivation of the threshold (e.g., "measured 50ms, threshold 150ms").
-      No threshold is more than 3x the measured time.
+### Smoke Test
+- [ ] 1 Playwright test against real cargo tauri dev binary
+- [ ] Tests the sprint's primary user journey end-to-end
+- [ ] No mocked IPC — real SQLite, real filesystem, real asset://
+
+### Overall
+- [ ] cargo test passes (0 failures)
+- [ ] cargo clippy -- -D warnings clean
+- [ ] cargo fmt --check clean
+- [ ] npm test passes (0 failures)
+- [ ] npm run test:e2e passes
 ```
 
 ---
 
-*Retrospective compiled 2026-02-21. All seven bugs documented here escaped to production
-despite passing unit test suites. The rules in Section 4 and the checklist in Section 6
-are the direct remediation of each escape.*
+*This document is the single source of truth for testing in GemKeep.
+`docs/testing-standards.md` and `docs/testing-gap-analysis.md` are superseded and should be deleted.*

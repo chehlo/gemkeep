@@ -70,12 +70,12 @@ pub struct StackSummary {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LogicalPhotoSummary {
     pub logical_photo_id: i64,
-    pub thumbnail_path:   Option<String>,
-    pub capture_time:     Option<String>,  // ISO-8601
-    pub camera_model:     Option<String>,
-    pub lens:             Option<String>,
-    pub has_raw:          bool,
-    pub has_jpeg:         bool,
+    pub thumbnail_path: Option<String>,
+    pub capture_time: Option<String>, // ISO-8601
+    pub camera_model: Option<String>,
+    pub lens: Option<String>,
+    pub has_raw: bool,
+    pub has_jpeg: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

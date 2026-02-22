@@ -69,8 +69,7 @@ fn extract_exif_embedded_thumbnail(source_path: &Path) -> Option<Vec<u8>> {
         .read_from_container(&mut buf_reader)
         .ok()?;
 
-    let offset_field =
-        exif.get_field(exif::Tag::JPEGInterchangeFormat, exif::In::THUMBNAIL)?;
+    let offset_field = exif.get_field(exif::Tag::JPEGInterchangeFormat, exif::In::THUMBNAIL)?;
     let length_field =
         exif.get_field(exif::Tag::JPEGInterchangeFormatLength, exif::In::THUMBNAIL)?;
 
@@ -92,10 +91,7 @@ fn extract_exif_embedded_thumbnail(source_path: &Path) -> Option<Vec<u8>> {
 }
 
 /// Apply EXIF orientation rotation to an image.
-fn apply_orientation(
-    img: image::DynamicImage,
-    orientation: Option<u16>,
-) -> image::DynamicImage {
+fn apply_orientation(img: image::DynamicImage, orientation: Option<u16>) -> image::DynamicImage {
     match orientation {
         Some(3) => img.rotate180(),
         Some(6) => img.rotate90(),
@@ -167,9 +163,7 @@ fn generate_jpeg_thumbnail(
         if let Ok(img) = image::load_from_memory(&bytes) {
             let short_side = img.width().min(img.height());
             if short_side >= 200 {
-                if let Some(result) =
-                    generate_thumbnail_from_image(img, out_path, orientation)
-                {
+                if let Some(result) = generate_thumbnail_from_image(img, out_path, orientation) {
                     tracing::debug!(
                         "thumbnail: embedded EXIF path (short={}px) for {:?}",
                         short_side,
@@ -345,7 +339,11 @@ mod tests {
 
         let thumb_path = cache_dir.path().join("1.jpg");
         let bytes = std::fs::read(&thumb_path).expect("thumbnail file must exist");
-        assert_eq!(&bytes[0..2], &[0xFF, 0xD8], "output must start with JPEG magic bytes FF D8");
+        assert_eq!(
+            &bytes[0..2],
+            &[0xFF, 0xD8],
+            "output must start with JPEG magic bytes FF D8"
+        );
     }
 
     #[test]
@@ -363,7 +361,10 @@ mod tests {
         );
 
         let expected = cache_dir.path().join(format!("{}.jpg", lp_id));
-        assert!(expected.exists(), "thumbnail must be created at <cache_dir>/<lp_id>.jpg");
+        assert!(
+            expected.exists(),
+            "thumbnail must be created at <cache_dir>/<lp_id>.jpg"
+        );
         assert_eq!(result, Some(expected));
     }
 
@@ -449,7 +450,10 @@ mod tests {
             None,
         );
 
-        assert!(result.is_some(), "320×213 embedded (short=213 >= 200) must be accepted");
+        assert!(
+            result.is_some(),
+            "320×213 embedded (short=213 >= 200) must be accepted"
+        );
     }
 
     #[test]
@@ -469,8 +473,16 @@ mod tests {
         );
 
         let img = image::open(cache_dir.path().join("600.jpg")).unwrap();
-        assert_eq!(img.width(), 256, "width must be exactly 256 (not letterboxed)");
-        assert_eq!(img.height(), 256, "height must be exactly 256 (not letterboxed)");
+        assert_eq!(
+            img.width(),
+            256,
+            "width must be exactly 256 (not letterboxed)"
+        );
+        assert_eq!(
+            img.height(),
+            256,
+            "height must be exactly 256 (not letterboxed)"
+        );
     }
 
     #[test]
@@ -486,7 +498,11 @@ mod tests {
         assert!(result.is_some());
         let output = image::open(&out_path).unwrap();
         assert_eq!(output.width(), 256, "RAW thumbnail must be exactly 256×256");
-        assert_eq!(output.height(), 256, "RAW thumbnail must be exactly 256×256");
+        assert_eq!(
+            output.height(),
+            256,
+            "RAW thumbnail must be exactly 256×256"
+        );
     }
 
     #[test]
@@ -505,8 +521,16 @@ mod tests {
         );
 
         let img = image::open(cache_dir.path().join("700.jpg")).unwrap();
-        assert_eq!(img.width(), 256, "embedded path must produce exactly 256×256");
-        assert_eq!(img.height(), 256, "embedded path must produce exactly 256×256");
+        assert_eq!(
+            img.width(),
+            256,
+            "embedded path must produce exactly 256×256"
+        );
+        assert_eq!(
+            img.height(),
+            256,
+            "embedded path must produce exactly 256×256"
+        );
     }
 
     #[test]
@@ -523,7 +547,10 @@ mod tests {
             cache_ok.path(),
             None,
         );
-        assert!(result_ok.is_some(), "short=200 must be accepted (boundary is >=200)");
+        assert!(
+            result_ok.is_some(),
+            "short=200 must be accepted (boundary is >=200)"
+        );
 
         let cache_bad = TempDir::new().unwrap();
         let result_bad = generate_thumbnail(
@@ -533,7 +560,10 @@ mod tests {
             cache_bad.path(),
             None,
         );
-        assert!(result_bad.is_none(), "short=199 must be rejected; empty body fallback → None");
+        assert!(
+            result_bad.is_none(),
+            "short=199 must be rejected; empty body fallback → None"
+        );
     }
 
     #[test]
@@ -568,7 +598,10 @@ mod tests {
             None,
         );
 
-        assert!(result.is_some(), "must produce thumbnail via embedded EXIF path");
+        assert!(
+            result.is_some(),
+            "must produce thumbnail via embedded EXIF path"
+        );
         let bytes = std::fs::read(cache_dir.path().join("100.jpg")).unwrap();
         assert_eq!(&bytes[0..2], &[0xFF, 0xD8], "output must be a valid JPEG");
     }
@@ -587,7 +620,10 @@ mod tests {
             None,
         );
 
-        assert!(result.is_some(), "must produce thumbnail via full-decode fallback");
+        assert!(
+            result.is_some(),
+            "must produce thumbnail via full-decode fallback"
+        );
         let img = image::open(cache_dir.path().join("200.jpg")).unwrap();
         assert_eq!(img.width(), 256);
         assert_eq!(img.height(), 256);
@@ -632,8 +668,7 @@ mod tests {
         use rayon::prelude::*;
         use std::time::Instant;
 
-        let photo_dir =
-            std::path::Path::new("/home/ilya/ssd_disk/photo/venice 2026/il/2");
+        let photo_dir = std::path::Path::new("/home/ilya/ssd_disk/photo/venice 2026/il/2");
         if !photo_dir.exists() {
             println!("SKIP: photo dir not found");
             return;

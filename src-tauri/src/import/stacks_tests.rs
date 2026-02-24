@@ -4,7 +4,7 @@ use crate::photos::model::{PhotoFormat, ScannedFile};
 use chrono::{Duration, TimeZone, Utc};
 use std::path::PathBuf;
 
-fn make_group(capture_time: Option<chrono::DateTime<chrono::Utc>>) -> LogicalGroup {
+pub fn make_group(capture_time: Option<chrono::DateTime<chrono::Utc>>) -> LogicalGroup {
     let sf = ScannedFile {
         path: PathBuf::from("/tmp/photo.jpg"),
         format: PhotoFormat::Jpeg,

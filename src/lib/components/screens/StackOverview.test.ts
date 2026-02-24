@@ -63,6 +63,53 @@ function setupNav() {
   navigate({ kind: 'stack-overview', projectSlug: 'iceland-2024', projectName: 'Iceland 2024' })
 }
 
+/**
+ * Render StackOverview with sensible mock defaults.
+ *
+ * Sets up the initial loadAll() invoke chain (list_source_folders, list_stacks,
+ * get_indexing_status) and automatically adds the follow-up mocks that loadAll()
+ * triggers based on state (auto-start indexing, resume thumbnails, or polling).
+ *
+ * Tests only override what they need. Tests requiring specific mockResolvedValueOnce
+ * chains (e.g. polling sequences, burst gap panel) should add those AFTER calling
+ * this helper.
+ */
+function renderStackOverview(overrides?: Partial<{
+  folders: SourceFolder[],
+  stacks: StackSummary[],
+  status: IndexingStatus,
+  burstGap: number,
+}>) {
+  const folders = overrides?.folders ?? []
+  const stacks = overrides?.stacks ?? []
+  const status = overrides?.status ?? IDLE_STATUS
+
+  // loadAll() core: list_source_folders, list_stacks, get_indexing_status
+  mockInvoke.mockResolvedValueOnce(folders)
+  mockInvoke.mockResolvedValueOnce(stacks)
+  mockInvoke.mockResolvedValueOnce(status)
+
+  // loadAll() follow-up mocks based on derived state:
+  if (status.running || status.thumbnails_running) {
+    // Path A: startPolling() fires immediately
+    mockInvoke.mockResolvedValueOnce(IDLE_STATUS)  // poll: get_indexing_status (terminal)
+    mockInvoke.mockResolvedValueOnce(stacks)       // poll: list_stacks (stops polling)
+  } else if (folders.length > 0 && stacks.length === 0) {
+    // Path B: auto-start indexing -> start_indexing + startPolling()
+    mockInvoke.mockResolvedValueOnce(undefined)    // start_indexing
+    mockInvoke.mockResolvedValueOnce(IDLE_STATUS)  // poll: get_indexing_status (terminal)
+    mockInvoke.mockResolvedValueOnce(stacks)       // poll: list_stacks (stops polling)
+  } else if (stacks.length > 0 && stacks.some(s => s.thumbnail_path === null)) {
+    // Path C: resume thumbnails -> resume_thumbnails + startPolling()
+    mockInvoke.mockResolvedValueOnce(undefined)    // resume_thumbnails
+    mockInvoke.mockResolvedValueOnce(IDLE_STATUS)  // poll: get_indexing_status (terminal)
+    mockInvoke.mockResolvedValueOnce(stacks)       // poll: list_stacks (stops polling)
+  }
+  // Path D: all thumbs present, idle -> no follow-up mocks needed
+
+  return render(StackOverview)
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   setupNav()
@@ -71,12 +118,7 @@ beforeEach(() => {
 
 describe('StackOverview — state 1: no source folders', () => {
   it('renders no-folders state when source_folders is empty', async () => {
-    // loadAll calls: listSourceFolders, listStacks, getIndexingStatus
-    mockInvoke.mockResolvedValueOnce([])          // list_source_folders
-    mockInvoke.mockResolvedValueOnce([])          // list_stacks
-    mockInvoke.mockResolvedValueOnce(IDLE_STATUS) // get_indexing_status
-
-    render(StackOverview)
+    renderStackOverview()
 
     await waitFor(() => {
       expect(screen.getByText('No source folders attached.')).toBeInTheDocument()
@@ -89,14 +131,7 @@ describe('StackOverview — state 1: no source folders', () => {
 
 describe('StackOverview — state 2: folders attached, auto-starts indexing', () => {
   it('auto-starts indexing and shows folder paths during indexing', async () => {
-    mockInvoke.mockResolvedValueOnce([FOLDER_A, FOLDER_B]) // list_source_folders
-    mockInvoke.mockResolvedValueOnce([])                   // list_stacks
-    mockInvoke.mockResolvedValueOnce(IDLE_STATUS)          // get_indexing_status
-    mockInvoke.mockResolvedValueOnce(undefined)            // start_indexing (auto-start)
-    mockInvoke.mockResolvedValueOnce(IDLE_STATUS)          // get_indexing_status (immediate poll from startPolling)
-    mockInvoke.mockResolvedValueOnce([])                   // list_stacks (poll reload when both flags false)
-
-    render(StackOverview)
+    renderStackOverview({ folders: [FOLDER_A, FOLDER_B] })
 
     await waitFor(() => {
       expect(screen.getByText('/home/user/Photos/Iceland')).toBeInTheDocument()
@@ -109,14 +144,7 @@ describe('StackOverview — state 2: folders attached, auto-starts indexing', ()
   })
 
   it('calls start_indexing automatically when folders present but no stacks', async () => {
-    mockInvoke.mockResolvedValueOnce([FOLDER_A]) // list_source_folders
-    mockInvoke.mockResolvedValueOnce([])         // list_stacks
-    mockInvoke.mockResolvedValueOnce(IDLE_STATUS) // get_indexing_status
-    mockInvoke.mockResolvedValueOnce(undefined)  // start_indexing (auto-start)
-    mockInvoke.mockResolvedValueOnce(IDLE_STATUS) // get_indexing_status (immediate poll from startPolling)
-    mockInvoke.mockResolvedValueOnce([])          // list_stacks (poll reload when both flags false)
-
-    render(StackOverview)
+    renderStackOverview({ folders: [FOLDER_A] })
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith('start_indexing', { slug: 'iceland-2024' })
@@ -124,28 +152,14 @@ describe('StackOverview — state 2: folders attached, auto-starts indexing', ()
   })
 
   it('does NOT auto-start when stacks already exist (re-open scenario)', async () => {
-    mockInvoke.mockResolvedValueOnce([FOLDER_A])   // list_source_folders
-    mockInvoke.mockResolvedValueOnce([STACK_1])    // list_stacks (stacks exist!)
-    mockInvoke.mockResolvedValueOnce(IDLE_STATUS)  // get_indexing_status
-    mockInvoke.mockResolvedValueOnce(undefined)    // resume_thumbnails (STACK_1 has null thumbnail)
-    mockInvoke.mockResolvedValueOnce(IDLE_STATUS)  // poll: get_indexing_status
-    mockInvoke.mockResolvedValueOnce([STACK_1])    // poll: list_stacks (stops polling)
-
-    render(StackOverview)
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1] })
 
     await waitFor(() => expect(screen.getByText('Index complete.')).toBeInTheDocument())
     expect(mockInvoke).not.toHaveBeenCalledWith('start_indexing', expect.anything())
   })
 
   it('does NOT auto-start when thumbnails_running=true even if stacks are empty', async () => {
-    mockInvoke.mockResolvedValueOnce([FOLDER_A])              // list_source_folders
-    mockInvoke.mockResolvedValueOnce([])                      // list_stacks (empty)
-    mockInvoke.mockResolvedValueOnce(THUMBNAIL_RUNNING_STATUS) // thumbnails_running=true
-    // Polling will fire — provide terminal status so it stops
-    mockInvoke.mockResolvedValueOnce(IDLE_STATUS)             // poll: get_indexing_status
-    mockInvoke.mockResolvedValueOnce([])                      // poll: list_stacks
-
-    render(StackOverview)
+    renderStackOverview({ folders: [FOLDER_A], status: THUMBNAIL_RUNNING_STATUS })
 
     await new Promise(resolve => setTimeout(resolve, 50))
     expect(mockInvoke).not.toHaveBeenCalledWith('start_indexing', expect.anything())
@@ -154,11 +168,12 @@ describe('StackOverview — state 2: folders attached, auto-starts indexing', ()
 
 describe('StackOverview — state 3: indexing in progress', () => {
   it('renders progress bar and cancel button during EXIF scan phase', async () => {
+    // Custom mocks: keep RUNNING_STATUS in poll so "Indexing..." stays visible during assertion
     mockInvoke.mockResolvedValueOnce([FOLDER_A])    // list_source_folders
     mockInvoke.mockResolvedValueOnce([])            // list_stacks
     mockInvoke.mockResolvedValueOnce(RUNNING_STATUS) // get_indexing_status (status.running=true)
     mockInvoke.mockResolvedValueOnce(RUNNING_STATUS) // poll: get_indexing_status (still running)
-    mockInvoke.mockResolvedValueOnce([])            // poll: list_stacks (running → reload stacks)
+    mockInvoke.mockResolvedValueOnce([])            // poll: list_stacks (running -> reload stacks)
 
     render(StackOverview)
 
@@ -167,7 +182,7 @@ describe('StackOverview — state 3: indexing in progress', () => {
     })
     expect(screen.getByText(/340.*1,290/)).toBeInTheDocument()
     expect(screen.getByText('Cancel')).toBeInTheDocument()
-    // No × remove buttons while indexing
+    // No x remove buttons while indexing
     expect(screen.queryByTitle('Remove folder')).not.toBeInTheDocument()
     // No Index Photos button
     expect(screen.queryByText('Index Photos')).not.toBeInTheDocument()
@@ -176,6 +191,7 @@ describe('StackOverview — state 3: indexing in progress', () => {
 
 describe('StackOverview — state 4 with thumbnails_running', () => {
   it('renders stacks grid and "Generating thumbnails…" when running=false and thumbnails_running=true', async () => {
+    // Custom mocks: keep THUMBNAIL_RUNNING_STATUS in poll so banner stays visible during assertion
     mockInvoke.mockResolvedValueOnce([FOLDER_A])                    // list_source_folders
     mockInvoke.mockResolvedValueOnce([STACK_1, STACK_2, STACK_3])   // list_stacks
     mockInvoke.mockResolvedValueOnce(THUMBNAIL_RUNNING_STATUS)      // get_indexing_status
@@ -201,14 +217,7 @@ describe('StackOverview — state 4 with thumbnails_running', () => {
 
 describe('StackOverview — state 4: indexed, stacks visible', () => {
   it('renders stack grid after indexing completes', async () => {
-    mockInvoke.mockResolvedValueOnce([FOLDER_A])           // list_source_folders
-    mockInvoke.mockResolvedValueOnce([STACK_1, STACK_2, STACK_3]) // list_stacks
-    mockInvoke.mockResolvedValueOnce(DONE_STATUS)          // get_indexing_status
-    mockInvoke.mockResolvedValueOnce(undefined)            // resume_thumbnails (stacks have null thumbnails)
-    mockInvoke.mockResolvedValueOnce(IDLE_STATUS)          // poll: get_indexing_status
-    mockInvoke.mockResolvedValueOnce([STACK_1, STACK_2, STACK_3]) // poll: list_stacks (stops polling)
-
-    render(StackOverview)
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2, STACK_3], status: DONE_STATUS })
 
     await waitFor(() => {
       expect(screen.getByText('Index complete.')).toBeInTheDocument()
@@ -225,14 +234,7 @@ describe('StackOverview — state 4: indexed, stacks visible', () => {
   })
 
   it('renders placeholder icon for stacks without thumbnail', async () => {
-    mockInvoke.mockResolvedValueOnce([FOLDER_A])  // list_source_folders
-    mockInvoke.mockResolvedValueOnce([STACK_3])   // list_stacks (thumbnail_path: null)
-    mockInvoke.mockResolvedValueOnce(DONE_STATUS) // get_indexing_status
-    mockInvoke.mockResolvedValueOnce(undefined)   // resume_thumbnails (STACK_3 has null thumbnail)
-    mockInvoke.mockResolvedValueOnce(IDLE_STATUS) // poll: get_indexing_status
-    mockInvoke.mockResolvedValueOnce([STACK_3])   // poll: list_stacks (stops polling)
-
-    render(StackOverview)
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_3], status: DONE_STATUS })
 
     await waitFor(() => {
       expect(screen.getByText('Stack #1')).toBeInTheDocument()
@@ -244,14 +246,7 @@ describe('StackOverview — state 4: indexed, stacks visible', () => {
   })
 
   it('renders Re-index button in state 4', async () => {
-    mockInvoke.mockResolvedValueOnce([FOLDER_A])           // list_source_folders
-    mockInvoke.mockResolvedValueOnce([STACK_1, STACK_2])   // list_stacks
-    mockInvoke.mockResolvedValueOnce(DONE_STATUS)          // get_indexing_status
-    mockInvoke.mockResolvedValueOnce(undefined)            // resume_thumbnails (stacks have null thumbnails)
-    mockInvoke.mockResolvedValueOnce(IDLE_STATUS)          // poll: get_indexing_status
-    mockInvoke.mockResolvedValueOnce([STACK_1, STACK_2])   // poll: list_stacks (stops polling)
-
-    render(StackOverview)
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2], status: DONE_STATUS })
 
     await waitFor(() => {
       expect(screen.getByText('Re-index')).toBeInTheDocument()
@@ -262,11 +257,7 @@ describe('StackOverview — state 4: indexed, stacks visible', () => {
     const thumbPath = STACK_WITH_THUMB.thumbnail_path!
     vi.mocked(convertFileSrc).mockImplementation((p) => `asset://localhost${p}`)
 
-    mockInvoke.mockResolvedValueOnce([FOLDER_A])
-    mockInvoke.mockResolvedValueOnce([STACK_WITH_THUMB])
-    mockInvoke.mockResolvedValueOnce(DONE_STATUS)
-
-    render(StackOverview)
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_WITH_THUMB], status: DONE_STATUS })
 
     await waitFor(() => expect(screen.getByText('Stack #1')).toBeInTheDocument())
 
@@ -279,14 +270,7 @@ describe('StackOverview — state 4: indexed, stacks visible', () => {
   it('does not render img element when thumbnail_path is null', async () => {
     vi.mocked(convertFileSrc).mockImplementation((p) => `asset://localhost${p}`)
 
-    mockInvoke.mockResolvedValueOnce([FOLDER_A])
-    mockInvoke.mockResolvedValueOnce([STACK_3])
-    mockInvoke.mockResolvedValueOnce(DONE_STATUS)
-    mockInvoke.mockResolvedValueOnce(undefined)   // resume_thumbnails (STACK_3 has null thumbnail)
-    mockInvoke.mockResolvedValueOnce(IDLE_STATUS) // poll: get_indexing_status
-    mockInvoke.mockResolvedValueOnce([STACK_3])   // poll: list_stacks (stops polling)
-
-    render(StackOverview)
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_3], status: DONE_STATUS })
 
     await waitFor(() => expect(screen.getByText('Stack #1')).toBeInTheDocument())
     expect(screen.queryByRole('img')).not.toBeInTheDocument()
@@ -296,14 +280,7 @@ describe('StackOverview — state 4: indexed, stacks visible', () => {
 
 describe('StackOverview — reindex shortcuts (state 4)', () => {
   it('r key triggers re-index when stacks present', async () => {
-    mockInvoke.mockResolvedValueOnce([FOLDER_A])  // list_source_folders
-    mockInvoke.mockResolvedValueOnce([STACK_1])   // list_stacks
-    mockInvoke.mockResolvedValueOnce(DONE_STATUS) // get_indexing_status
-    mockInvoke.mockResolvedValueOnce(undefined)   // resume_thumbnails (STACK_1 has null thumbnail)
-    mockInvoke.mockResolvedValueOnce(IDLE_STATUS) // poll: get_indexing_status (startPolling from resume)
-    mockInvoke.mockResolvedValueOnce([STACK_1])   // poll: list_stacks
-
-    render(StackOverview)
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1], status: DONE_STATUS })
 
     await waitFor(() => expect(screen.getByText('Index complete.')).toBeInTheDocument())
 
@@ -318,14 +295,7 @@ describe('StackOverview — reindex shortcuts (state 4)', () => {
   })
 
   it('i key triggers re-index when stacks already exist', async () => {
-    mockInvoke.mockResolvedValueOnce([FOLDER_A])  // list_source_folders
-    mockInvoke.mockResolvedValueOnce([STACK_1])   // list_stacks
-    mockInvoke.mockResolvedValueOnce(DONE_STATUS) // get_indexing_status
-    mockInvoke.mockResolvedValueOnce(undefined)   // resume_thumbnails (STACK_1 has null thumbnail)
-    mockInvoke.mockResolvedValueOnce(IDLE_STATUS) // poll: get_indexing_status (startPolling from resume)
-    mockInvoke.mockResolvedValueOnce([STACK_1])   // poll: list_stacks
-
-    render(StackOverview)
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1], status: DONE_STATUS })
 
     await waitFor(() => expect(screen.getByText('Index complete.')).toBeInTheDocument())
 
@@ -342,23 +312,8 @@ describe('StackOverview — reindex shortcuts (state 4)', () => {
 
 describe("StackOverview — add-folder workflow gap", () => {
   it("after adding a folder, indexing starts automatically", async () => {
-    // WHY THIS TEST EXISTS AND WHAT IT REVEALS:
-    // When a user adds their first folder to a new project, they expect
-    // indexing to start automatically (the same auto-start that fires on mount).
-    // CURRENT BUG: handleAddFolder() only refreshes sourceFolders but does NOT
-    // call handleIndex(). The user is left looking at the folder list with no
-    // prompt to start indexing and no auto-start.
-    //
-    // This test will FAIL with the current code because start_indexing is
-    // NOT called after adding the first folder.
-    // The fix: add auto-start logic to handleAddFolder when stacks.length === 0.
-
     // Initial state: no folders, no stacks
-    mockInvoke.mockResolvedValueOnce([])           // list_source_folders (initial)
-    mockInvoke.mockResolvedValueOnce([])           // list_stacks
-    mockInvoke.mockResolvedValueOnce(IDLE_STATUS)  // get_indexing_status
-
-    render(StackOverview)
+    renderStackOverview()
     await waitFor(() => expect(screen.getByText("No source folders attached.")).toBeInTheDocument())
 
     // Setup mocks for after-add calls
@@ -373,7 +328,6 @@ describe("StackOverview — add-folder workflow gap", () => {
     await fireEvent.click(screen.getByText("+ Add Folder"))
 
     // After adding the first folder, indexing should auto-start
-    // (same logic as on-mount auto-start: folders > 0, stacks === 0)
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("start_indexing", { slug: "iceland-2024" })
     }, { timeout: 500 })
@@ -382,9 +336,6 @@ describe("StackOverview — add-folder workflow gap", () => {
 
 describe('StackOverview — scroll position restore', () => {
   it('restores focused card index when returning from StackFocus', async () => {
-    // WHY: When the user navigates StackOverview → StackFocus → back, the previously
-    // focused stack card must regain focus (blue border) instead of defaulting to card 0.
-    // The navigation store holds stackOverviewFocusIndex = 5 (set when entering StackFocus).
     const STACK_COUNT = 8
     const mockStacks: StackSummary[] = Array.from({ length: STACK_COUNT }, (_, i) => ({
       stack_id: i + 1,
@@ -395,18 +346,10 @@ describe('StackOverview — scroll position restore', () => {
       thumbnail_path: null,
     }))
 
-    mockInvoke
-      .mockResolvedValueOnce([FOLDER_A])  // list_source_folders (must be non-empty to show stack grid)
-      .mockResolvedValueOnce(mockStacks)  // list_stacks
-      .mockResolvedValueOnce(DONE_STATUS) // get_indexing_status (not running, stacks visible = State 4)
-      .mockResolvedValueOnce(undefined)   // resume_thumbnails (stacks have null thumbnails)
-      .mockResolvedValueOnce(IDLE_STATUS) // poll: get_indexing_status
-      .mockResolvedValueOnce(mockStacks)  // poll: list_stacks
-
     // Pre-set the saved focus index (simulating return from StackFocus)
     navigation.stackOverviewFocusIndex = 5
 
-    render(StackOverview)
+    renderStackOverview({ folders: [FOLDER_A], stacks: mockStacks, status: DONE_STATUS })
 
     await waitFor(() => {
       const cards = document.querySelectorAll('[data-stack-card]')
@@ -425,18 +368,7 @@ describe('StackOverview — scroll position restore', () => {
 
 describe('StackOverview — thumbnail-ready event (Part C)', () => {
   it('C2: registers listen("thumbnail-ready") on mount', async () => {
-    // WHY: The component must subscribe to thumbnail-ready on mount so that
-    // progressive thumbnail updates refresh the stack grid card-by-card.
-    // If listen() is never called, all thumbnails appear at once only after
-    // the polling cycle — the progressive UX is broken.
-    mockInvoke.mockResolvedValueOnce([FOLDER_A])   // list_source_folders
-    mockInvoke.mockResolvedValueOnce([STACK_1])    // list_stacks
-    mockInvoke.mockResolvedValueOnce(DONE_STATUS)  // get_indexing_status
-    mockInvoke.mockResolvedValueOnce(undefined)    // resume_thumbnails (STACK_1 has null thumbnail)
-    mockInvoke.mockResolvedValueOnce(IDLE_STATUS)  // poll: get_indexing_status
-    mockInvoke.mockResolvedValueOnce([STACK_1])    // poll: list_stacks (stops polling)
-
-    render(StackOverview)
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1], status: DONE_STATUS })
 
     await waitFor(() => expect(screen.getByText('Stack #1')).toBeInTheDocument())
 
@@ -444,20 +376,10 @@ describe('StackOverview — thumbnail-ready event (Part C)', () => {
   })
 
   it('C3: calls unlisten when component is destroyed', async () => {
-    // WHY (Rule 4): The unlisten function returned by listen() must be called
-    // on component destroy to prevent memory leaks and stale event handlers.
-    // Without this, navigating away and back registers duplicate listeners.
     const mockUnlisten = vi.fn()
     mockListen.mockResolvedValueOnce(mockUnlisten as any)
 
-    mockInvoke.mockResolvedValueOnce([FOLDER_A])   // list_source_folders
-    mockInvoke.mockResolvedValueOnce([STACK_1])    // list_stacks
-    mockInvoke.mockResolvedValueOnce(DONE_STATUS)  // get_indexing_status
-    mockInvoke.mockResolvedValueOnce(undefined)    // resume_thumbnails (STACK_1 has null thumbnail)
-    mockInvoke.mockResolvedValueOnce(IDLE_STATUS)  // poll: get_indexing_status
-    mockInvoke.mockResolvedValueOnce([STACK_1])    // poll: list_stacks (stops polling)
-
-    const { unmount } = render(StackOverview)
+    const { unmount } = renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1], status: DONE_STATUS })
 
     // Wait until listen has been called (meaning unlistenThumbnail is set)
     await waitFor(() => expect(mockListen).toHaveBeenCalledWith('thumbnail-ready', expect.any(Function)))
@@ -481,14 +403,7 @@ const STACK_WITHOUT_THUMB: StackSummary = {
 
 describe('StackOverview — P2 resume thumbnails', () => {
   it('P2-07: calls resume_thumbnails when stacks exist with null thumbnail_path and idle status', async () => {
-    mockInvoke.mockResolvedValueOnce([FOLDER_A])           // list_source_folders
-    mockInvoke.mockResolvedValueOnce([STACK_WITHOUT_THUMB]) // list_stacks
-    mockInvoke.mockResolvedValueOnce(IDLE_STATUS)           // get_indexing_status
-    mockInvoke.mockResolvedValueOnce(undefined)             // resume_thumbnails
-    mockInvoke.mockResolvedValueOnce(IDLE_STATUS)           // poll: get_indexing_status
-    mockInvoke.mockResolvedValueOnce([STACK_WITHOUT_THUMB]) // poll: list_stacks (stops polling)
-
-    render(StackOverview, { props: {} })
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_WITHOUT_THUMB] })
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith('resume_thumbnails', { slug: 'iceland-2024' })
@@ -496,39 +411,21 @@ describe('StackOverview — P2 resume thumbnails', () => {
   })
 
   it('P2-08: does NOT call resume_thumbnails when all stacks have thumbnail_path', async () => {
-    mockInvoke.mockResolvedValueOnce([FOLDER_A])     // list_source_folders
-    mockInvoke.mockResolvedValueOnce([STACK_WITH_THUMB]) // list_stacks (all have thumbnails)
-    mockInvoke.mockResolvedValueOnce(IDLE_STATUS)    // get_indexing_status
-
-    render(StackOverview, { props: {} })
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_WITH_THUMB] })
 
     await waitFor(() => expect(screen.getByText('Index complete.')).toBeInTheDocument())
     expect(mockInvoke).not.toHaveBeenCalledWith('resume_thumbnails', expect.anything())
   })
 
   it('P2-09: does NOT call resume_thumbnails when stacks array is empty', async () => {
-    mockInvoke.mockResolvedValueOnce([FOLDER_A])  // list_source_folders
-    mockInvoke.mockResolvedValueOnce([])          // list_stacks (empty)
-    mockInvoke.mockResolvedValueOnce(IDLE_STATUS) // get_indexing_status
-    mockInvoke.mockResolvedValueOnce(undefined)   // start_indexing (auto-start fires)
-    mockInvoke.mockResolvedValueOnce(IDLE_STATUS) // poll: get_indexing_status
-    mockInvoke.mockResolvedValueOnce([])          // poll: list_stacks (stops polling)
-
-    render(StackOverview, { props: {} })
+    renderStackOverview({ folders: [FOLDER_A] })
 
     await new Promise(resolve => setTimeout(resolve, 50))
     expect(mockInvoke).not.toHaveBeenCalledWith('resume_thumbnails', expect.anything())
   })
 
   it('P2-10: does NOT call resume_thumbnails when thumbnails_running is already true', async () => {
-    mockInvoke.mockResolvedValueOnce([FOLDER_A])              // list_source_folders
-    mockInvoke.mockResolvedValueOnce([STACK_WITHOUT_THUMB])    // list_stacks
-    mockInvoke.mockResolvedValueOnce(THUMBNAIL_RUNNING_STATUS) // get_indexing_status (thumbnails_running: true)
-    // Polling will fire
-    mockInvoke.mockResolvedValueOnce(IDLE_STATUS)             // poll: get_indexing_status
-    mockInvoke.mockResolvedValueOnce([STACK_WITHOUT_THUMB])   // poll: list_stacks
-
-    render(StackOverview, { props: {} })
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_WITHOUT_THUMB], status: THUMBNAIL_RUNNING_STATUS })
 
     await new Promise(resolve => setTimeout(resolve, 50))
     expect(mockInvoke).not.toHaveBeenCalledWith('resume_thumbnails', expect.anything())
@@ -537,6 +434,7 @@ describe('StackOverview — P2 resume thumbnails', () => {
 
 describe('StackOverview — P1 thumbnail progress bar', () => {
   it('P1-06: renders determinate progress bar when thumbnails_total > 0', async () => {
+    // Custom mocks: keep PROGRESS_STATUS in poll so progress bar stays visible
     mockInvoke.mockResolvedValueOnce([FOLDER_A])    // list_source_folders
     mockInvoke.mockResolvedValueOnce([STACK_1, STACK_2]) // list_stacks
     mockInvoke.mockResolvedValueOnce(PROGRESS_STATUS)    // get_indexing_status
@@ -555,6 +453,7 @@ describe('StackOverview — P1 thumbnail progress bar', () => {
   })
 
   it('P1-07: renders spinner when thumbnails_total is 0 (pre-total window)', async () => {
+    // Custom mocks: keep THUMBNAIL_RUNNING_STATUS in poll so spinner stays visible
     mockInvoke.mockResolvedValueOnce([FOLDER_A])
     mockInvoke.mockResolvedValueOnce([STACK_1])
     mockInvoke.mockResolvedValueOnce(THUMBNAIL_RUNNING_STATUS)  // thumbnails_total: 0
@@ -569,7 +468,7 @@ describe('StackOverview — P1 thumbnail progress bar', () => {
   })
 
   it('P1-08: thumbnail progress indicator is never a static full-width pulsing bar', async () => {
-    // WHY: a w-full animate-pulse element looks identical to "100% complete"
+    // Custom mocks: keep THUMBNAIL_RUNNING_STATUS in poll
     mockInvoke.mockResolvedValueOnce([FOLDER_A])
     mockInvoke.mockResolvedValueOnce([STACK_1])
     mockInvoke.mockResolvedValueOnce(THUMBNAIL_RUNNING_STATUS)
@@ -587,21 +486,8 @@ describe('StackOverview — P1 thumbnail progress bar', () => {
 })
 
 describe('StackOverview — burst gap panel (BT-07..BT-11)', () => {
-  // Each test sets up StackOverview in the "has stacks" state:
-  // list_source_folders → [FOLDER_A]
-  // list_stacks → [STACK_1, STACK_2]  (both have null thumbnail_path)
-  // get_indexing_status → IDLE_STATUS (no resume triggered)
-  // STACK_1 has thumbnail_path: null so resume_thumbnails will be called — mock it as 4th call.
-
   async function setupWithStacks() {
-    mockInvoke.mockResolvedValueOnce([FOLDER_A])          // list_source_folders
-    mockInvoke.mockResolvedValueOnce([STACK_1, STACK_2])  // list_stacks
-    mockInvoke.mockResolvedValueOnce(IDLE_STATUS)         // get_indexing_status
-    mockInvoke.mockResolvedValueOnce(undefined)           // resume_thumbnails (STACK_1 has null thumb)
-    mockInvoke.mockResolvedValueOnce(IDLE_STATUS)         // poll: get_indexing_status
-    mockInvoke.mockResolvedValueOnce([STACK_1, STACK_2])  // poll: list_stacks (stops polling)
-    render(StackOverview)
-    // Wait for stacks to be rendered (stack cards are <button data-stack-card>)
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2] })
     await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(2))
   }
 
@@ -625,7 +511,7 @@ describe('StackOverview — burst gap panel (BT-07..BT-11)', () => {
       expect(screen.getByText(/burst gap/i)).toBeInTheDocument()
     })
     // Input should show fallback default value 3
-    const input = screen.getByRole('spinbutton')
+    const input = screen.getByRole('spinbutton') as HTMLInputElement
     expect(Number(input.value)).toBe(3)
   })
 
@@ -732,20 +618,11 @@ const THUMBS_DONE_STATUS: IndexingStatus = {
 describe('StackOverview — thumbnail auto-resume (TH-D1..TH-D3)', () => {
   // TH-D1
   it('TH-D1: no auto-resume when all stacks have thumbnails', async () => {
-    // WHY: When all stacks have thumbnail_path set (non-null), loadAll() must NOT
-    // call resume_thumbnails. The condition is: stacks.some(s => s.thumbnail_path === null).
-    // If all are non-null, that condition is false and resume is skipped.
-    // Expected: PASS
-
-    // invoke call order on mount:
-    // 1. list_source_folders
-    // 2. list_stacks → both stacks have thumbnails
-    // 3. get_indexing_status → idle, no thumbnails_running
-    mockInvoke.mockResolvedValueOnce([{ id: 1, path: '/photos' }]) // list_source_folders
-    mockInvoke.mockResolvedValueOnce([STACK_A_WITH_THUMB, STACK_B_WITH_THUMB]) // list_stacks
-    mockInvoke.mockResolvedValueOnce(THUMBS_DONE_STATUS)            // get_indexing_status
-
-    render(StackOverview)
+    renderStackOverview({
+      folders: [{ id: 1, path: '/photos' }],
+      stacks: [STACK_A_WITH_THUMB, STACK_B_WITH_THUMB],
+      status: THUMBS_DONE_STATUS,
+    })
 
     // Wait until stacks are visible
     await waitFor(() => {
@@ -763,28 +640,13 @@ describe('StackOverview — thumbnail auto-resume (TH-D1..TH-D3)', () => {
 
   // TH-D2
   it('TH-D2: auto-resume called when any stack is missing thumbnail', async () => {
-    // WHY: When at least one stack has thumbnail_path === null and status is idle,
-    // loadAll() must call handleResumeThumbnails() which calls resume_thumbnails.
-    // This is the re-open scenario where a previous session didn't finish thumbnail gen.
-    // Expected: PASS
+    renderStackOverview({
+      folders: [{ id: 1, path: '/photos' }],
+      stacks: [STACK_A_WITH_THUMB, STACK_B_NO_THUMB],
+      status: THUMBS_DONE_STATUS,
+    })
 
-    // invoke call order on mount (before polling starts):
-    // 1. list_source_folders
-    // 2. list_stacks → one stack null, one with thumb
-    // 3. get_indexing_status → idle
-    // 4. resume_thumbnails → called by handleResumeThumbnails
-    // After #4, startPolling() fires poll() immediately but we let the default
-    // mock (undefined) handle it — that poll returns early (newStatus == null guard).
-    mockInvoke.mockResolvedValueOnce([{ id: 1, path: '/photos' }]) // 1: list_source_folders
-    mockInvoke.mockResolvedValueOnce([STACK_A_WITH_THUMB, STACK_B_NO_THUMB]) // 2: list_stacks
-    mockInvoke.mockResolvedValueOnce(THUMBS_DONE_STATUS)            // 3: get_indexing_status (idle)
-    mockInvoke.mockResolvedValueOnce(undefined)                     // 4: resume_thumbnails
-    mockInvoke.mockResolvedValueOnce(IDLE_STATUS)                   // 5: poll: get_indexing_status
-    mockInvoke.mockResolvedValueOnce([STACK_A_WITH_THUMB, STACK_B_NO_THUMB]) // 6: poll: list_stacks (stops polling)
-
-    render(StackOverview)
-
-    // Wait until resume_thumbnails is called (mock #4 consumed)
+    // Wait until resume_thumbnails is called
     await waitFor(() => {
       const calledCommands = mockInvoke.mock.calls.map(c => c[0])
       expect(calledCommands).toContain('resume_thumbnails')
@@ -793,23 +655,10 @@ describe('StackOverview — thumbnail auto-resume (TH-D1..TH-D3)', () => {
 
   // TH-D3
   it('TH-D3: saveBurstGap auto-resumes thumbnails in the same session after restack', async () => {
-    // WHY: After the user saves a burst gap and restack runs, stacks.thumbnail_path
-    // is null (restack cleared them). saveBurstGap must call handleResumeThumbnails()
-    // immediately so thumbnails regenerate in the same session — not on the next app open.
-    //
-    // Without this, opening the app after a restack triggers unexpected thumbnail generation
-    // (the "re-trigger" bug the user reported). Fix: saveBurstGap calls handleResumeThumbnails()
-    // when listStacks returns null thumbnails.
-    //
-    // Expected: PASS (verifies the fix — resume IS called in the same session)
-
     // Mount with stacks that already have thumbnails (all non-null) — no resume on mount
-    const STACK_WITH_THUMB = { ...STACK_1, thumbnail_path: '/cache/1.jpg' }
-    const STACK_WITH_THUMB_2 = { ...STACK_2, thumbnail_path: '/cache/2.jpg' }
-    mockInvoke.mockResolvedValueOnce([FOLDER_A])
-    mockInvoke.mockResolvedValueOnce([STACK_WITH_THUMB, STACK_WITH_THUMB_2])
-    mockInvoke.mockResolvedValueOnce(IDLE_STATUS)
-    render(StackOverview)
+    const STACK_WITH_THUMB_LOCAL = { ...STACK_1, thumbnail_path: '/cache/1.jpg' } as StackSummary
+    const STACK_WITH_THUMB_2 = { ...STACK_2, thumbnail_path: '/cache/2.jpg' } as StackSummary
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_WITH_THUMB_LOCAL, STACK_WITH_THUMB_2] })
     await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(2))
 
     // Confirm resume_thumbnails was NOT called on mount (all have thumbnails)
@@ -820,10 +669,10 @@ describe('StackOverview — thumbnail auto-resume (TH-D1..TH-D3)', () => {
     await fireEvent.keyDown(document, { key: 'b', ctrlKey: true })
     await waitFor(() => expect(screen.getByText(/burst gap/i)).toBeInTheDocument())
 
-    // saveBurstGap flow: setBurstGap → restack → listStacks (null) → resume_thumbnails
+    // saveBurstGap flow: setBurstGap -> restack -> listStacks (null) -> resume_thumbnails
     mockInvoke.mockResolvedValueOnce(undefined)           // set_burst_gap
     mockInvoke.mockResolvedValueOnce(undefined)           // restack
-    mockInvoke.mockResolvedValueOnce([STACK_1, STACK_2])  // list_stacks → null thumbnails after restack
+    mockInvoke.mockResolvedValueOnce([STACK_1, STACK_2])  // list_stacks -> null thumbnails after restack
     mockInvoke.mockResolvedValueOnce(undefined)           // resume_thumbnails (called by saveBurstGap)
     mockInvoke.mockResolvedValueOnce(IDLE_STATUS)         // poll: get_indexing_status
     mockInvoke.mockResolvedValueOnce([STACK_1, STACK_2])  // poll: list_stacks (stops polling)

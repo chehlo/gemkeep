@@ -1,3 +1,4 @@
+use crate::import::pairs::LogicalGroup;
 use crate::import::{exif, pairs, scanner, stacks, thumbnails};
 use crate::photos::model::{ImportStats, IndexingStatus, PhotoFormat, ScannedFile};
 use crate::photos::repository;
@@ -13,6 +14,23 @@ use std::sync::{Arc, Mutex};
 #[derive(Serialize, Clone)]
 pub struct ThumbnailReadyPayload {
     pub logical_photo_id: i64,
+}
+
+/// Static configuration for a pipeline run (source folders, cache, burst settings).
+pub struct PipelineConfig {
+    pub project_id: i64,
+    pub project_dir: PathBuf,
+    pub folder_paths: Vec<PathBuf>,
+    pub burst_gap_secs: u64,
+}
+
+/// Runtime controls shared with the background thread (cancel/pause signals, status, counters).
+pub struct PipelineControls {
+    pub status: Arc<Mutex<IndexingStatus>>,
+    pub cancel: Arc<AtomicBool>,
+    pub pause: Arc<AtomicBool>,
+    pub app_handle: Option<tauri::AppHandle>,
+    pub thumbnails_done_counter: Arc<AtomicUsize>,
 }
 
 /// Run the full import pipeline. Designed to be called from a background thread.
@@ -35,22 +53,44 @@ pub fn run_pipeline(
     app_handle: Option<tauri::AppHandle>,
     thumbnails_done_counter: Arc<AtomicUsize>,
 ) -> ImportStats {
+    let config = PipelineConfig {
+        project_id,
+        project_dir: project_dir.to_path_buf(),
+        folder_paths,
+        burst_gap_secs,
+    };
+    let controls = PipelineControls {
+        status,
+        cancel,
+        pause,
+        app_handle,
+        thumbnails_done_counter,
+    };
+    run_pipeline_inner(conn, &config, &controls)
+}
+
+/// Internal pipeline implementation that uses structured config/controls.
+fn run_pipeline_inner(
+    conn: &Connection,
+    config: &PipelineConfig,
+    controls: &PipelineControls,
+) -> ImportStats {
     let mut stats = ImportStats::default();
-    let cache_dir = project_dir.join("cache").join("thumbnails");
+    let cache_dir = config.project_dir.join("cache").join("thumbnails");
 
     // ── STEP 1: Scan all folders ──────────────────────────────────────────────
     tracing::info!(
         "pipeline: scanning {} folder(s) for project_id={}",
-        folder_paths.len(),
-        project_id
+        config.folder_paths.len(),
+        config.project_id
     );
 
     let mut scanned_paths: Vec<scanner::ScannedPath> = Vec::new();
 
-    for folder in &folder_paths {
-        if cancel.load(Ordering::SeqCst) {
+    for folder in &config.folder_paths {
+        if controls.cancel.load(Ordering::SeqCst) {
             tracing::info!("pipeline: cancelled during scan");
-            update_status(&status, |s| s.cancelled = true);
+            update_status(&controls.status, |s| s.cancelled = true);
             stats.cancelled = true;
             return stats;
         }
@@ -71,7 +111,7 @@ pub fn run_pipeline(
     // ── STEP 2: Check existing photos (idempotency) ───────────────────────────
     // Load already-imported paths for this project.
     let existing_paths: std::collections::HashSet<String> =
-        match repository::list_photo_paths_for_project(conn, project_id) {
+        match repository::list_photo_paths_for_project(conn, config.project_id) {
             Ok(paths) => paths.into_iter().collect(),
             Err(e) => {
                 tracing::warn!("pipeline: cannot load existing paths: {}", e);
@@ -80,14 +120,14 @@ pub fn run_pipeline(
         };
 
     // Set total to ALL scanned files so re-index shows real progress too
-    update_status(&status, |s| {
+    update_status(&controls.status, |s| {
         s.total = scanned_paths.len();
         s.processed = 0;
     });
 
     // ── STEP 3: Extract EXIF + build ScannedFile list ─────────────────────────
-    if cancel.load(Ordering::SeqCst) {
-        update_status(&status, |s| s.cancelled = true);
+    if controls.cancel.load(Ordering::SeqCst) {
+        update_status(&controls.status, |s| s.cancelled = true);
         stats.cancelled = true;
         return stats;
     }
@@ -95,19 +135,19 @@ pub fn run_pipeline(
     let mut new_files: Vec<ScannedFile> = Vec::new();
 
     for sp in scanned_paths {
-        if cancel.load(Ordering::SeqCst) {
-            update_status(&status, |s| s.cancelled = true);
+        if controls.cancel.load(Ordering::SeqCst) {
+            update_status(&controls.status, |s| s.cancelled = true);
             stats.cancelled = true;
             return stats;
         }
-        while pause.load(Ordering::SeqCst) {
+        while controls.pause.load(Ordering::SeqCst) {
             std::thread::sleep(std::time::Duration::from_millis(100));
-            if cancel.load(Ordering::SeqCst) {
+            if controls.cancel.load(Ordering::SeqCst) {
                 break;
             }
         }
-        if cancel.load(Ordering::SeqCst) {
-            update_status(&status, |s| s.cancelled = true);
+        if controls.cancel.load(Ordering::SeqCst) {
+            update_status(&controls.status, |s| s.cancelled = true);
             stats.cancelled = true;
             return stats;
         }
@@ -115,7 +155,7 @@ pub fn run_pipeline(
         let path_str = sp.path.to_string_lossy().to_string();
         if existing_paths.contains(&path_str) {
             stats.skipped_existing += 1;
-            update_status(&status, |s| s.processed += 1);
+            update_status(&controls.status, |s| s.processed += 1);
             continue;
         }
 
@@ -144,7 +184,7 @@ pub fn run_pipeline(
             dir,
         });
 
-        update_status(&status, |s| s.processed += 1);
+        update_status(&controls.status, |s| s.processed += 1);
     }
 
     tracing::info!(
@@ -153,15 +193,15 @@ pub fn run_pipeline(
         stats.skipped_existing
     );
 
-    if cancel.load(Ordering::SeqCst) {
-        update_status(&status, |s| s.cancelled = true);
+    if controls.cancel.load(Ordering::SeqCst) {
+        update_status(&controls.status, |s| s.cancelled = true);
         stats.cancelled = true;
         return stats;
     }
 
     // ── STEP 4: Load existing files from DB for re-stacking ───────────────────
     // Load existing photos so they can be re-incorporated into pairs/stacks.
-    let existing_scanned = load_existing_scanned_files(conn);
+    let existing_scanned = repository::load_existing_scanned_files(conn);
     let all_files: Vec<ScannedFile> = existing_scanned.into_iter().chain(new_files).collect();
 
     // ── STEP 5: Pair detection ────────────────────────────────────────────────
@@ -174,14 +214,14 @@ pub fn run_pipeline(
         pairs_count
     );
 
-    if cancel.load(Ordering::SeqCst) {
-        update_status(&status, |s| s.cancelled = true);
+    if controls.cancel.load(Ordering::SeqCst) {
+        update_status(&controls.status, |s| s.cancelled = true);
         stats.cancelled = true;
         return stats;
     }
 
     // ── STEP 6: Stack assignment ──────────────────────────────────────────────
-    let assigned = stacks::assign_stacks_by_burst(groups, burst_gap_secs);
+    let assigned = stacks::assign_stacks_by_burst(groups, config.burst_gap_secs);
 
     // Count distinct stacks
     let max_stack_idx = assigned
@@ -200,14 +240,14 @@ pub fn run_pipeline(
     );
 
     // ── STEP 7: DB writes ─────────────────────────────────────────────────────
-    if cancel.load(Ordering::SeqCst) {
-        update_status(&status, |s| s.cancelled = true);
+    if controls.cancel.load(Ordering::SeqCst) {
+        update_status(&controls.status, |s| s.cancelled = true);
         stats.cancelled = true;
         return stats;
     }
 
     // Clear old stacks/logical_photos so we can rebuild cleanly.
-    if let Err(e) = repository::clear_stacks_and_logical_photos(conn, project_id) {
+    if let Err(e) = repository::clear_stacks_and_logical_photos(conn, config.project_id) {
         let msg = format!("pipeline: failed to clear stacks: {}", e);
         tracing::warn!("{}", msg);
         log_error(&mut stats, msg);
@@ -219,7 +259,7 @@ pub fn run_pipeline(
 
     // Pre-create all stack rows
     for idx in 0..max_stack_idx {
-        match repository::insert_stack(conn, project_id) {
+        match repository::insert_stack(conn, config.project_id) {
             Ok(id) => {
                 if idx < stack_id_map.len() {
                     stack_id_map[idx] = Some(id);
@@ -233,36 +273,144 @@ pub fn run_pipeline(
         }
     }
 
-    // (lp_id, path, format, orientation) for thumbnail generation after DB writes
+    // Persist logical photos and link scanned files via shared function.
+    let lp_thumb_targets = persist_groups_to_db(
+        conn,
+        &assigned,
+        &stack_id_map,
+        config.project_id,
+        Some(&existing_paths),
+        &mut stats,
+    );
+
+    tracing::info!(
+        "pipeline: DB writes complete — imported={} skipped_existing={} errors={}",
+        stats.imported,
+        stats.skipped_existing,
+        stats.errors
+    );
+
+    // After STEP 7 (DB writes complete — stacks ready to display):
+    update_status(&controls.status, |s| {
+        s.running = false; // Frontend can show grid now
+        s.thumbnails_running = true; // Thumbnails still generating in background
+        s.errors = stats.errors;
+        s.last_stats = Some(stats.clone());
+        s.thumbnails_total = lp_thumb_targets.len();
+        s.thumbnails_done = 0;
+    });
+
+    // Reset the live counter to 0 before the pool starts
+    controls.thumbnails_done_counter.store(0, Ordering::SeqCst);
+
+    // ── STEP 8: Thumbnail generation (non-blocking from UI perspective) ───────
+    if controls.cancel.load(Ordering::SeqCst) {
+        update_status(&controls.status, |s| {
+            s.cancelled = true;
+            s.thumbnails_running = false;
+        });
+        stats.cancelled = true;
+        return stats;
+    }
+
+    let n_threads = super::util::capped_num_threads();
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(n_threads)
+        .build()
+        .unwrap_or_else(|_| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(1)
+                .build()
+                .unwrap()
+        });
+    pool.install(|| {
+        lp_thumb_targets
+            .par_iter()
+            .for_each(|(lp_id, path, format, orientation)| {
+                if !controls.cancel.load(Ordering::SeqCst)
+                    && thumbnails::generate_thumbnail(
+                        path,
+                        format,
+                        *lp_id,
+                        &cache_dir,
+                        *orientation,
+                    )
+                    .is_some()
+                {
+                    controls
+                        .thumbnails_done_counter
+                        .fetch_add(1, Ordering::Relaxed);
+                    if let Some(handle) = &controls.app_handle {
+                        use tauri::Emitter;
+                        let _ = handle.emit(
+                            "thumbnail-ready",
+                            ThumbnailReadyPayload {
+                                logical_photo_id: *lp_id,
+                            },
+                        );
+                    }
+                }
+            });
+    });
+
+    // Mark thumbnails done
+    update_status(&controls.status, |s| {
+        s.thumbnails_running = false;
+    });
+    stats
+}
+
+/// Persist assigned logical groups to the database: insert logical_photo rows,
+/// link scanned files, and handle RAW+JPEG pairs.
+///
+/// Returns thumbnail targets `(lp_id, path, format, orientation)` for each
+/// successfully persisted logical photo.
+///
+/// `existing_paths`: if `Some`, tracks which paths are new imports (incrementing
+/// `stats.imported`). Pass `None` when all files are already in the DB (e.g. restack).
+fn persist_groups_to_db(
+    conn: &Connection,
+    assigned: &[(LogicalGroup, usize)],
+    stack_id_map: &[Option<i64>],
+    project_id: i64,
+    existing_paths: Option<&std::collections::HashSet<String>>,
+    stats: &mut ImportStats,
+) -> Vec<(i64, PathBuf, PhotoFormat, Option<u16>)> {
+    let empty_set = std::collections::HashSet::new();
+    let paths_ref = existing_paths.unwrap_or(&empty_set);
+    let track_imports = existing_paths.is_some();
+
     let mut lp_thumb_targets: Vec<(i64, PathBuf, PhotoFormat, Option<u16>)> = Vec::new();
 
-    for (group, stack_idx) in &assigned {
+    for (group, stack_idx) in assigned {
         let stack_db_id = match stack_id_map.get(*stack_idx).and_then(|o| *o) {
             Some(id) => id,
             None => {
-                let msg = format!("pipeline: no stack DB id for index {}", stack_idx);
+                let msg = format!("persist: no stack DB id for index {}", stack_idx);
                 tracing::warn!("{}", msg);
-                log_error(&mut stats, msg);
+                log_error(stats, msg);
                 continue;
             }
         };
 
         let representative = group.representative();
-        let representative_path = representative.path.to_string_lossy().to_string();
 
         let representative_id = match insert_scanned_file(conn, representative) {
             Ok(id) => id,
             Err(e) => {
-                let msg = format!("pipeline: insert photo {:?}: {}", representative.path, e);
+                let msg = format!("persist: insert photo {:?}: {}", representative.path, e);
                 tracing::warn!("{}", msg);
-                log_error(&mut stats, msg);
+                log_error(stats, msg);
                 continue;
             }
         };
 
-        // Track new imports
-        if !existing_paths.contains(&representative_path) {
-            stats.imported += 1;
+        // Track new imports when existing_paths is provided
+        if track_imports {
+            let representative_path = representative.path.to_string_lossy().to_string();
+            if !paths_ref.contains(&representative_path) {
+                stats.imported += 1;
+            }
         }
 
         // Insert logical photo row
@@ -274,16 +422,20 @@ pub fn run_pipeline(
         ) {
             Ok(id) => id,
             Err(e) => {
-                let msg = format!("pipeline: insert logical_photo: {}", e);
+                let msg = format!("persist: insert logical_photo: {}", e);
                 tracing::warn!("{}", msg);
-                log_error(&mut stats, msg);
+                log_error(stats, msg);
                 continue;
             }
         };
 
         // Link representative photo → logical_photo
         if let Err(e) = repository::set_logical_photo_id(conn, representative_id, lp_id) {
-            tracing::warn!("set logical_photo_id on {}: {}", representative_id, e);
+            tracing::warn!(
+                "persist: set_logical_photo_id on {}: {}",
+                representative_id,
+                e
+            );
         }
 
         // For pairs, also insert the non-representative file
@@ -300,20 +452,26 @@ pub fn run_pipeline(
                 });
 
             if let Some(other) = other_opt {
-                let other_path = other.path.to_string_lossy().to_string();
                 match insert_scanned_file(conn, other) {
                     Ok(other_id) => {
                         if let Err(e) = repository::set_logical_photo_id(conn, other_id, lp_id) {
-                            tracing::warn!("set logical_photo_id on other {}: {}", other_id, e);
+                            tracing::warn!(
+                                "persist: set_logical_photo_id on other {}: {}",
+                                other_id,
+                                e
+                            );
                         }
-                        if !existing_paths.contains(&other_path) {
-                            stats.imported += 1;
+                        if track_imports {
+                            let other_path = other.path.to_string_lossy().to_string();
+                            if !paths_ref.contains(&other_path) {
+                                stats.imported += 1;
+                            }
                         }
                     }
                     Err(e) => {
-                        let msg = format!("pipeline: insert paired photo {:?}: {}", other.path, e);
+                        let msg = format!("persist: insert paired photo {:?}: {}", other.path, e);
                         tracing::warn!("{}", msg);
-                        log_error(&mut stats, msg);
+                        log_error(stats, msg);
                     }
                 }
             }
@@ -327,81 +485,7 @@ pub fn run_pipeline(
         ));
     }
 
-    tracing::info!(
-        "pipeline: DB writes complete — imported={} skipped_existing={} errors={}",
-        stats.imported,
-        stats.skipped_existing,
-        stats.errors
-    );
-
-    // After STEP 7 (DB writes complete — stacks ready to display):
-    update_status(&status, |s| {
-        s.running = false; // Frontend can show grid now
-        s.thumbnails_running = true; // Thumbnails still generating in background
-        s.errors = stats.errors;
-        s.last_stats = Some(stats.clone());
-        s.thumbnails_total = lp_thumb_targets.len();
-        s.thumbnails_done = 0;
-    });
-
-    // Reset the live counter to 0 before the pool starts
-    thumbnails_done_counter.store(0, Ordering::SeqCst);
-
-    // ── STEP 8: Thumbnail generation (non-blocking from UI perspective) ───────
-    if cancel.load(Ordering::SeqCst) {
-        update_status(&status, |s| {
-            s.cancelled = true;
-            s.thumbnails_running = false;
-        });
-        stats.cancelled = true;
-        return stats;
-    }
-
-    let n_threads = std::thread::available_parallelism()
-        .map(|n| n.get().saturating_sub(2).max(1))
-        .unwrap_or(1);
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(n_threads)
-        .build()
-        .unwrap_or_else(|_| {
-            rayon::ThreadPoolBuilder::new()
-                .num_threads(1)
-                .build()
-                .unwrap()
-        });
-    pool.install(|| {
-        lp_thumb_targets
-            .par_iter()
-            .for_each(|(lp_id, path, format, orientation)| {
-                if !cancel.load(Ordering::SeqCst)
-                    && thumbnails::generate_thumbnail(
-                        path,
-                        format,
-                        *lp_id,
-                        &cache_dir,
-                        *orientation,
-                    )
-                    .is_some()
-                {
-                    thumbnails_done_counter.fetch_add(1, Ordering::Relaxed);
-                    if let Some(handle) = &app_handle {
-                        use tauri::Emitter;
-                        let _ = handle.emit(
-                            "thumbnail-ready",
-                            ThumbnailReadyPayload {
-                                logical_photo_id: *lp_id,
-                            },
-                        );
-                    }
-                }
-            });
-    });
-
-    // Mark thumbnails done
-    update_status(&status, |s| {
-        s.thumbnails_running = false;
-    });
-    stats
+    lp_thumb_targets
 }
 
 /// Insert a ScannedFile into the photos table and return its row id.
@@ -412,19 +496,12 @@ fn insert_scanned_file(conn: &Connection, file: &ScannedFile) -> rusqlite::Resul
     repository::insert_photo(
         conn,
         &path,
-        photo_format_str(&file.format),
+        file.format.as_str(),
         capture_time_rfc.as_deref(),
         file.orientation,
         file.camera_model.as_deref(),
         file.lens.as_deref(),
     )
-}
-
-fn photo_format_str(format: &PhotoFormat) -> &'static str {
-    match format {
-        PhotoFormat::Jpeg => "jpeg",
-        PhotoFormat::Raw => "raw",
-    }
 }
 
 /// Record an error in stats (increments counter + appends to log if < 100 entries).
@@ -441,79 +518,37 @@ fn update_status<F: FnOnce(&mut IndexingStatus)>(status: &Arc<Mutex<IndexingStat
     }
 }
 
-/// Load existing photos from DB and reconstruct ScannedFile structs for re-stacking.
-/// After `clear_stacks_and_logical_photos`, all photos have logical_photo_id = NULL
-/// but still exist in the photos table. We reload them to re-pair and re-stack.
-fn load_existing_scanned_files(conn: &Connection) -> Vec<ScannedFile> {
-    let mut stmt = match conn
-        .prepare("SELECT path, format, capture_time, orientation, camera_model, lens FROM photos")
-    {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::warn!("load_existing_scanned_files prepare: {}", e);
-            return vec![];
-        }
-    };
+/// Find logical photo targets that are missing thumbnails on disk.
+///
+/// Returns `(missing_targets, total_lp_count)` where `missing_targets` contains
+/// `(lp_id, source_path, PhotoFormat, orientation)` for each LP without a cached thumbnail.
+#[allow(clippy::type_complexity)]
+pub fn find_missing_thumbnail_targets(
+    conn: &Connection,
+    project_id: i64,
+    cache_dir: &Path,
+) -> Result<(Vec<(i64, PathBuf, PhotoFormat, Option<u16>)>, usize), String> {
+    // Get all lp_ids for this project (one per logical photo, not one per stack)
+    let all_lp_ids =
+        repository::list_all_lp_ids_for_project(conn, project_id).map_err(|e| e.to_string())?;
+    let total_lp_count = all_lp_ids.len();
 
-    let rows = stmt.query_map([], |row| {
-        let path_str: String = row.get(0)?;
-        let format_str: String = row.get(1)?;
-        let capture_time_str: Option<String> = row.get(2)?;
-        let orientation: Option<u16> = row.get(3)?;
-        let camera_model: Option<String> = row.get(4)?;
-        let lens: Option<String> = row.get(5)?;
-        Ok((
-            path_str,
-            format_str,
-            capture_time_str,
-            orientation,
-            camera_model,
-            lens,
-        ))
-    });
+    // Find which thumbnails already exist on disk
+    let existing = crate::import::util::cached_thumbnail_ids(cache_dir);
 
-    let rows = match rows {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::warn!("load_existing_scanned_files query: {}", e);
-            return vec![];
-        }
-    };
+    let missing_ids: Vec<i64> = all_lp_ids
+        .into_iter()
+        .filter(|id| !existing.contains(id))
+        .collect();
 
-    let mut files = Vec::new();
-    for row in rows.flatten() {
-        let (path_str, format_str, capture_time_str, orientation, camera_model, lens) = row;
-        let path = PathBuf::from(&path_str);
-        let format = match format_str.as_str() {
-            "jpeg" => PhotoFormat::Jpeg,
-            "raw" => PhotoFormat::Raw,
-            _ => continue,
-        };
-        let capture_time = capture_time_str.as_deref().and_then(|s| {
-            chrono::DateTime::parse_from_rfc3339(s)
-                .ok()
-                .map(|dt| dt.with_timezone(&chrono::Utc))
-        });
-        let base_name = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .map(|s| s.to_lowercase())
-            .unwrap_or_default();
-        let dir = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
-
-        files.push(ScannedFile {
-            path,
-            format,
-            capture_time,
-            camera_model,
-            lens,
-            orientation,
-            base_name,
-            dir,
-        });
+    if missing_ids.is_empty() {
+        return Ok((vec![], total_lp_count));
     }
 
-    files
+    let missing_targets =
+        repository::list_representative_photos_for_lp_ids(conn, project_id, &missing_ids)
+            .map_err(|e| e.to_string())?;
+    Ok((missing_targets, total_lp_count))
 }
 
 /// Re-stack all existing photos for a project without re-scanning the filesystem.
@@ -546,7 +581,7 @@ pub fn restack_from_existing_photos(
         .map_err(|e| format!("restack: clear stacks: {}", e))?;
 
     // Load all photos now that logical_photo_id is NULL.
-    let all_files = load_existing_scanned_files(conn);
+    let all_files = repository::load_existing_scanned_files(conn);
 
     // Pair detection
     let groups = pairs::detect_pairs(all_files);
@@ -597,85 +632,15 @@ pub fn restack_from_existing_photos(
         }
     }
 
-    // Insert logical_photos and link photos
-    for (group, stack_idx) in &assigned {
-        let stack_db_id = match stack_id_map.get(*stack_idx).and_then(|o| *o) {
-            Some(id) => id,
-            None => {
-                log_error(
-                    &mut stats,
-                    format!("restack: no stack id for index {}", stack_idx),
-                );
-                continue;
-            }
-        };
-
-        let representative = group.representative();
-        let representative_id = match insert_scanned_file(conn, representative) {
-            Ok(id) => id,
-            Err(e) => {
-                log_error(
-                    &mut stats,
-                    format!("restack: insert photo {:?}: {}", representative.path, e),
-                );
-                continue;
-            }
-        };
-
-        let lp_id = match repository::insert_logical_photo(
-            conn,
-            project_id,
-            representative_id,
-            stack_db_id,
-        ) {
-            Ok(id) => id,
-            Err(e) => {
-                log_error(&mut stats, format!("restack: insert logical_photo: {}", e));
-                continue;
-            }
-        };
-
-        if let Err(e) = repository::set_logical_photo_id(conn, representative_id, lp_id) {
-            tracing::warn!(
-                "restack: set_logical_photo_id representative {}: {}",
-                representative_id,
-                e
-            );
-        }
-
-        if group.is_pair {
-            let other_opt = group
-                .raw
-                .as_ref()
-                .filter(|f| f.path != representative.path)
-                .or_else(|| {
-                    group
-                        .jpeg
-                        .as_ref()
-                        .filter(|f| f.path != representative.path)
-                });
-
-            if let Some(other) = other_opt {
-                match insert_scanned_file(conn, other) {
-                    Ok(other_id) => {
-                        if let Err(e) = repository::set_logical_photo_id(conn, other_id, lp_id) {
-                            tracing::warn!(
-                                "restack: set_logical_photo_id other {}: {}",
-                                other_id,
-                                e
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        log_error(
-                            &mut stats,
-                            format!("restack: insert paired photo {:?}: {}", other.path, e),
-                        );
-                    }
-                }
-            }
-        }
-    }
+    // Persist logical photos and link scanned files via shared function.
+    persist_groups_to_db(
+        conn,
+        &assigned,
+        &stack_id_map,
+        project_id,
+        None, // no existing_paths tracking for restack
+        &mut stats,
+    );
 
     tracing::info!(
         "restack: complete — logical_photos={} pairs={} stacks={} errors={}",

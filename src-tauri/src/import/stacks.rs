@@ -55,28 +55,8 @@ pub use assign_stacks_clean as assign_stacks_by_burst;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::import::pairs::LogicalGroup;
-    use crate::photos::model::{PhotoFormat, ScannedFile};
+    use crate::import::stacks_tests::make_group;
     use chrono::{Duration, TimeZone, Utc};
-    use std::path::PathBuf;
-
-    fn make_group(capture_time: Option<chrono::DateTime<chrono::Utc>>) -> LogicalGroup {
-        let sf = ScannedFile {
-            path: PathBuf::from("/tmp/photo.jpg"),
-            format: PhotoFormat::Jpeg,
-            capture_time,
-            camera_model: None,
-            lens: None,
-            orientation: None,
-            base_name: "photo".to_string(),
-            dir: PathBuf::from("/tmp"),
-        };
-        LogicalGroup {
-            jpeg: Some(sf),
-            raw: None,
-            is_pair: false,
-        }
-    }
 
     fn base_time() -> chrono::DateTime<chrono::Utc> {
         Utc.with_ymd_and_hms(2024, 3, 15, 12, 0, 0).unwrap()

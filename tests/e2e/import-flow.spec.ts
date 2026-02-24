@@ -24,32 +24,12 @@
  */
 
 import { test, expect } from '@playwright/test'
-import { injectTauriMock, createProject } from './helpers/tauri-mock'
+import {
+  injectTauriMock, createProject,
+  FOLDER_ICELAND as FOLDER_A, IDLE_STATUS, RUNNING_STATUS, DONE_STATUS,
+} from './helpers/tauri-mock'
 
 // ── Test fixtures ─────────────────────────────────────────────────────────────
-
-const IDLE_STATUS = {
-  running: false, thumbnails_running: false, total: 0, processed: 0,
-  errors: 0, cancelled: false, paused: false, last_stats: null,
-  thumbnails_total: 0, thumbnails_done: 0,
-}
-
-const RUNNING_STATUS = {
-  running: true, thumbnails_running: false, total: 50, processed: 20,
-  errors: 0, cancelled: false, paused: false, last_stats: null,
-  thumbnails_total: 0, thumbnails_done: 0,
-}
-
-const DONE_STATUS = {
-  running: false, thumbnails_running: false, total: 50, processed: 50,
-  errors: 0, cancelled: false, paused: false,
-  last_stats: {
-    total_files_scanned: 50, imported: 50, skipped_existing: 0,
-    skipped_unsupported: 0, errors: 0, pairs_detected: 25,
-    stacks_generated: 3, logical_photos: 25, error_log: [],
-  },
-  thumbnails_total: 25, thumbnails_done: 25,
-}
 
 const THUMBNAIL_RUNNING_STATUS = {
   ...DONE_STATUS,
@@ -58,8 +38,6 @@ const THUMBNAIL_RUNNING_STATUS = {
   thumbnails_total: 0,
   thumbnails_done: 0,
 }
-
-const FOLDER_A = { id: 1, path: '/home/user/Photos/Iceland' }
 
 const STACK_1 = {
   stack_id: 1, logical_photo_count: 6,

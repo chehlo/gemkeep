@@ -30,6 +30,40 @@ export const makeStacks = (count: number, withThumbs = false) =>
     thumbnail_path: withThumbs ? `/cache/${i + 1}.jpg` : null,
   }))
 
+export const DONE_STATUS = {
+  running: false, thumbnails_running: false, total: 50, processed: 50,
+  errors: 0, cancelled: false, paused: false,
+  last_stats: {
+    total_files_scanned: 50, imported: 50, skipped_existing: 0,
+    skipped_unsupported: 0, errors: 0, pairs_detected: 25,
+    stacks_generated: 3, logical_photos: 25, error_log: [],
+  },
+  thumbnails_total: 25, thumbnails_done: 25,
+}
+
+export const RUNNING_STATUS = {
+  running: true, thumbnails_running: false, total: 50, processed: 20,
+  errors: 0, cancelled: false, paused: false, last_stats: null,
+  thumbnails_total: 0, thumbnails_done: 0,
+}
+
+export const THUMBS_RUNNING_STATUS = {
+  running: false, thumbnails_running: true, total: 50, processed: 50,
+  errors: 0, cancelled: false, paused: false, last_stats: null,
+  thumbnails_total: 10, thumbnails_done: 0,
+}
+
+export const THUMBS_DONE_STATUS = {
+  running: false, thumbnails_running: false, total: 50, processed: 50,
+  errors: 0, cancelled: false, paused: false,
+  last_stats: {
+    total_files_scanned: 50, imported: 50, skipped_existing: 0,
+    skipped_unsupported: 0, errors: 0, pairs_detected: 25,
+    stacks_generated: 2, logical_photos: 10, error_log: [],
+  },
+  thumbnails_total: 10, thumbnails_done: 10,
+}
+
 export const THUMBS_RUNNING_PROJECT = {
   initialFolders: [FOLDER_ICELAND],
   initialStacks: makeStacks(3),
@@ -286,27 +320,14 @@ export async function injectTauriMock(
 /**
  * Create a project via UI and wait for StackOverview to load.
  *
- * Uses dispatchEvent with bubbles:false instead of page.keyboard.press('Enter')
- * to prevent the Enter keydown from reaching StackOverview's window listener
- * (which would immediately navigate to StackFocus when stacks are pre-loaded).
+ * The Enter key handler in StackOverview checks `e.target instanceof HTMLInputElement`
+ * so pressing Enter inside the project name input no longer triggers StackFocus navigation.
  */
 export async function createProject(page: Page, name: string): Promise<void> {
   const { expect } = await import('@playwright/test')
   await page.click('text=New Project')
   await page.fill('#project-name', name)
-  // Non-bubbling Enter: triggers the input's onkeydown handler
-  // but won't propagate to StackOverview's window.addEventListener('keydown')
-  await page.locator('#project-name').evaluate((el) => {
-    el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
-  })
+  await page.keyboard.press('Enter')
   // Wait for navigation to complete and StackOverview to render
   await expect(page.locator('header').getByText(name)).toBeVisible({ timeout: 10_000 })
-  // Ensure we're on StackOverview (not StackFocus from Enter race condition)
-  await page.waitForFunction(() => !document.querySelector('button')?.textContent?.includes('← Back'), { timeout: 3_000 }).catch(() => {})
-  // If we accidentally ended up on StackFocus, press Escape to go back
-  const isStackFocus = await page.locator('button:has-text("Back")').isVisible().catch(() => false)
-  if (isStackFocus) {
-    await page.keyboard.press('Escape')
-    await expect(page.locator('button:has-text("Projects")')).toBeVisible({ timeout: 3_000 })
-  }
 }

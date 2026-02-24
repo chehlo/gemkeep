@@ -100,8 +100,8 @@ export async function resumeIndexing(): Promise<void> {
   return invoke('resume_indexing')
 }
 
-export async function getIndexingStatus(slug: string): Promise<IndexingStatus> {
-  return invoke('get_indexing_status', { slug })
+export async function getIndexingStatus(): Promise<IndexingStatus> {
+  return invoke('get_indexing_status')
 }
 
 export async function listStacks(slug: string): Promise<StackSummary[]> {

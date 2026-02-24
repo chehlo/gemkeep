@@ -7,6 +7,15 @@ pub enum PhotoFormat {
     Raw,
 }
 
+impl PhotoFormat {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PhotoFormat::Jpeg => "jpeg",
+            PhotoFormat::Raw => "raw",
+        }
+    }
+}
+
 /// Intermediate struct used during pipeline (not stored directly in DB)
 #[derive(Debug, Clone)]
 pub struct ScannedFile {

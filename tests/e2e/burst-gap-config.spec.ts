@@ -16,11 +16,12 @@
  */
 
 import { test, expect } from '@playwright/test'
-import { injectTauriMock, createProject } from './helpers/tauri-mock'
+import {
+  injectTauriMock, createProject,
+  FOLDER_ICELAND as FOLDER_A, IDLE_STATUS, THUMBS_DONE_STATUS,
+} from './helpers/tauri-mock'
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
-
-const FOLDER_A = { id: 1, path: '/home/user/Photos/Iceland' }
 
 const STACK_1 = {
   stack_id: 1, logical_photo_count: 6,
@@ -43,22 +44,8 @@ const RESTACKED_SINGLE = {
   thumbnail_path: null, // thumbnails cleared by restack
 }
 
-const DONE_STATUS = {
-  running: false, thumbnails_running: false, total: 50, processed: 50,
-  errors: 0, cancelled: false, paused: false,
-  last_stats: {
-    total_files_scanned: 50, imported: 50, skipped_existing: 0,
-    skipped_unsupported: 0, errors: 0, pairs_detected: 25,
-    stacks_generated: 2, logical_photos: 10, error_log: [],
-  },
-  thumbnails_total: 10, thumbnails_done: 10,
-}
-
-const IDLE_STATUS = {
-  running: false, thumbnails_running: false, total: 0, processed: 0,
-  errors: 0, cancelled: false, paused: false, last_stats: null,
-  thumbnails_total: 0, thumbnails_done: 0,
-}
+// Matches this spec's 2-stack / 10-thumbnail scenario
+const DONE_STATUS = { ...THUMBS_DONE_STATUS }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 

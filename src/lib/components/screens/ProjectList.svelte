@@ -10,6 +10,7 @@
     suggestSlug,
     type Project
   } from '$lib/api/index.js'
+  import { formatDate } from '$lib/utils/date.js'
 
   let projects = $state<Project[]>([])
   let lastProject = $state<Project | null>(null)
@@ -99,10 +100,7 @@
     }
   }
 
-  function formatDate(dt: string | null): string {
-    if (!dt) return 'Never'
-    return dt.slice(0, 10)
-  }
+
 </script>
 
 <div class="min-h-screen bg-gray-950 text-gray-100 p-8">
@@ -179,7 +177,7 @@
           <div class="flex items-center justify-between px-4 py-3 border-b border-gray-800 last:border-0 hover:bg-gray-900">
             <div class="flex-1">
               <div class="font-medium text-white">{project.name}</div>
-              <div class="text-xs text-gray-500 font-mono">{project.slug} · {formatDate(project.last_opened_at)}</div>
+              <div class="text-xs text-gray-500 font-mono">{project.slug} · {formatDate(project.last_opened_at, 'Never')}</div>
             </div>
             <div class="flex gap-2 ml-4">
               <button

@@ -14,11 +14,14 @@
  */
 
 import { test, expect } from '@playwright/test'
-import { injectTauriMock, createProject } from './helpers/tauri-mock'
+import {
+  injectTauriMock, createProject,
+  FOLDER_ICELAND as FOLDER_A,
+  THUMBS_RUNNING_STATUS as THUMBS_RUNNING,
+  THUMBS_DONE_STATUS as THUMBS_DONE,
+} from './helpers/tauri-mock'
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
-
-const FOLDER_A = { id: 1, path: '/home/user/Photos/Iceland' }
 
 const STACK_NO_THUMB_1 = {
   stack_id: 1, logical_photo_count: 6,
@@ -38,23 +41,6 @@ const STACK_WITH_THUMB_1 = {
 const STACK_WITH_THUMB_2 = {
   ...STACK_NO_THUMB_2,
   thumbnail_path: '/home/user/.gem-keep/projects/test/cache/thumbnails/2.jpg',
-}
-
-const THUMBS_RUNNING = {
-  running: false, thumbnails_running: true, total: 50, processed: 50,
-  errors: 0, cancelled: false, paused: false, last_stats: null,
-  thumbnails_total: 10, thumbnails_done: 0,
-}
-
-const THUMBS_DONE = {
-  running: false, thumbnails_running: false, total: 50, processed: 50,
-  errors: 0, cancelled: false, paused: false,
-  last_stats: {
-    total_files_scanned: 50, imported: 50, skipped_existing: 0,
-    skipped_unsupported: 0, errors: 0, pairs_detected: 25,
-    stacks_generated: 2, logical_photos: 10, error_log: [],
-  },
-  thumbnails_total: 10, thumbnails_done: 10,
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

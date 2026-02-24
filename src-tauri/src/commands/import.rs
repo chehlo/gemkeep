@@ -345,6 +345,8 @@ pub fn get_indexing_status(state: State<'_, AppState>) -> Result<IndexingStatus,
 
 // ── Resume thumbnails ─────────────────────────────────────────────────────────
 
+/// Thin wrapper that delegates to the import module's business logic.
+/// Kept as `pub(crate)` so integration tests can call it without reaching into the import module.
 #[allow(clippy::type_complexity)]
 pub(crate) fn find_missing_thumbnail_targets(
     conn: &Connection,
@@ -362,41 +364,7 @@ pub(crate) fn find_missing_thumbnail_targets(
     ),
     String,
 > {
-    // Get all lp_ids for this project (one per logical photo, not one per stack)
-    let all_lp_ids =
-        repository::list_all_lp_ids_for_project(conn, project_id).map_err(|e| e.to_string())?;
-    let total_lp_count = all_lp_ids.len();
-
-    // Find which thumbnails already exist on disk
-    let existing: std::collections::HashSet<i64> = if cache_dir.exists() {
-        std::fs::read_dir(cache_dir)
-            .into_iter()
-            .flatten()
-            .filter_map(|e| e.ok())
-            .filter_map(|e| {
-                e.file_name()
-                    .to_str()
-                    .and_then(|s| s.strip_suffix(".jpg"))
-                    .and_then(|s| s.parse::<i64>().ok())
-            })
-            .collect()
-    } else {
-        std::collections::HashSet::new()
-    };
-
-    let missing_ids: Vec<i64> = all_lp_ids
-        .into_iter()
-        .filter(|id| !existing.contains(id))
-        .collect();
-
-    if missing_ids.is_empty() {
-        return Ok((vec![], total_lp_count));
-    }
-
-    let missing_targets =
-        repository::list_representative_photos_for_lp_ids(conn, project_id, &missing_ids)
-            .map_err(|e| e.to_string())?;
-    Ok((missing_targets, total_lp_count))
+    pipeline::find_missing_thumbnail_targets(conn, project_id, cache_dir)
 }
 
 #[tauri::command]
@@ -462,9 +430,7 @@ pub fn resume_thumbnails(
         use rayon::prelude::*;
         use tauri::Emitter;
 
-        let n_threads = std::thread::available_parallelism()
-            .map(|n| n.get().saturating_sub(2).max(1))
-            .unwrap_or(1);
+        let n_threads = crate::import::util::capped_num_threads();
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(n_threads)
             .build()
@@ -529,7 +495,10 @@ pub fn set_burst_gap(secs: u64, state: State<'_, AppState>) -> Result<(), String
 pub fn restack(slug: String, state: State<'_, AppState>) -> Result<(), String> {
     // Get project_id from the open project
     let project_id = {
-        let guard = state.active_project.lock().unwrap();
+        let guard = state
+            .active_project
+            .lock()
+            .map_err(|_| "lock poisoned".to_string())?;
         guard
             .as_ref()
             .map(|p| p.id)
@@ -541,7 +510,7 @@ pub fn restack(slug: String, state: State<'_, AppState>) -> Result<(), String> {
 
     // Do restack with DB lock
     {
-        let db_guard = state.db.lock().unwrap();
+        let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
         let conn = db_guard
             .as_ref()
             .ok_or_else(|| "No DB connection".to_string())?;
@@ -576,29 +545,12 @@ pub fn list_stacks(slug: String, state: State<'_, AppState>) -> Result<Vec<Stack
         .join("thumbnails");
 
     // One readdir instead of N exists() calls
-    let existing_thumbs: std::collections::HashSet<i64> = if cache_dir.exists() {
-        std::fs::read_dir(&cache_dir)
-            .into_iter()
-            .flatten()
-            .filter_map(|e| e.ok())
-            .filter_map(|e| {
-                e.file_name()
-                    .to_str()
-                    .and_then(|s| s.strip_suffix(".jpg"))
-                    .and_then(|s| s.parse::<i64>().ok())
-            })
-            .collect()
-    } else {
-        std::collections::HashSet::new()
-    };
+    let existing_thumbs = crate::import::util::cached_thumbnail_ids(&cache_dir);
 
     // Batch: one SQL query instead of N queries — picks best LP with a thumbnail per stack
-    let lp_ids = repository::list_best_lp_id_for_thumbnail_per_stack(
-        conn,
-        project.id,
-        &existing_thumbs,
-    )
-    .unwrap_or_default();
+    let lp_ids =
+        repository::list_best_lp_id_for_thumbnail_per_stack(conn, project.id, &existing_thumbs)
+            .unwrap_or_default();
 
     for summary in &mut summaries {
         if let Some(&lp_id) = lp_ids.get(&summary.stack_id) {
@@ -631,5 +583,9 @@ pub fn list_logical_photos(
         .join("cache")
         .join("thumbnails");
 
-    repository::list_logical_photos_by_stack(conn, stack_id, &cache_dir).map_err(|e| e.to_string())
+    // Compose pure DB query with filesystem enrichment (S3 split)
+    let mut summaries =
+        repository::query_logical_photos_by_stack(conn, stack_id).map_err(|e| e.to_string())?;
+    repository::enrich_with_thumbnails(&mut summaries, &cache_dir);
+    Ok(summaries)
 }

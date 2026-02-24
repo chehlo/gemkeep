@@ -14,11 +14,13 @@
  */
 
 import { test, expect } from '@playwright/test'
-import { injectTauriMock, createProject } from './helpers/tauri-mock'
+import {
+  injectTauriMock, createProject,
+  FOLDER_ICELAND as FOLDER_A, IDLE_STATUS,
+  THUMBS_RUNNING_STATUS, THUMBS_DONE_STATUS as THUMBS_DONE,
+} from './helpers/tauri-mock'
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
-
-const FOLDER_A = { id: 1, path: '/home/user/Photos/Iceland' }
 
 const STACK_NO_THUMB = {
   stack_id: 1, logical_photo_count: 6,
@@ -30,33 +32,14 @@ const STACK_WITH_THUMB = {
   thumbnail_path: '/cache/1.jpg',
 }
 
-const IDLE_STATUS = {
-  running: false, thumbnails_running: false, total: 0, processed: 0,
-  errors: 0, cancelled: false, paused: false, last_stats: null,
-  thumbnails_total: 0, thumbnails_done: 0,
-}
-
 const THUMBS_RUNNING_WITH_PROGRESS = {
-  running: false, thumbnails_running: true, total: 50, processed: 50,
-  errors: 0, cancelled: false, paused: false, last_stats: null,
-  thumbnails_total: 10, thumbnails_done: 4,
+  ...THUMBS_RUNNING_STATUS,
+  thumbnails_done: 4,
 }
 
 const THUMBS_RUNNING_NO_TOTAL = {
-  running: false, thumbnails_running: true, total: 50, processed: 50,
-  errors: 0, cancelled: false, paused: false, last_stats: null,
-  thumbnails_total: 0, thumbnails_done: 0,
-}
-
-const THUMBS_DONE = {
-  running: false, thumbnails_running: false, total: 50, processed: 50,
-  errors: 0, cancelled: false, paused: false,
-  last_stats: {
-    total_files_scanned: 50, imported: 50, skipped_existing: 0,
-    skipped_unsupported: 0, errors: 0, pairs_detected: 25,
-    stacks_generated: 2, logical_photos: 10, error_log: [],
-  },
-  thumbnails_total: 10, thumbnails_done: 10,
+  ...THUMBS_RUNNING_STATUS,
+  thumbnails_total: 0,
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -127,11 +110,9 @@ test('Sprint 5-J4: no auto-resume when all stacks already have thumbnails', asyn
 
   await expect(page.getByText('Index complete.')).toBeVisible({ timeout: 5_000 })
 
-  // Give it a moment to ensure no resume call is triggered
-  await page.waitForTimeout(500)
-
-  const resumed = await page.evaluate(
-    () => (window as unknown as Record<string, boolean>).__resumeThumbnailsCalled ?? false
-  )
-  expect(resumed).toBe(false)
+  // Deterministic check: verify resume_thumbnails is NOT in the IPC log.
+  // By the time 'Index complete.' is visible, loadAll() has finished — any
+  // resume_thumbnails call would already have been recorded.
+  const ipcLog = await page.evaluate(() => (window as any).__store.ipcLog as string[])
+  expect(ipcLog).not.toContain('resume_thumbnails')
 })

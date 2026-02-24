@@ -1,22 +1,12 @@
 use crate::photos::model::PhotoFormat;
 use std::path::Path;
 
+#[derive(Default)]
 pub struct ExifData {
     pub capture_time: Option<chrono::DateTime<chrono::Utc>>,
     pub camera_model: Option<String>,
     pub lens: Option<String>,
     pub orientation: Option<u16>,
-}
-
-impl ExifData {
-    fn empty() -> Self {
-        ExifData {
-            capture_time: None,
-            camera_model: None,
-            lens: None,
-            orientation: None,
-        }
-    }
 }
 
 /// Extract EXIF metadata from a JPEG file using kamadak-exif.
@@ -26,7 +16,7 @@ pub fn extract_jpeg_exif(path: &Path) -> ExifData {
         Ok(data) => data,
         Err(_) => {
             tracing::warn!("panic in extract_jpeg_exif for {:?}", path);
-            ExifData::empty()
+            ExifData::default()
         }
     }
 }
@@ -36,7 +26,7 @@ fn extract_jpeg_exif_inner(path: &Path) -> ExifData {
         Ok(f) => f,
         Err(e) => {
             tracing::debug!("cannot open {:?}: {}", path, e);
-            return ExifData::empty();
+            return ExifData::default();
         }
     };
     let mut buf_reader = std::io::BufReader::new(file);
@@ -45,7 +35,7 @@ fn extract_jpeg_exif_inner(path: &Path) -> ExifData {
         Ok(e) => e,
         Err(e) => {
             tracing::debug!("no EXIF in {:?}: {}", path, e);
-            return ExifData::empty();
+            return ExifData::default();
         }
     };
 
@@ -121,7 +111,7 @@ pub fn extract_raw_exif(path: &Path) -> ExifData {
         Ok(data) => data,
         Err(_) => {
             tracing::warn!("panic in extract_raw_exif for {:?}", path);
-            ExifData::empty()
+            ExifData::default()
         }
     }
 }
@@ -131,7 +121,7 @@ fn extract_raw_exif_inner(path: &Path) -> ExifData {
         Ok(r) => r,
         Err(e) => {
             tracing::debug!("rawler: cannot open RawSource {:?}: {}", path, e);
-            return ExifData::empty();
+            return ExifData::default();
         }
     };
 
@@ -139,7 +129,7 @@ fn extract_raw_exif_inner(path: &Path) -> ExifData {
         Ok(dec) => dec,
         Err(e) => {
             tracing::debug!("rawler: cannot get decoder for {:?}: {:?}", path, e);
-            return ExifData::empty();
+            return ExifData::default();
         }
     };
 
@@ -148,7 +138,7 @@ fn extract_raw_exif_inner(path: &Path) -> ExifData {
         Ok(m) => m,
         Err(e) => {
             tracing::debug!("rawler: cannot decode metadata for {:?}: {:?}", path, e);
-            return ExifData::empty();
+            return ExifData::default();
         }
     };
 

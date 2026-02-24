@@ -8,3 +8,4 @@ pub mod stacks;
 #[cfg(test)]
 pub mod stacks_tests;
 pub mod thumbnails;
+pub mod util;

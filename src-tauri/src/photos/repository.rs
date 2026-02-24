@@ -1,5 +1,8 @@
-use crate::photos::model::{LogicalPhotoSummary, SourceFolderRow, StackSummary};
+use crate::photos::model::{
+    LogicalPhotoSummary, PhotoFormat, ScannedFile, SourceFolderRow, StackSummary,
+};
 use rusqlite::{params, Connection};
+use std::path::PathBuf;
 
 // ── Private helpers ───────────────────────────────────────────────────────────
 
@@ -160,31 +163,12 @@ pub fn list_stacks_summary(
 }
 
 /// Return a summary of all logical photos in a given stack, ordered by capture time.
-/// Thumbnail path is resolved from disk: `cache_dir/{lp_id}.jpg`.
-pub fn list_logical_photos_by_stack(
+/// Pure DB query — `thumbnail_path` is always `None`; caller enriches with filesystem data.
+pub fn query_logical_photos_by_stack(
     conn: &Connection,
     stack_id: i64,
-    cache_dir: &std::path::Path,
 ) -> rusqlite::Result<Vec<LogicalPhotoSummary>> {
-    // Build the set of logical_photo ids that have a thumbnail on disk.
-    // One readdir is cheaper than N stat() calls.
-    let existing_thumbs: std::collections::HashSet<i64> = if cache_dir.exists() {
-        std::fs::read_dir(cache_dir)
-            .into_iter()
-            .flatten()
-            .filter_map(|e| e.ok())
-            .filter_map(|e| {
-                e.file_name()
-                    .to_str()
-                    .and_then(|s| s.strip_suffix(".jpg"))
-                    .and_then(|s| s.parse::<i64>().ok())
-            })
-            .collect()
-    } else {
-        std::collections::HashSet::new()
-    };
-
-    let mut summaries = collect_rows(
+    collect_rows(
         conn,
         // representative_photo (rep) supplies capture_time, camera_model, lens.
         // All photos in the logical photo (p) determine has_raw / has_jpeg flags.
@@ -207,7 +191,7 @@ pub fn list_logical_photos_by_stack(
             let has_jpeg: i64 = row.get(5)?;
             Ok(LogicalPhotoSummary {
                 logical_photo_id: row.get(0)?,
-                thumbnail_path: None, // filled below
+                thumbnail_path: None,
                 capture_time: row.get(1)?,
                 camera_model: row.get(2)?,
                 lens: row.get(3)?,
@@ -215,10 +199,14 @@ pub fn list_logical_photos_by_stack(
                 has_jpeg: has_jpeg != 0,
             })
         },
-    )?;
+    )
+}
 
-    // Resolve thumbnail paths from the pre-built set — avoids N stat() calls.
-    for summary in &mut summaries {
+/// Enrich logical photo summaries with thumbnail paths resolved from disk.
+/// Uses one readdir (via `cached_thumbnail_ids`) instead of N stat() calls.
+pub fn enrich_with_thumbnails(summaries: &mut [LogicalPhotoSummary], cache_dir: &std::path::Path) {
+    let existing_thumbs = crate::import::util::cached_thumbnail_ids(cache_dir);
+    for summary in summaries.iter_mut() {
         if existing_thumbs.contains(&summary.logical_photo_id) {
             summary.thumbnail_path = Some(
                 cache_dir
@@ -228,7 +216,18 @@ pub fn list_logical_photos_by_stack(
             );
         }
     }
+}
 
+/// Return a summary of all logical photos in a given stack, ordered by capture time.
+/// Thumbnail path is resolved from disk: `cache_dir/{lp_id}.jpg`.
+/// Convenience wrapper composing `query_logical_photos_by_stack` + `enrich_with_thumbnails`.
+pub fn list_logical_photos_by_stack(
+    conn: &Connection,
+    stack_id: i64,
+    cache_dir: &std::path::Path,
+) -> rusqlite::Result<Vec<LogicalPhotoSummary>> {
+    let mut summaries = query_logical_photos_by_stack(conn, stack_id)?;
+    enrich_with_thumbnails(&mut summaries, cache_dir);
     Ok(summaries)
 }
 
@@ -414,6 +413,81 @@ pub fn list_representative_photos_for_lp_ids(
         result.push((lp_id, path, format, orientation));
     }
     Ok(result)
+}
+
+/// Load existing photos from DB and reconstruct ScannedFile structs for re-stacking.
+/// After `clear_stacks_and_logical_photos`, all photos have logical_photo_id = NULL
+/// but still exist in the photos table. We reload them to re-pair and re-stack.
+pub fn load_existing_scanned_files(conn: &Connection) -> Vec<ScannedFile> {
+    let mut stmt = match conn
+        .prepare("SELECT path, format, capture_time, orientation, camera_model, lens FROM photos")
+    {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("load_existing_scanned_files prepare: {}", e);
+            return vec![];
+        }
+    };
+
+    let rows = stmt.query_map([], |row| {
+        let path_str: String = row.get(0)?;
+        let format_str: String = row.get(1)?;
+        let capture_time_str: Option<String> = row.get(2)?;
+        let orientation: Option<u16> = row.get(3)?;
+        let camera_model: Option<String> = row.get(4)?;
+        let lens: Option<String> = row.get(5)?;
+        Ok((
+            path_str,
+            format_str,
+            capture_time_str,
+            orientation,
+            camera_model,
+            lens,
+        ))
+    });
+
+    let rows = match rows {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("load_existing_scanned_files query: {}", e);
+            return vec![];
+        }
+    };
+
+    let mut files = Vec::new();
+    for row in rows.flatten() {
+        let (path_str, format_str, capture_time_str, orientation, camera_model, lens) = row;
+        let path = PathBuf::from(&path_str);
+        let format = match format_str.as_str() {
+            "jpeg" => PhotoFormat::Jpeg,
+            "raw" => PhotoFormat::Raw,
+            _ => continue,
+        };
+        let capture_time = capture_time_str.as_deref().and_then(|s| {
+            chrono::DateTime::parse_from_rfc3339(s)
+                .ok()
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+        });
+        let base_name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_lowercase())
+            .unwrap_or_default();
+        let dir = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+
+        files.push(ScannedFile {
+            path,
+            format,
+            capture_time,
+            camera_model,
+            lens,
+            orientation,
+            base_name,
+            dir,
+        });
+    }
+
+    files
 }
 
 /// Load all photo paths for a project (for idempotency checks during pipeline).

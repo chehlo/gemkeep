@@ -10,6 +10,7 @@
     getBurstGap, setBurstGap, restack,
     type SourceFolder, type IndexingStatus, type StackSummary
   } from '$lib/api/index.js'
+  import { formatDate } from '$lib/utils/date.js'
 
   // Derive project info from navigation state
   const projectSlug = $derived(
@@ -81,7 +82,7 @@
       }
     }
 
-    status = await getIndexingStatus(projectSlug)
+    status = await getIndexingStatus()
     if (status.running || status.thumbnails_running) {
       startPolling()
     } else if (sourceFolders.length > 0 && stacks.length === 0) {
@@ -98,7 +99,7 @@
   function startPolling() {
     if (pollInterval) return
     const poll = async () => {
-      const newStatus = await getIndexingStatus(projectSlug)
+      const newStatus = await getIndexingStatus()
       if (newStatus == null) return
       status = newStatus
       if (status.running || status.thumbnails_running) {
@@ -138,7 +139,7 @@
       startPolling()
     } catch (e) {
       console.error("startIndexing failed:", e)
-      try { status = await getIndexingStatus(projectSlug) } catch {}
+      try { status = await getIndexingStatus() } catch {}
       try { stacks = await listStacks(projectSlug) } catch {}
     }
   }
@@ -207,7 +208,7 @@
       if (e.key === 'ArrowLeft') { focusedIndex = Math.max(focusedIndex - 1, 0); e.preventDefault() }
       if (e.key === 'ArrowDown') { focusedIndex = Math.min(focusedIndex + cols, stacks.length - 1); e.preventDefault() }
       if (e.key === 'ArrowUp') { focusedIndex = Math.max(focusedIndex - cols, 0); e.preventDefault() }
-      if (e.key === 'Enter') {
+      if (e.key === 'Enter' && !(e.target instanceof HTMLInputElement)) {
         const stack = stacks[focusedIndex]
         navigation.stackOverviewFocusIndex = focusedIndex
         navigate({ kind: 'stack-focus', projectSlug, projectName, stackId: stack.stack_id })
@@ -228,20 +229,30 @@
   // True while thumbnails are being generated in the background.
   const isGeneratingThumbnails = $derived(status.thumbnails_running)
 
-  function formatDate(iso: string | null): string {
-    if (!iso) return '(no EXIF)'
-    try {
-      return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-    } catch {
-      return iso
-    }
-  }
-
   function totalLogicalPhotos(): number {
     if (status.last_stats) return status.last_stats.logical_photos
     return stacks.reduce((sum, s) => sum + s.logical_photo_count, 0)
   }
 </script>
+
+{#snippet folderList(showRemove: boolean)}
+  <div class="text-xs font-medium text-gray-500 uppercase tracking-wider">Source Folders</div>
+  <ul class="flex flex-col gap-1">
+    {#each sourceFolders as folder (folder.id)}
+      <li class="flex items-center gap-2 text-sm text-gray-300">
+        <span class="text-gray-500">📁</span>
+        <span class="flex-1 font-mono text-xs truncate">{folder.path}</span>
+        {#if showRemove}
+          <button
+            class="text-gray-600 hover:text-red-400 transition-colors text-xs px-1"
+            onclick={() => handleRemoveFolder(folder.id)}
+            title="Remove folder"
+          >×</button>
+        {/if}
+      </li>
+    {/each}
+  </ul>
+{/snippet}
 
 <div class="min-h-screen bg-gray-950 text-gray-100 flex flex-col">
   <!-- Topbar navigation -->
@@ -280,20 +291,7 @@
     {:else if sourceFolders.length > 0 && !status.running && stacks.length === 0}
       <!-- STATE 2: Folders attached, not yet indexed -->
       <div class="flex flex-col gap-3">
-        <div class="text-xs font-medium text-gray-500 uppercase tracking-wider">Source Folders</div>
-        <ul class="flex flex-col gap-1">
-          {#each sourceFolders as folder (folder.id)}
-            <li class="flex items-center gap-2 text-sm text-gray-300">
-              <span class="text-gray-500">📁</span>
-              <span class="flex-1 font-mono text-xs truncate">{folder.path}</span>
-              <button
-                class="text-gray-600 hover:text-red-400 transition-colors text-xs px-1"
-                onclick={() => handleRemoveFolder(folder.id)}
-                title="Remove folder"
-              >×</button>
-            </li>
-          {/each}
-        </ul>
+        {@render folderList(true)}
         <button
           class="self-start px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm rounded transition-colors"
           onclick={handleAddFolder}
@@ -317,15 +315,7 @@
     {:else if status.running}
       <!-- STATE 3: Indexing in progress -->
       <div class="flex flex-col gap-3">
-        <div class="text-xs font-medium text-gray-500 uppercase tracking-wider">Source Folders</div>
-        <ul class="flex flex-col gap-1">
-          {#each sourceFolders as folder (folder.id)}
-            <li class="flex items-center gap-2 text-sm text-gray-300">
-              <span class="text-gray-500">📁</span>
-              <span class="flex-1 font-mono text-xs truncate">{folder.path}</span>
-            </li>
-          {/each}
-        </ul>
+        {@render folderList(false)}
       </div>
 
       <hr class="border-gray-800" />
@@ -407,20 +397,7 @@
     {:else}
       <!-- STATE 4: Indexed, stacks visible (thumbnails may still be generating) -->
       <div class="flex flex-col gap-3">
-        <div class="text-xs font-medium text-gray-500 uppercase tracking-wider">Source Folders</div>
-        <ul class="flex flex-col gap-1">
-          {#each sourceFolders as folder (folder.id)}
-            <li class="flex items-center gap-2 text-sm text-gray-300">
-              <span class="text-gray-500">📁</span>
-              <span class="flex-1 font-mono text-xs truncate">{folder.path}</span>
-              <button
-                class="text-gray-600 hover:text-red-400 transition-colors text-xs px-1"
-                onclick={() => handleRemoveFolder(folder.id)}
-                title="Remove folder"
-              >×</button>
-            </li>
-          {/each}
-        </ul>
+        {@render folderList(true)}
         <div class="flex items-center gap-2">
           <button
             class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm rounded transition-colors"
@@ -530,7 +507,7 @@
               <div class="text-xs text-gray-500">
                 {stack.logical_photo_count} photo{stack.logical_photo_count === 1 ? '' : 's'}
               </div>
-              <div class="text-xs text-gray-600">{formatDate(stack.earliest_capture)}</div>
+              <div class="text-xs text-gray-600">{formatDate(stack.earliest_capture, '(no EXIF)')}</div>
             </div>
           </button>
         {/each}

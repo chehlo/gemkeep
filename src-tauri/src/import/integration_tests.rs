@@ -1136,12 +1136,9 @@ fn test_list_stacks_returns_non_null_when_any_lp_has_thumbnail() {
         })
         .collect();
 
-    let lp_id_map = repository::list_best_lp_id_for_thumbnail_per_stack(
-        &conn,
-        project_id,
-        &existing_thumbs,
-    )
-    .unwrap();
+    let lp_id_map =
+        repository::list_best_lp_id_for_thumbnail_per_stack(&conn, project_id, &existing_thumbs)
+            .unwrap();
 
     // The fixed list_stacks picks an LP that has a thumbnail
     let best_lp_id = *lp_id_map.get(&stack_id).unwrap();
@@ -1222,21 +1219,21 @@ fn test_list_stacks_returns_null_when_no_lp_has_thumbnail() {
         .collect();
 
     for summary in &stacks {
-        let thumbnail_path: Option<String> =
-            if let Some(&lp_id) = lp_id_map.get(&summary.stack_id) {
-                if existing_thumbs.contains(&lp_id) {
-                    Some(
-                        cache_dir
-                            .join(format!("{}.jpg", lp_id))
-                            .to_string_lossy()
-                            .into_owned(),
-                    )
-                } else {
-                    None
-                }
+        let thumbnail_path: Option<String> = if let Some(&lp_id) = lp_id_map.get(&summary.stack_id)
+        {
+            if existing_thumbs.contains(&lp_id) {
+                Some(
+                    cache_dir
+                        .join(format!("{}.jpg", lp_id))
+                        .to_string_lossy()
+                        .into_owned(),
+                )
             } else {
                 None
-            };
+            }
+        } else {
+            None
+        };
 
         assert!(
             thumbnail_path.is_none(),
@@ -1284,10 +1281,7 @@ fn test_resume_thumbnails_regenerates_all_lps_in_multi_lp_stack() {
     // Verify 3 thumbnail files exist after pipeline
     let stacks = repository::list_stacks_summary(&conn, project_id).unwrap();
     assert_eq!(stacks.len(), 1, "must have 1 burst stack");
-    assert_eq!(
-        stacks[0].logical_photo_count, 3,
-        "stack must have 3 LPs"
-    );
+    assert_eq!(stacks[0].logical_photo_count, 3, "stack must have 3 LPs");
 
     let thumb_count_before = std::fs::read_dir(&cache_dir)
         .expect("cache_dir must exist")
@@ -1362,10 +1356,7 @@ fn test_resume_thumbnails_skips_stacks_where_thumbnail_exists() {
 
     let stacks = repository::list_stacks_summary(&conn, project_id).unwrap();
     assert_eq!(stacks.len(), 1, "must have 1 burst stack");
-    assert_eq!(
-        stacks[0].logical_photo_count, 2,
-        "stack must have 2 LPs"
-    );
+    assert_eq!(stacks[0].logical_photo_count, 2, "stack must have 2 LPs");
 
     // All thumbnails present → targets must be empty
     let (targets, _total_count) =

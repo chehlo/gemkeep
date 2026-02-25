@@ -553,11 +553,8 @@ pub fn find_missing_thumbnail_targets(
 
 /// Re-stack all existing photos for a project without re-scanning the filesystem.
 ///
-/// This is steps 4-7 of `run_pipeline` in isolation:
-/// - Clears existing stacks and logical_photos (NULLs `logical_photo_id` on all photos)
-/// - Loads all photos for the project from DB
-/// - Re-runs pair detection and burst-stack assignment
-/// - Writes new stacks and logical_photos rows
+/// Preserves logical_photo IDs (and therefore thumbnail filenames) by only
+/// deleting stacks and updating each logical_photo's stack_id in place.
 ///
 /// Does NOT scan the filesystem (steps 1-3) or generate thumbnails (step 8).
 /// Intended for re-stacking after settings changes (e.g. burst gap).
@@ -576,22 +573,61 @@ pub fn restack_from_existing_photos(
         })
         .unwrap_or(0);
 
-    // Clear stacks — this NULLs logical_photo_id on all photos for this project.
-    repository::clear_stacks_and_logical_photos(conn, project_id)
+    // Load existing logical_photos with capture times BEFORE clearing stacks.
+    let lp_rows = repository::load_logical_photos_for_restack(conn, project_id)
+        .map_err(|e| format!("restack: load logical photos: {}", e))?;
+
+    if lp_rows.is_empty() {
+        return Ok(stats);
+    }
+
+    stats.logical_photos = lp_rows.len();
+
+    // Clear only stacks (preserves logical_photo rows).
+    repository::clear_stacks_only(conn, project_id)
         .map_err(|e| format!("restack: clear stacks: {}", e))?;
 
-    // Load all photos now that logical_photo_id is NULL.
-    let all_files = repository::load_existing_scanned_files(conn);
+    // Separate into timed and untimed logical photos.
+    let mut timed: Vec<(i64, chrono::DateTime<chrono::Utc>)> = Vec::new();
+    let mut untimed: Vec<i64> = Vec::new();
 
-    // Pair detection
-    let groups = pairs::detect_pairs(all_files);
-    let pairs_count = groups.iter().filter(|g| g.is_pair).count();
-    stats.pairs_detected = pairs_count;
-    stats.logical_photos = groups.len();
+    for (lp_id, capture_time_str) in &lp_rows {
+        if let Some(ref ct_str) = capture_time_str {
+            if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ct_str) {
+                timed.push((*lp_id, dt.with_timezone(&chrono::Utc)));
+                continue;
+            }
+        }
+        untimed.push(*lp_id);
+    }
 
-    // Stack assignment
-    let assigned = stacks::assign_stacks_by_burst(groups, burst_gap_secs);
-    let max_stack_idx = assigned
+    // Sort timed by capture_time
+    timed.sort_by_key(|(_, t)| *t);
+
+    // Apply consecutive-gap burst algorithm (same logic as assign_stacks_clean).
+    // Build: Vec<(lp_id, stack_index)>
+    let mut assignments: Vec<(i64, usize)> = Vec::new();
+    let mut stack_index: usize = 0;
+    let mut last_time: Option<chrono::DateTime<chrono::Utc>> = None;
+
+    for (lp_id, t) in &timed {
+        if let Some(prev) = last_time {
+            let gap = (*t - prev).num_seconds().unsigned_abs();
+            if gap > burst_gap_secs {
+                stack_index += 1;
+            }
+        }
+        last_time = Some(*t);
+        assignments.push((*lp_id, stack_index));
+    }
+
+    // Each untimed gets its own solo stack
+    for lp_id in &untimed {
+        stack_index += 1;
+        assignments.push((*lp_id, stack_index));
+    }
+
+    let max_stack_idx = assignments
         .iter()
         .map(|(_, i)| *i)
         .max()
@@ -599,12 +635,7 @@ pub fn restack_from_existing_photos(
         .unwrap_or(0);
     stats.stacks_generated = max_stack_idx;
 
-    // Pre-create all stack rows.
-    // We insert the first real stack with an explicit ID = max_stack_id_before + 1
-    // so that SQLite's rowid sequence for this table is seeded above the old IDs.
-    // Without AUTOINCREMENT, SQLite reuses rowids after DELETE (starts from 1 again);
-    // by anchoring the first insert above the previous max, all subsequent inserts
-    // (which use max(existing)+1) will also be above the old IDs.
+    // Pre-create all stack rows with ID-seeding to avoid SQLite rowid reuse.
     let mut stack_id_map: Vec<Option<i64>> = vec![None; max_stack_idx.max(1)];
     let mut first_stack_inserted = false;
     for idx in 0..max_stack_idx {
@@ -632,20 +663,28 @@ pub fn restack_from_existing_photos(
         }
     }
 
-    // Persist logical photos and link scanned files via shared function.
-    persist_groups_to_db(
-        conn,
-        &assigned,
-        &stack_id_map,
-        project_id,
-        None, // no existing_paths tracking for restack
-        &mut stats,
-    );
+    // UPDATE existing logical_photos with new stack_ids (no delete/insert).
+    for (lp_id, stack_idx) in &assignments {
+        let stack_db_id = match stack_id_map.get(*stack_idx).and_then(|o| *o) {
+            Some(id) => id,
+            None => {
+                let msg = format!("restack: no stack DB id for index {}", stack_idx);
+                tracing::warn!("{}", msg);
+                log_error(&mut stats, msg);
+                continue;
+            }
+        };
+
+        if let Err(e) = repository::update_logical_photo_stack(conn, *lp_id, stack_db_id) {
+            let msg = format!("restack: update lp {} stack: {}", lp_id, e);
+            tracing::warn!("{}", msg);
+            log_error(&mut stats, msg);
+        }
+    }
 
     tracing::info!(
-        "restack: complete — logical_photos={} pairs={} stacks={} errors={}",
+        "restack: complete — logical_photos={} stacks={} errors={}",
         stats.logical_photos,
-        stats.pairs_detected,
         stats.stacks_generated,
         stats.errors,
     );

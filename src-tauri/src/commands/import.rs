@@ -492,6 +492,7 @@ pub fn set_burst_gap(secs: u64, state: State<'_, AppState>) -> Result<(), String
 // ── Restack ───────────────────────────────────────────────────────────────────
 
 #[tauri::command]
+#[allow(unused_variables)]
 pub fn restack(slug: String, state: State<'_, AppState>) -> Result<(), String> {
     // Get project_id from the open project
     let project_id = {
@@ -516,15 +517,6 @@ pub fn restack(slug: String, state: State<'_, AppState>) -> Result<(), String> {
             .ok_or_else(|| "No DB connection".to_string())?;
         pipeline::restack_from_existing_photos(conn, project_id, config.burst_gap_secs)?;
     }
-
-    // Clear thumbnail cache
-    let cache_dir = manager::project_dir(&state.gemkeep_home, &slug)
-        .join("cache")
-        .join("thumbnails");
-    if cache_dir.exists() {
-        std::fs::remove_dir_all(&cache_dir).map_err(|e| e.to_string())?;
-    }
-    std::fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
 
     Ok(())
 }

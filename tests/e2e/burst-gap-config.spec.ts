@@ -3,14 +3,15 @@
  *
  * Covers:
  *   - Ctrl+B opens the burst gap panel
- *   - Save triggers set_burst_gap → restack → stacks reload → resume_thumbnails
+ *   - Save triggers set_burst_gap → restack → stacks reload
+ *   - Restack must NOT retrigger thumbnail extraction
  *   - Cancel closes panel without side effects
  *   - Panel shows current burst gap value from get_burst_gap
  *
  * WHY THESE TESTS EXIST:
  *   - Sprint 6 added Ctrl+B to reconfigure burst threshold and re-stack photos.
- *   - After restack, thumbnails are cleared (stacks rebuilt). The UI must trigger
- *     resume_thumbnails to regenerate them in the same session.
+ *   - Restack rebuilds logical groupings but should NOT restart thumbnail
+ *     extraction — the backend preserves thumbnails across restacking.
  *   - Without E2E coverage, the full flow (keyboard shortcut → panel → save →
  *     IPC sequence → stacks reload) was only tested in jsdom component tests.
  */
@@ -18,7 +19,7 @@
 import { test, expect } from '@playwright/test'
 import {
   injectTauriMock, createProject,
-  FOLDER_ICELAND as FOLDER_A, IDLE_STATUS, THUMBS_DONE_STATUS,
+  FOLDER_ICELAND as FOLDER_A, IDLE_STATUS, THUMBS_DONE_STATUS, THUMBS_RUNNING_STATUS,
 } from './helpers/tauri-mock'
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
@@ -41,7 +42,7 @@ const RESTACKED_SINGLE = {
   stack_id: 10, logical_photo_count: 10,
   earliest_capture: '2024-03-15T10:00:00Z',
   has_raw: true, has_jpeg: true,
-  thumbnail_path: null, // thumbnails cleared by restack
+  thumbnail_path: '/cache/10.jpg', // thumbnails preserved by restack
 }
 
 // Matches this spec's 2-stack / 10-thumbnail scenario
@@ -109,11 +110,11 @@ test('Sprint 6-J2: Save triggers restack and updates stack grid', async ({ page 
   expect(restackIdx).toBeGreaterThan(-1)
   expect(log.indexOf('set_burst_gap')).toBeLessThan(restackIdx)
 
-  // resume_thumbnails must be called (restacked stacks have null thumbnails)
-  await page.waitForFunction(
-    () => (window as unknown as Record<string, boolean>).__resumeThumbnailsCalled === true,
-    { timeout: 3_000 },
+  // resume_thumbnails must NOT be called — restack should preserve thumbnails
+  const finalLog = await page.evaluate(
+    () => (window as unknown as Record<string, string[]>).__ipcLog
   )
+  expect(finalLog).not.toContain('resume_thumbnails')
 })
 
 test('Sprint 6-J3: Cancel closes panel without calling restack', async ({ page }) => {
@@ -180,4 +181,38 @@ test('Sprint 6-J4: Ctrl+B works even when get_burst_gap fails (uses default)', a
   // No unhandled page errors (the error is caught in openBurstPanel)
   const relevant = errors.filter(e => !e.includes('ResizeObserver'))
   expect(relevant).toHaveLength(0)
+})
+
+test('Sprint 6-J5: restack during thumbnail extraction does not restart extraction', async ({ page }) => {
+  await injectTauriMock(page, {
+    initialFolders: [FOLDER_A],
+    initialStacks: [STACK_1, STACK_2],
+    initialStatus: THUMBS_RUNNING_STATUS,  // thumbnails already being extracted
+    burstGap: 3,
+    stacksAfterRestack: [RESTACKED_SINGLE],
+    statusSequence: [IDLE_STATUS],
+    statusHoldMs: 1500,
+  })
+  await page.goto('/')
+  await createProject(page, 'During Extraction Test')
+
+  // Wait for stacks to render
+  await expect(page.getByText('Stack #1')).toBeVisible({ timeout: 5_000 })
+
+  // Open panel, change value, save
+  await page.keyboard.press('Control+b')
+  await expect(page.getByText('Burst gap')).toBeVisible({ timeout: 3_000 })
+  const input = page.locator('input[type="number"]')
+  await input.fill('30')
+  await page.click('button:has-text("Save")')
+
+  // Panel should close
+  await expect(page.getByText('Burst gap')).not.toBeVisible({ timeout: 5_000 })
+
+  // Neither resume_thumbnails nor cancel_indexing should be called
+  const log = await page.evaluate(
+    () => (window as unknown as Record<string, string[]>).__ipcLog
+  )
+  expect(log).not.toContain('resume_thumbnails')
+  expect(log).not.toContain('cancel_indexing')
 })

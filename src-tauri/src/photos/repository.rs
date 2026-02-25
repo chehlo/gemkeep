@@ -415,6 +415,51 @@ pub fn list_representative_photos_for_lp_ids(
     Ok(result)
 }
 
+/// Delete only stacks for this project (preserves logical_photos for restack).
+/// NULLs stack_id on logical_photos first to avoid FK constraint issues.
+pub fn clear_stacks_only(conn: &Connection, project_id: i64) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE logical_photos SET stack_id = NULL WHERE project_id = ?1",
+        params![project_id],
+    )?;
+    conn.execute(
+        "DELETE FROM stacks WHERE project_id = ?1",
+        params![project_id],
+    )?;
+    Ok(())
+}
+
+/// Load existing logical_photos with capture times for restacking.
+/// Returns (lp_id, capture_time_rfc3339) ordered by capture_time.
+pub fn load_logical_photos_for_restack(
+    conn: &Connection,
+    project_id: i64,
+) -> rusqlite::Result<Vec<(i64, Option<String>)>> {
+    collect_rows(
+        conn,
+        "SELECT lp.id, p.capture_time
+         FROM logical_photos lp
+         JOIN photos p ON p.id = lp.representative_photo_id
+         WHERE lp.project_id = ?1
+         ORDER BY p.capture_time ASC NULLS LAST, lp.id ASC",
+        params![project_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+}
+
+/// Update stack_id on an existing logical_photo row.
+pub fn update_logical_photo_stack(
+    conn: &Connection,
+    lp_id: i64,
+    stack_id: i64,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE logical_photos SET stack_id = ?1 WHERE id = ?2",
+        params![stack_id, lp_id],
+    )?;
+    Ok(())
+}
+
 /// Load existing photos from DB and reconstruct ScannedFile structs for re-stacking.
 /// After `clear_stacks_and_logical_photos`, all photos have logical_photo_id = NULL
 /// but still exist in the photos table. We reload them to re-pair and re-stack.

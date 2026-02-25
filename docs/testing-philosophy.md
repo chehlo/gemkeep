@@ -558,6 +558,37 @@ gate that catches everything the fast tests miss.
 
 Skip in CI with: `test.skip(!process.env.TAURI_DEV, 'requires cargo tauri dev')`
 
+### Rule 13: TDD — always write the failing test first
+
+Every bug fix and every new feature starts with a test that reproduces the bug
+or specifies the new behavior. The test must FAIL (RED) before any implementation.
+Only after confirming the failure do you write the minimum code to make it pass (GREEN).
+
+This rule exists because of the restack-thumbnail bug: `restack` unconditionally
+deleted all thumbnails and recreated all logical_photo rows with new IDs. Two tests
+(TH-D3, Sprint 6-J2) were written AFTER the bug was introduced and treated the
+broken behavior as correct — they asserted that `resume_thumbnails` IS called after
+restack. Had the test been written first ("restack must NOT trigger thumbnail
+regeneration"), the bug would have been caught immediately.
+
+TDD workflow:
+1. **RED**: Write test that asserts the correct behavior. Run it. It must FAIL.
+2. **GREEN**: Write the minimum code to make the test pass. Run it. It must PASS.
+3. **REFACTOR**: Clean up without changing behavior. All tests still pass.
+
+If the test passes on step 1, either the bug does not exist or the test is wrong.
+Investigate before proceeding.
+
+```
+# RED: test must fail before fix
+cargo test test_restack_preserves_thumbnail_files -- --nocapture
+# ... FAILED (expected)
+
+# GREEN: implement fix, test must pass
+cargo test test_restack_preserves_thumbnail_files -- --nocapture
+# ... ok (1 passed)
+```
+
 ---
 
 ## Section 5: Test Infrastructure

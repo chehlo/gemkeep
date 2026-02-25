@@ -183,11 +183,6 @@
       await restack(projectSlug)
       stacks = await listStacks(projectSlug)
       showBurstPanel = false
-      // Thumbnails were cleared by restack — regenerate immediately so user
-      // doesn't see blank cards and doesn't get re-triggered on next app open.
-      if (stacks.some(s => s.thumbnail_path === null)) {
-        await handleResumeThumbnails()
-      }
     } finally {
       burstRestacking = false
     }

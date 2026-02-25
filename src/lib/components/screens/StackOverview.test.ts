@@ -522,9 +522,6 @@ describe('StackOverview — burst gap panel (BT-07..BT-11)', () => {
     mockInvoke.mockResolvedValueOnce(undefined)           // set_burst_gap
     mockInvoke.mockResolvedValueOnce(undefined)           // restack
     mockInvoke.mockResolvedValueOnce([STACK_1, STACK_2])  // list_stacks (after restack)
-    mockInvoke.mockResolvedValueOnce(undefined)           // resume_thumbnails (stacks have null thumbs)
-    mockInvoke.mockResolvedValueOnce(IDLE_STATUS)         // poll: get_indexing_status
-    mockInvoke.mockResolvedValueOnce([STACK_1, STACK_2])  // poll: list_stacks (stops polling)
 
     await fireEvent.keyDown(document, { key: 'b', ctrlKey: true })
     await waitFor(() => screen.getByText(/burst gap/i))
@@ -546,9 +543,6 @@ describe('StackOverview — burst gap panel (BT-07..BT-11)', () => {
     mockInvoke.mockResolvedValueOnce(undefined)           // set_burst_gap
     mockInvoke.mockResolvedValueOnce(undefined)           // restack
     mockInvoke.mockResolvedValueOnce([STACK_1, STACK_2])  // list_stacks
-    mockInvoke.mockResolvedValueOnce(undefined)           // resume_thumbnails (stacks have null thumbs)
-    mockInvoke.mockResolvedValueOnce(IDLE_STATUS)         // poll: get_indexing_status
-    mockInvoke.mockResolvedValueOnce([STACK_1, STACK_2])  // poll: list_stacks (stops polling)
 
     await fireEvent.keyDown(document, { key: 'b', ctrlKey: true })
     await waitFor(() => screen.getByText(/burst gap/i))
@@ -566,9 +560,6 @@ describe('StackOverview — burst gap panel (BT-07..BT-11)', () => {
     mockInvoke.mockResolvedValueOnce(undefined)           // set_burst_gap
     mockInvoke.mockResolvedValueOnce(undefined)           // restack
     mockInvoke.mockResolvedValueOnce([STACK_1, STACK_2])  // list_stacks
-    mockInvoke.mockResolvedValueOnce(undefined)           // resume_thumbnails (stacks have null thumbs)
-    mockInvoke.mockResolvedValueOnce(IDLE_STATUS)         // poll: get_indexing_status
-    mockInvoke.mockResolvedValueOnce([STACK_1, STACK_2])  // poll: list_stacks (stops polling)
 
     await fireEvent.keyDown(document, { key: 'b', ctrlKey: true })
     await waitFor(() => screen.getByText(/burst gap/i))
@@ -653,8 +644,9 @@ describe('StackOverview — thumbnail auto-resume (TH-D1..TH-D3)', () => {
     }, { timeout: 500 })
   })
 
-  // TH-D3
-  it('TH-D3: saveBurstGap auto-resumes thumbnails in the same session after restack', async () => {
+  // TH-D3: After restack, saveBurstGap must NOT call resume_thumbnails.
+  // Restack preserves thumbnails; the frontend should not re-trigger generation.
+  it('TH-D3: saveBurstGap does NOT call resume_thumbnails when thumbnails exist', async () => {
     // Mount with stacks that already have thumbnails (all non-null) — no resume on mount
     const STACK_WITH_THUMB_LOCAL = { ...STACK_1, thumbnail_path: '/cache/1.jpg' } as StackSummary
     const STACK_WITH_THUMB_2 = { ...STACK_2, thumbnail_path: '/cache/2.jpg' } as StackSummary
@@ -669,13 +661,60 @@ describe('StackOverview — thumbnail auto-resume (TH-D1..TH-D3)', () => {
     await fireEvent.keyDown(document, { key: 'b', ctrlKey: true })
     await waitFor(() => expect(screen.getByText(/burst gap/i)).toBeInTheDocument())
 
-    // saveBurstGap flow: setBurstGap -> restack -> listStacks (null) -> resume_thumbnails
+    // saveBurstGap flow: setBurstGap -> restack -> listStacks (no resume_thumbnails)
+    // Backend preserves thumbnails, so list_stacks returns stacks WITH thumbnails.
+    mockInvoke.mockResolvedValueOnce(undefined)                                       // set_burst_gap
+    mockInvoke.mockResolvedValueOnce(undefined)                                       // restack
+    mockInvoke.mockResolvedValueOnce([STACK_WITH_THUMB_LOCAL, STACK_WITH_THUMB_2])    // list_stacks (thumbnails preserved)
+
+    // Click Save
+    await fireEvent.click(screen.getByRole('button', { name: /save/i }))
+
+    // Wait for panel to close (saveBurstGap completed)
+    await waitFor(() => {
+      expect(screen.queryByText(/burst gap/i)).not.toBeInTheDocument()
+    })
+
+    // Allow any remaining async effects to flush
+    await new Promise(resolve => setTimeout(resolve, 50))
+
+    // saveBurstGap must NOT call resume_thumbnails.
+    const calledCommands = mockInvoke.mock.calls.map(c => c[0])
+    expect(calledCommands).not.toContain('resume_thumbnails')
+  })
+
+  // TH-D3b: When thumbnails are already being extracted (thumbnails_running=true),
+  // saveBurstGap must NOT call resume_thumbnails (would restart/duplicate extraction).
+  it('TH-D3b: saveBurstGap during thumbnail extraction does not restart extraction', async () => {
+    // Mount with thumbnail-running status — stacks have null thumbnails (still generating)
+    mockInvoke.mockReset()
+
+    // Manual mount with THUMBNAIL_RUNNING_STATUS to keep thumbnails_running=true visible
+    mockInvoke.mockResolvedValueOnce([FOLDER_A])                    // list_source_folders
+    mockInvoke.mockResolvedValueOnce([STACK_1, STACK_2])            // list_stacks
+    mockInvoke.mockResolvedValueOnce(THUMBNAIL_RUNNING_STATUS)      // get_indexing_status
+    // Poll cycle: keep thumbnails_running so status stays active through burst panel interaction
+    mockInvoke.mockResolvedValueOnce(THUMBNAIL_RUNNING_STATUS)      // poll: get_indexing_status (still running)
+    mockInvoke.mockResolvedValueOnce([STACK_1, STACK_2])            // poll: list_stacks
+
+    render(StackOverview)
+
+    // Wait until stacks are visible
+    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(2))
+
+    // Confirm resume_thumbnails was NOT called on mount (status.thumbnails_running is true,
+    // so loadAll takes Path A: startPolling, not Path C: resume)
+    expect(mockInvoke.mock.calls.map(c => c[0])).not.toContain('resume_thumbnails')
+
+    // Open burst gap panel
+    mockInvoke.mockResolvedValueOnce(3) // get_burst_gap
+    await fireEvent.keyDown(document, { key: 'b', ctrlKey: true })
+    await waitFor(() => expect(screen.getByText(/burst gap/i)).toBeInTheDocument())
+
+    // saveBurstGap flow: setBurstGap -> restack -> listStacks (no resume_thumbnails)
     mockInvoke.mockResolvedValueOnce(undefined)           // set_burst_gap
     mockInvoke.mockResolvedValueOnce(undefined)           // restack
-    mockInvoke.mockResolvedValueOnce([STACK_1, STACK_2])  // list_stacks -> null thumbnails after restack
-    mockInvoke.mockResolvedValueOnce(undefined)           // resume_thumbnails (called by saveBurstGap)
-    mockInvoke.mockResolvedValueOnce(IDLE_STATUS)         // poll: get_indexing_status
-    mockInvoke.mockResolvedValueOnce([STACK_1, STACK_2])  // poll: list_stacks (stops polling)
+    mockInvoke.mockResolvedValueOnce([STACK_1, STACK_2])  // list_stacks
 
     // Click Save
     await fireEvent.click(screen.getByRole('button', { name: /save/i }))
@@ -685,9 +724,15 @@ describe('StackOverview — thumbnail auto-resume (TH-D1..TH-D3)', () => {
       expect(screen.queryByText(/burst gap/i)).not.toBeInTheDocument()
     })
 
-    // resume_thumbnails MUST be called after saveBurstGap because stacks have null thumbnails
-    await waitFor(() => {
-      expect(mockInvoke.mock.calls.map(c => c[0])).toContain('resume_thumbnails')
-    })
+    // Allow async effects to flush
+    await new Promise(resolve => setTimeout(resolve, 50))
+
+    // Collect all commands called
+    const allCommands = mockInvoke.mock.calls.map(c => c[0])
+
+    // resume_thumbnails must NOT be called (saveBurstGap no longer triggers it)
+    // cancel_indexing must NOT be called (no reason to cancel ongoing work)
+    expect(allCommands).not.toContain('resume_thumbnails')
+    expect(allCommands).not.toContain('cancel_indexing')
   })
 })

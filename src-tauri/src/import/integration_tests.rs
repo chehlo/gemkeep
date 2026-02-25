@@ -1544,3 +1544,222 @@ fn test_resume_thumbnails_skips_thumbnails_for_deleted_source() {
         missing.len()
     );
 }
+
+// ── Restack thumbnail-stability tests ─────────────────────────────────────────
+
+#[test]
+fn test_restack_preserves_logical_photo_ids() {
+    // WHY (Rule 1): Thumbnails are named {lp_id}.jpg. If restack changes logical_photo IDs,
+    // all existing thumbnails become orphaned — the filenames no longer match any DB row.
+    // restack_from_existing_photos must preserve logical_photo IDs so thumbnails remain valid.
+    //
+    // BUG: clear_stacks_and_logical_photos DELETEs all logical_photos rows then
+    // persist_groups_to_db INSERTs new ones with fresh auto-increment IDs.
+    //
+    // NOTE on SQLite rowid recycling: SQLite without AUTOINCREMENT allocates new rowids as
+    // max(existing_rowid)+1. If we delete IDs 1-4 and no other rows exist, new inserts get
+    // 1-4 again — hiding the bug. To expose it, we insert sentinel rows AFTER the pipeline
+    // (so sentinels have IDs above the real project's IDs). When clear_stacks_and_logical_photos
+    // deletes the real project's rows but sentinels remain, new inserts get
+    // max(sentinel_ids)+1, which is DIFFERENT from the originals.
+    let (conn, tmp, project_id) = setup();
+    let folder = tmp.path().join("restack_ids");
+    std::fs::create_dir_all(&folder).unwrap();
+
+    // 4 photos with distinct capture times 2s apart
+    write_jpeg_with_timestamp(&folder.join("r_001.jpg"), "2024:06:01 08:00:00");
+    write_jpeg_with_timestamp(&folder.join("r_002.jpg"), "2024:06:01 08:00:02");
+    write_jpeg_with_timestamp(&folder.join("r_003.jpg"), "2024:06:01 08:00:04");
+    write_jpeg_with_timestamp(&folder.join("r_004.jpg"), "2024:06:01 08:00:06");
+
+    pipeline::run_pipeline(
+        &conn,
+        project_id,
+        tmp.path(),
+        vec![folder],
+        3, // burst_gap_secs=3 — photos are 2s apart, so all land in 1 stack
+        make_status(),
+        make_cancel(),
+        make_pause(),
+        None,
+        make_counter(),
+    );
+
+    // Record all logical_photo IDs before restack (e.g. IDs 1-4)
+    let ids_before: Vec<i64> = conn
+        .prepare("SELECT id FROM logical_photos WHERE project_id = ?1 ORDER BY id")
+        .unwrap()
+        .query_map([project_id], |row| row.get(0))
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect();
+    assert_eq!(
+        ids_before.len(),
+        4,
+        "pipeline must produce 4 logical_photos before restack, got {}",
+        ids_before.len()
+    );
+
+    // ── Insert sentinel rows AFTER the pipeline so they have IDs above the real ones.
+    // This simulates a multi-project app where another project's logical_photos exist
+    // in the same table with higher IDs.
+    conn.execute(
+        "INSERT INTO projects (name, slug, created_at) VALUES ('Sentinel', 'sentinel', '2024-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    let sentinel_project_id = conn.last_insert_rowid();
+    let sentinel_stack_id = repository::insert_stack(&conn, sentinel_project_id).unwrap();
+    for _ in 0..3 {
+        conn.execute(
+            "INSERT INTO logical_photos (project_id, representative_photo_id, stack_id) VALUES (?1, NULL, ?2)",
+            rusqlite::params![sentinel_project_id, sentinel_stack_id],
+        )
+        .unwrap();
+    }
+    // Sentinels now have IDs 5, 6, 7 (above real project's 1-4).
+    // After restack deletes IDs 1-4, sentinels (5-7) remain, so new inserts get 8+ not 1+.
+
+    // Restack with a large burst gap — merges all into 1 stack (different grouping)
+    let stats = pipeline::restack_from_existing_photos(&conn, project_id, 60)
+        .expect("restack_from_existing_photos must succeed");
+    assert_eq!(
+        stats.logical_photos, 4,
+        "restack must report 4 logical_photos in stats"
+    );
+
+    // Record all logical_photo IDs after restack
+    let ids_after: Vec<i64> = conn
+        .prepare("SELECT id FROM logical_photos WHERE project_id = ?1 ORDER BY id")
+        .unwrap()
+        .query_map([project_id], |row| row.get(0))
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect();
+
+    // CRITICAL ASSERTION: IDs must be identical — thumbnails depend on stable IDs.
+    // With sentinels holding IDs 5-7, and real project's original IDs deleted (1-4),
+    // new inserts get max(7)+1 = 8, 9, 10, 11 — DIFFERENT from the originals 1-4.
+    assert_eq!(
+        ids_before, ids_after,
+        "restack must preserve logical_photo IDs for thumbnail stability.\n\
+        Before: {:?}\n\
+        After:  {:?}\n\
+        Thumbnails are named {{lp_id}}.jpg — changing IDs orphans all existing thumbnails.",
+        ids_before, ids_after
+    );
+}
+
+#[test]
+fn test_restack_during_active_thumbnails_does_not_interfere() {
+    // WHY (Rule 1): If thumbnail extraction is running concurrently, it targets logical_photo
+    // IDs captured before restack started. If restack changes those IDs, the thumbnail worker
+    // writes files named after OLD IDs that no longer exist in the DB — wasted work, and the
+    // NEW IDs never get thumbnails.
+    //
+    // This test verifies:
+    //   1. Logical photo IDs are unchanged after restack (thumbnail worker targets remain valid)
+    //   2. Stack structure changes (proving restack actually did something)
+    //
+    // BUG: clear_stacks_and_logical_photos DELETEs logical_photos, so IDs change.
+    // Same sentinel-after-pipeline technique as test_restack_preserves_logical_photo_ids.
+    let (conn, tmp, project_id) = setup();
+    let folder = tmp.path().join("restack_active");
+    std::fs::create_dir_all(&folder).unwrap();
+
+    // 4 photos: 2 close together, then a gap, then 2 more close together
+    // With burst_gap=3: should produce 2 stacks (2 photos each)
+    write_jpeg_with_timestamp(&folder.join("a_001.jpg"), "2024:07:01 10:00:00");
+    write_jpeg_with_timestamp(&folder.join("a_002.jpg"), "2024:07:01 10:00:01");
+    write_jpeg_with_timestamp(&folder.join("a_003.jpg"), "2024:07:01 10:00:10");
+    write_jpeg_with_timestamp(&folder.join("a_004.jpg"), "2024:07:01 10:00:11");
+
+    // Initial pipeline with burst_gap=3 → 2 stacks
+    pipeline::run_pipeline(
+        &conn,
+        project_id,
+        tmp.path(),
+        vec![folder],
+        3,
+        make_status(),
+        make_cancel(),
+        make_pause(),
+        None,
+        make_counter(),
+    );
+
+    // Record LP IDs (these are what a running thumbnail worker would be targeting)
+    let lp_ids_before: Vec<i64> = conn
+        .prepare("SELECT id FROM logical_photos WHERE project_id = ?1 ORDER BY id")
+        .unwrap()
+        .query_map([project_id], |row| row.get(0))
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect();
+    assert_eq!(
+        lp_ids_before.len(),
+        4,
+        "must have 4 logical photos before restack"
+    );
+
+    // Record stack count before restack
+    let stacks_before = repository::list_stacks_summary(&conn, project_id).unwrap();
+    assert_eq!(
+        stacks_before.len(),
+        2,
+        "burst_gap=3 with 9s gap between groups must produce 2 stacks, got {}",
+        stacks_before.len()
+    );
+
+    // ── Insert sentinel rows AFTER pipeline to prevent SQLite rowid recycling.
+    // Sentinels get IDs above the real project's logical_photo IDs.
+    conn.execute(
+        "INSERT INTO projects (name, slug, created_at) VALUES ('Sentinel2', 'sentinel2', '2024-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    let sentinel_project_id = conn.last_insert_rowid();
+    let sentinel_stack_id = repository::insert_stack(&conn, sentinel_project_id).unwrap();
+    for _ in 0..3 {
+        conn.execute(
+            "INSERT INTO logical_photos (project_id, representative_photo_id, stack_id) VALUES (?1, NULL, ?2)",
+            rusqlite::params![sentinel_project_id, sentinel_stack_id],
+        )
+        .unwrap();
+    }
+
+    // Restack with burst_gap=60 → all 4 photos merge into 1 stack
+    let stats = pipeline::restack_from_existing_photos(&conn, project_id, 60)
+        .expect("restack must succeed");
+    assert_eq!(
+        stats.logical_photos, 4,
+        "restack must report 4 logical_photos"
+    );
+
+    // Verify stacks actually changed (restack did something)
+    let stacks_after = repository::list_stacks_summary(&conn, project_id).unwrap();
+    assert_eq!(
+        stacks_after.len(),
+        1,
+        "burst_gap=60 must merge all 4 photos into 1 stack, got {}",
+        stacks_after.len()
+    );
+
+    // CRITICAL: LP IDs must be unchanged — thumbnail worker targets must remain valid
+    let lp_ids_after: Vec<i64> = conn
+        .prepare("SELECT id FROM logical_photos WHERE project_id = ?1 ORDER BY id")
+        .unwrap()
+        .query_map([project_id], |row| row.get(0))
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect();
+
+    assert_eq!(
+        lp_ids_before, lp_ids_after,
+        "restack must not change logical_photo IDs — a running thumbnail worker \
+        targets these IDs. If they change, the worker writes orphaned files.\n\
+        Before: {:?}\n\
+        After:  {:?}",
+        lp_ids_before, lp_ids_after
+    );
+}

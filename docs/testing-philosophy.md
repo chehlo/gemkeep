@@ -12,7 +12,7 @@ A passing test suite is not a clean bill of health. It is a record of the things
 thought to test. The things we did not think to test are the things that break.
 
 In a layered system — Rust backend, SQLite database, Tauri IPC, Svelte frontend — every
-layer can be correct in isolation while the composition is wrong. Four integration gap
+layer can be correct in isolation while the composition is wrong. Five integration gap
 patterns account for most escaped bugs:
 
 **Pattern A: Isolated correctness, wrong runtime inputs.**
@@ -36,7 +36,31 @@ returns. The frontend test says "thumbnails exist" (mock data). The real backend
 "thumbnails missing" (filesystem check). No test connects the two. This is the root cause
 of the thumbnail re-trigger bug and similar cross-layer failures.
 
-Sprint 3-6 produced multiple bugs fitting these patterns. None were visible to existing
+**Pattern F: Runtime scope mismatch (servability gap).**
+The backend returns a path or URL. Every test layer accepts it at face value: Rust tests
+verify the path is non-empty and points to a real file; frontend tests mock `convertFileSrc()`
+to always return a valid URL; E2E tests mock IPC so no real asset serving occurs. But the
+runtime has a gatekeeper — Tauri's `assetProtocol.scope`, CORS policy, filesystem permissions —
+that silently rejects the path. The result: a black `<img>`, a 403, or a silent load failure
+that no test layer catches. This is Pattern D (mock sandwich) compounded with Pattern A
+(wrong runtime inputs): every layer is individually correct, but the runtime's allowlist
+was never consulted by any test.
+
+*Sprint 7 example:* `get_photo_detail()` returns `jpeg_path: "/home/user/Photos/IMG.jpg"`.
+SingleView tries this path first via `convertFileSrc()` → `asset://localhost/home/user/Photos/IMG.jpg`.
+Tauri's asset protocol scope is `$HOME/.gem-keep/**` — the original photo path is outside scope.
+Tauri silently refuses to serve the file. The `<img>` renders as a black rectangle. All 334
+tests passed because: (a) Rust tests verified the path was correct, (b) jsdom tests mocked
+`convertFileSrc` to return an always-valid URL, (c) E2E tests mocked IPC so no real Tauri
+asset serving occurred, (d) no test connected "path the backend returns" to "paths the
+asset protocol will actually serve."
+
+*The fix:* A Rust integration test that reads the real `tauri.conf.json` asset protocol scope
+patterns and validates that every path returned by commands like `get_photo_detail()` and
+`read_thumbnail()` matches at least one scope pattern. This test requires no mocks on either
+side of the seam — it reads real config and checks real paths against real glob patterns.
+
+Sprints 3-7 produced multiple bugs fitting these patterns. None were visible to existing
 tests. The tests were not wrong — they were testing the wrong things.
 
 ---
@@ -336,7 +360,8 @@ fix to `(p.slug)`.
                     │  (Playwright)    │  Chromium + mocked IPC
                     ├──────────────────┤
                     │  Layer 3: Comp.  │  Varied data, multi-step
-                    │  (Vitest/jsdom)  │  flows, strict mock hygiene
+                    │  (vitest-browser │  flows, strict mock hygiene
+                    │   -svelte)       │
                     ├──────────────────┤
                     │  Layer 2: Rust   │  Full pipeline, real config
                     │  Integration     │  flow, contract tests, IPC
@@ -354,27 +379,35 @@ fix to `(p.slug)`.
 
 ### Layer 2: Rust Integration Tests
 
-**Scope:** Full pipeline end-to-end, IPC command dispatch, contract tests.
+**Scope:** Full pipeline end-to-end, IPC command dispatch, contract tests, integration seam tests.
 **Tools:** `cargo test`, Tauri mock runtime (`tauri::test`), real SQLite (in-memory).
 **Must test:** Config flow through pipeline (Rule 6), idempotency (Rule 11),
-IPC JSON shape (Rule 10), timing with tight thresholds (Rule 7).
+IPC JSON shape (Rule 10), timing with tight thresholds (Rule 7),
+runtime scope validation (Rule 15).
+
+**Integration seam testing:** Where two layers meet (e.g., Rust returns a path, Tauri
+serves it via asset protocol), there MUST be at least one test that validates the contract
+across the seam without mocks on either side. Seam tests read the real config
+(`tauri.conf.json`), call the real backend function, and verify that the output satisfies
+the runtime's constraints (e.g., returned paths match `assetProtocol.scope` glob patterns).
+Seam tests catch Pattern F bugs that no amount of per-layer testing can detect.
 
 ### Layer 3: Component Tests (Vitest)
 
 **Scope:** Svelte component behavior with varied props and state.
-**Tools:** Vitest 3 + @testing-library/svelte + jsdom (current).
-Migration target: vitest-browser-svelte + real Chromium (see Section 8).
+**Tools:** vitest-browser-svelte + real Chromium (visual + behavior).
+Legacy: Vitest + jsdom (non-visual behavior tests).
 **Must test:** Realistic mock data (Rule 4), second navigation (Rule 5),
-strict mock hygiene (Rule 9). After browser mode migration, also:
-visual CSS assertions (Rule 14) at the component level.
+strict mock hygiene (Rule 9), visual CSS assertions (Rule 14) at the
+component level.
 
 ### Layer 4: E2E Tests (Playwright, mocked IPC)
 
-**Scope:** Complete user journeys + visual CSS correctness. Real Chromium rendering, mocked IPC.
+**Scope:** Complete user journeys + cross-component visual correctness. Real Chromium rendering, mocked IPC.
 **Tools:** Playwright, `page.addInitScript()` for IPC mocking.
 **Must test:** Critical state machine transitions, timing assertions (Rule 7),
-new feature journeys (Rule 8), visual CSS assertions (Rule 14) — boundingBox
-containment, computed styles, Tailwind class compilation.
+new feature journeys (Rule 8), journey-level visual CSS assertions (Rule 14) —
+boundingBox containment, computed styles, Tailwind class compilation.
 
 ### Layer 5: Smoke Test (Playwright, real binary)
 
@@ -592,12 +625,21 @@ cargo test test_restack_preserves_thumbnail_files -- --nocapture
 # ... ok (1 passed)
 ```
 
-### Rule 14: Visual CSS assertions use Playwright, not jsdom
+### Rule 14: Visual CSS assertions require a real browser engine, not jsdom
 
 jsdom has no layout engine — it cannot verify CSS positioning, computed styles, or
 Tailwind class compilation. Any test that asserts visual correctness (borders visible,
-badges positioned inside cards, opacity applied, colors correct) **must** use Playwright
-Layer 4 E2E tests with `boundingBox()` and `getComputedStyle()`.
+badges positioned inside cards, opacity applied, colors correct) **must** use a real
+browser engine via either vitest-browser-svelte (Layer 3, component-scoped) or
+Playwright (Layer 4, journey-level).
+
+**Two-tool approach:**
+- **vitest-browser-svelte** — component-scoped visual tests: badge positioning within
+  a card, element opacity, computed colors on a single component. Fast (~50-100ms/test).
+- **Playwright** — journey-level visual tests: cross-component layout, multi-page flows,
+  full-page visual assertions. Slower (~1-5s/test) but tests the full page context.
+- Both run real Chromium. vitest-browser-svelte is faster and should be preferred for
+  single-component visual assertions.
 
 **Never use jsdom to test:**
 - Element positioning (`absolute`, `relative`, `fixed`)
@@ -605,25 +647,75 @@ Layer 4 E2E tests with `boundingBox()` and `getComputedStyle()`.
 - Whether a Tailwind utility class produces visible output
 - Whether overflow clipping hides an element
 
-**Use jsdom only for:**
-- DOM presence (element exists after state change)
+**jsdom is acceptable for:**
+- DOM presence (element exists after state change) — legacy, non-visual assertions
 - Class toggling logic (class added/removed in response to props)
 - Text content and attribute values
+
+For NEW component tests that need visual assertions, use vitest-browser-svelte
+(Layer 3). For tests that only check DOM presence/class toggling/text, jsdom
+remains acceptable.
 
 ```typescript
 // BAD — jsdom "passes" even when badge escapes its card
 expect(card.querySelector('.badge-keep')).toBeTruthy()
 
-// GOOD — Playwright catches positioning bugs
+// GOOD — vitest-browser-svelte catches it at component-test speed
 const cardBox = await card.boundingBox()
 const badgeBox = await badge.boundingBox()
 expect(badgeBox!.y).toBeGreaterThanOrEqual(cardBox!.y)
+
+// ALSO GOOD — Playwright catches it in E2E context (use for journey tests)
+const cardBox = await page.locator('[data-testid="card"]').boundingBox()
 ```
 
 This rule was earned by the StackFocus badge bug (Sprint 7): the badge had
 `absolute top-1 right-1` but its parent card lacked `position: relative`. jsdom
 tests showed the badge element existed. Playwright proved it rendered at
 `y=4` while the card was at `y=73` — the badge escaped the card entirely.
+
+### Rule 15: Runtime scope assertions — validate paths against the runtime's allowlist
+
+**Any backend command that returns a file path consumed by the frontend via
+`convertFileSrc()` must have a Rust integration test proving the path falls within
+the Tauri `assetProtocol.scope` patterns.**
+
+The asset protocol is a silent gatekeeper: if a path does not match a scope pattern,
+Tauri returns nothing (no error, no log, just a black `<img>`). Mocks hide this
+completely — `convertFileSrc()` is mocked to always succeed, and E2E tests mock IPC
+so no real asset serving occurs.
+
+```rust
+#[test]
+fn test_photo_detail_paths_within_asset_scope() {
+    // Read real tauri.conf.json → extract assetProtocol.scope patterns
+    let conf = read_tauri_conf();
+    let scope_patterns = conf.asset_protocol.scope;
+
+    // Call get_photo_detail with a real project
+    let detail = get_photo_detail(&conn, "test-project", photo_id).unwrap();
+
+    // Every path the frontend will feed to convertFileSrc() must match scope
+    if let Some(thumb) = &detail.thumbnail_path {
+        assert!(matches_any_scope_pattern(thumb, &scope_patterns),
+            "thumbnail_path {} not in asset scope {:?}", thumb, scope_patterns);
+    }
+    // jpeg_path is an ORIGINAL photo path — it must NOT be assumed servable
+    // unless the scope explicitly includes the source folder
+}
+```
+
+**When to add scope tests:** Every time a new IPC command returns a path that the
+frontend will serve via `asset://`. The scope test is part of the Definition of Done
+alongside the contract test (Rule 10).
+
+**This rule catches Pattern F** — the gap where every layer is correct but the runtime
+silently refuses to serve a path that no test ever validated against the scope.
+
+This rule was earned by the SingleView black screen bug (Sprint 7): `get_photo_detail()`
+returned `jpeg_path` pointing to the original photo outside `$HOME/.gem-keep/**`. The
+frontend tried `convertFileSrc(jpeg_path)` first, Tauri silently refused, and the
+`<img>` rendered black. All 334 tests passed.
 
 ---
 
@@ -643,11 +735,13 @@ cargo fmt --manifest-path src-tauri/Cargo.toml --check   # format check
 
 ### Frontend Tests
 ```bash
-npm test                    # vitest (jsdom)
-npm run test:e2e           # playwright
+npm test                    # vitest (jsdom — legacy non-visual tests)
+npm run test:browser        # vitest browser mode (visual component tests)
+npm run test:e2e           # playwright (E2E journeys)
 ```
 
-- Vitest 3 + @testing-library/svelte + jsdom
+- vitest-browser-svelte + Chromium (standard for new component tests, visual assertions)
+- Vitest + jsdom (legacy, non-visual behavior tests only)
 - Config in `vite.config.ts` (test block)
 - Global mock in `src/test/setup.ts`
 - Mock architecture: `invoke()` throws by default (Rule 9)
@@ -782,6 +876,8 @@ expect(badgeBox!.y).toBeGreaterThanOrEqual(cardBox!.y) // FAILED: 4 < 73
 **Fix:** Add `relative` to the card div's class list.
 
 **Layers involved:** Playwright E2E (Layer 4, visual CSS assertions).
+Note: with vitest-browser-svelte (Layer 3), this class of bug can now be caught
+at the component level, which is faster and more targeted.
 This bug established Rule 14 and Section 8 of this document.
 
 ---
@@ -798,31 +894,46 @@ A jsdom test can verify that `element.classList.contains('border-green-500')` is
 It cannot verify that the border is visible, correctly positioned, or the right color.
 The following bugs are **invisible to jsdom**:
 
-| Bug | jsdom sees | Playwright sees |
-|-----|------------|-----------------|
+| Bug | jsdom sees | Real Chromium sees (vitest-browser-svelte / Playwright) |
+|-----|------------|----------------------------------------------------------|
 | `absolute` badge escapes card (no `relative` on parent) | Class present, element exists | `boundingBox()` outside card bounds |
 | Tailwind class purged from build (not in content scan) | Class present in source | `getComputedStyle().borderColor` = transparent |
 | `opacity-50` not reactively applied after state change | Class added to DOM | `getComputedStyle().opacity` = 1.0 (stale) |
 | `z-index` stacking hides badge behind sibling | Element exists | `isVisible()` returns false |
 
-### Playwright Visual Assertions (Layer 4)
+### Visual Assertions with Real Chromium
 
-Playwright runs real Chromium with full CSS layout, Tailwind compilation, and computed
-styles. Use these assertion patterns for visual correctness:
+Both vitest-browser-svelte (Layer 3) and Playwright (Layer 4) run real Chromium
+with full CSS layout, Tailwind compilation, and computed styles. The assertion
+patterns are similar but use different APIs. Use vitest-browser-svelte for
+component-scoped tests; use Playwright for journey-level tests.
 
 **Bounding box containment** — verify positioned elements stay within their parent:
 ```typescript
+// vitest-browser-svelte (Layer 3 — component-scoped)
+const card = screen.getByTestId('photo-card')
+const badge = card.getByRole('status')  // or appropriate selector
+const cardBox = await card.element().getBoundingClientRect()
+const badgeBox = await badge.element().getBoundingClientRect()
+expect(badgeBox.y).toBeGreaterThanOrEqual(cardBox.y)
+
+// Playwright (Layer 4 — journey-level)
 const card = page.locator('[data-testid="photo-card"]').first()
 const badge = card.locator('.badge-keep')
 const cardBox = await card.boundingBox()
 const badgeBox = await badge.boundingBox()
-// Badge must be inside card
 expect(badgeBox!.y).toBeGreaterThanOrEqual(cardBox!.y)
 expect(badgeBox!.x + badgeBox!.width).toBeLessThanOrEqual(cardBox!.x + cardBox!.width)
 ```
 
 **Computed style verification** — verify CSS values after Tailwind compilation:
 ```typescript
+// vitest-browser-svelte (Layer 3)
+const el = screen.getByTestId('photo-card')
+const opacity = getComputedStyle(el.element()).opacity
+expect(parseFloat(opacity)).toBeCloseTo(0.5, 1)
+
+// Playwright (Layer 4)
 const opacity = await page.evaluate(() => {
   const el = document.querySelector('[data-testid="photo-card"]')
   return getComputedStyle(el!).opacity
@@ -832,6 +943,12 @@ expect(parseFloat(opacity)).toBeCloseTo(0.5, 1)
 
 **Color verification** — verify Tailwind colors are compiled and applied:
 ```typescript
+// vitest-browser-svelte (Layer 3)
+const badge = screen.getByRole('status')
+const bgColor = getComputedStyle(badge.element()).backgroundColor
+expect(bgColor).toBe('rgb(34, 197, 94)') // Tailwind bg-green-500
+
+// Playwright (Layer 4)
 const bgColor = await page.evaluate(() => {
   const badge = document.querySelector('.badge-keep')
   return getComputedStyle(badge!).backgroundColor
@@ -841,10 +958,11 @@ expect(bgColor).toBe('rgb(34, 197, 94)') // Tailwind bg-green-500
 
 ### Cross-Engine Rendering Gap
 
-Playwright tests run in Chromium. The production app uses WebKitGTK (Linux) or WebKit
-(macOS). CSS edge cases can behave differently between engines. Playwright visual tests
-catch the majority of bugs (missing `relative`, purged classes, broken reactivity), but
-**pixel-exact rendering must be verified manually** in the real app for each sprint.
+Both vitest-browser-svelte and Playwright tests run in Chromium. The production app
+uses WebKitGTK (Linux) or WebKit (macOS). CSS edge cases can behave differently
+between engines. Chromium-based visual tests catch the majority of bugs (missing
+`relative`, purged classes, broken reactivity), but **pixel-exact rendering must be
+verified manually** in the real app for each sprint.
 
 ### Test Tiering Strategy
 
@@ -856,7 +974,7 @@ Tests are organized into tiers by cost and scope:
 │  Tier 1: Pre-commit                         Budget: < 60s   │
 │  ─────────────────────────────────────────────────────────── │
 │  cargo clippy --manifest-path src-tauri/Cargo.toml           │
-│  npx vitest run --changed              (only modified files) │
+│  npx vitest run --changed              (jsdom + browser mode) │
 │  Total: ~15-40s depending on what changed                    │
 ├──────────────────────────────────────────────────────────────┤
 │  Tier 2: Pre-push                           Budget: < 3 min  │
@@ -885,22 +1003,52 @@ to hundreds of tests.
 - Tier 2: Before pushing to remote / before opening PR
 - Tier 3: Sprint-done gate, dependency updates, weekly
 
-### Migration Plan: vitest-browser-svelte (replaces jsdom)
+vitest-browser-svelte tests run in Tier 1 (`--changed`) and Tier 2 (full suite).
+This means component-level visual assertions run in pre-commit, catching CSS bugs
+without waiting for the slower Playwright E2E tests in Tier 2.
 
-**Problem:** jsdom cannot test CSS layout, positioning, computed styles, or Tailwind
-compilation. This forces visual correctness tests into the slow Playwright E2E layer.
+### Decision Guide: Where Does This Visual Test Belong?
 
-**Solution:** Vitest Browser Mode runs component tests in **real Chromium** instead of
-jsdom. Component tests gain full CSS support while remaining fast (~50-100ms per test).
+```
+Is it a single component's rendering?
+  YES → vitest-browser-svelte (Layer 3)
+         boundingBox(), getComputedStyle(), color checks
+         Runs in Tier 1 (--changed) — fast feedback
+
+  NO → Is it a multi-step user journey or cross-component layout?
+    YES → Playwright E2E (Layer 4)
+           Full page assertions, navigation flows, timing
+           Runs in Tier 2
+
+    NO → Is it the real Tauri binary with real data?
+      YES → Playwright Smoke Test (Layer 5)
+             Real SQLite, real filesystem, real asset://
+             Runs in Tier 3
+
+Is it a runtime scope or permission assertion?
+  (e.g., "Can the asset protocol actually serve this path?")
+  YES → Rust integration test (Layer 2) — Rule 15
+         Read real tauri.conf.json, call real backend function,
+         validate returned paths against scope glob patterns.
+         No mocks on either side of the seam.
+         Runs in Tier 2 (cargo test)
+```
+
+### vitest-browser-svelte: Component-Level Visual Testing (Layer 3)
+
+vitest-browser-svelte is the recommended approach for component-level visual testing.
+It runs Svelte component tests in **real Chromium** instead of jsdom, giving component
+tests full CSS layout, positioning, computed styles, and Tailwind compilation while
+remaining fast (~50-100ms per test).
 
 **Benefits:**
-- Component tests can verify `boundingBox()`, `getComputedStyle()`, opacity, colors
-- Many tests that currently require E2E (because jsdom can't test CSS) become
+- Component tests verify `boundingBox()`, `getComputedStyle()`, opacity, colors
+- Tests that previously required E2E (because jsdom cannot test CSS) run as
   fast component tests instead
-- The `--changed` flag still works — only modified component tests run in Tier 1
-- Migration is incremental (both jsdom and browser projects can coexist)
+- The `--changed` flag works — only modified component tests run in Tier 1
+- Catches CSS positioning bugs (like BUG-08) at the component level in pre-commit
 
-**Migration steps (to be executed in a dedicated sprint):**
+**Setup:**
 ```bash
 npm install -D @vitest/browser vitest-browser-svelte
 ```
@@ -916,9 +1064,8 @@ test: {
 }
 ```
 
-**Migration is NOT blocking.** Current jsdom tests continue to work. New visual
-component tests should be written using vitest-browser-svelte when available.
-Existing jsdom tests can be migrated incrementally.
+**Coexistence:** Both jsdom and browser projects can coexist. New tests with visual
+assertions should use browser mode. Existing jsdom tests can be migrated incrementally.
 
 **References:**
 - [Svelte official testing docs](https://svelte.dev/docs/svelte/testing)
@@ -955,6 +1102,7 @@ See Section 8 for Tier 1 (pre-commit) and Tier 2 (pre-push) definitions.
 - [ ] Idempotency: second run of pipeline produces imported=0
 - [ ] Config read-modify-write: non-target fields preserved
 - [ ] Timing thresholds: 3x measured time, measurement documented
+- [ ] Runtime scope: all IPC commands returning paths have scope validation tests (Rule 15)
 
 ### IPC Contract Tests
 - [ ] Every IPC command used by frontend has a JSON shape test in ipc_tests.rs
@@ -967,14 +1115,16 @@ See Section 8 for Tier 1 (pre-commit) and Tier 2 (pre-push) definitions.
 - [ ] Stateful flows tested with 2+ round trips, different targets
 - [ ] Call sequences verified (not just spot-checked)
 - [ ] Error paths: at least 1 rejection test per component
+- [ ] Component-level visual assertions use vitest-browser-svelte (boundingBox, computedStyle)
 
 ### E2E Tests (Playwright)
 - [ ] 1+ new spec file covering this sprint's primary feature
 - [ ] Timing assertions with 3x measured threshold
-- [ ] Visual CSS assertions for any new UI indicators (Rule 14)
+- [ ] Journey-level visual CSS assertions for cross-component indicators (Rule 14)
 
 ### Visual Verification
-- [ ] Visual E2E tests pass (boundingBox, computedStyle assertions)
+- [ ] Component-level visual tests pass (vitest-browser-svelte, boundingBox/computedStyle)
+- [ ] Journey-level visual E2E tests pass (Playwright, full-page assertions)
 - [ ] Manual check in real app (cargo tauri dev) — colors, positions, transitions
 - [ ] Cross-engine spot check if CSS changes are non-trivial
 
@@ -991,6 +1141,92 @@ See Section 8 for Tier 1 (pre-commit) and Tier 2 (pre-push) definitions.
 - [ ] npm run test:e2e passes
 - [ ] Test tiering verified: `vitest --changed` works for Tier 1
 ```
+
+---
+
+## Section 10: Coverage Targets
+
+Coverage targets are per-layer, not a single number. Different layers have
+different cost-benefit curves — obsessing over 100% in the wrong layer wastes
+effort, while under-testing critical paths lets bugs ship.
+
+### Rust Backend
+
+| Area | Target | Rationale |
+|------|--------|-----------|
+| Decision engine (keep/eliminate/undo/commit) | 95%+ | Core user workflow; state machine errors corrupt data |
+| Import pipeline (scanner → EXIF → stacking → DB) | 90%+ | Multi-stage data flow; any gap produces silent data loss |
+| Config persistence (read-modify-write, defaults) | 95%+ | BUG-01 and BUG-02 both came from here |
+| Database migrations and schema | 90%+ | Irreversible in production; must be correct on first run |
+| Thumbnail generation and fallback paths | 80%+ | Performance-sensitive; fallback chain must be tested |
+| Slug generation and validation | 80%+ | Input sanitization at system boundary |
+| Utility functions (formatting, helpers) | 60%+ | Low risk; test non-obvious edge cases only |
+
+### Tauri IPC Contract
+
+| Area | Target | Rationale |
+|------|--------|-----------|
+| JSON shape tests (every command) | 100% | The mock sandwich problem (Pattern D) — frontend mocks and backend responses must match |
+| Error response shape | 100% | Frontend error handling depends on exact error format |
+| New commands per sprint | 100% | Contract test written BEFORE frontend mock (Rule 10) |
+| Asset scope validation (path-returning commands) | 100% | Runtime scope mismatch (Pattern F) — paths must be servable by asset protocol (Rule 15) |
+
+Currently 6 of 29 commands have contract tests (20%). Each sprint should
+close this gap by adding contract tests for commands touched that sprint.
+
+### Frontend Components
+
+| Area | Target | Rationale |
+|------|--------|-----------|
+| Navigation and screen transitions | 90%+ | Core UX; untested transitions = broken app flow |
+| Keyboard shortcuts and IPC dispatch | 85%+ | Primary interaction model; every key must do what docs say |
+| Decision workflow (Y/X/commit/undo) | 90%+ | User's main task; errors here = lost culling work |
+| Form validation and submission | 75%+ | User-facing; bad UX but not data loss |
+| Error states and recovery | 70%+ | Defensive; prevents blank screens on API failures |
+| Display formatting (dates, counts, truncation) | 60%+ | Visual polish; test non-obvious formatting only |
+| Empty states | 50%+ | Low risk; test existence, not styling |
+
+### Visual Assertions (vitest-browser-svelte / Playwright)
+
+| Area | Target | Rationale |
+|------|--------|-----------|
+| Decision indicators (keep/eliminate badges, borders) | 100% | Most user-visible state; BUG-08 proved jsdom misses these |
+| Focus rings and selection indicators | 100% | Must be visible to use keyboard navigation |
+| Grid layout (4-column card grids) | 80%+ | Layout breaks are immediately obvious |
+| Progress bars (width reflects actual progress) | 80%+ | Visual lie if bar width doesn't match percentage |
+| Modal overlays (dimming, centering, z-stacking) | 60%+ | Important but less likely to regress |
+| Color themes and hover states | 40%+ | Low risk; verify once, manual check after |
+
+### E2E Journeys (Playwright)
+
+| Area | Target | Rationale |
+|------|--------|-----------|
+| Critical user journeys per sprint | 3-5 specs | Rule 8: new feature = new E2E spec |
+| Cross-screen navigation (Enter/Esc/Back flows) | 100% | The app is 4 screens; every transition must work |
+| Decision persistence across navigation | 100% | Data integrity: decisions must survive screen changes |
+| Import → thumbnail → grid flow | 1+ E2E | The first thing every new user does |
+
+### Per-Screen Behavior Coverage
+
+Tracked in `docs/test-coverage-matrix.md`. Targets for implemented behaviors:
+
+| Screen | Current | Sprint 8 Target | Long-term Target |
+|--------|---------|-----------------|------------------|
+| ProjectList | 35% | 65% | 80% |
+| StackOverview | 62% | 75% | 85% |
+| StackFocus | 49% | 70% | 85% |
+| SingleView | 73% | 80% | 90% |
+| HelpOverlay | 38% | 60% | 75% |
+| **Overall** | **52%** | **70%** | **85%** |
+
+### What NOT to Chase
+
+- 100% line coverage on any layer — diminishing returns past 85-90%
+- Coverage on generated files, config files, or type definitions
+- Testing Tailwind class names in jsdom — these are wrong-tech (Rule 14)
+- Testing framework internals (Svelte reactivity, Tauri event bus wiring)
+- Screenshot-diff tests — too brittle for a solo/small-team project; use
+  `boundingBox()` and `getComputedStyle()` assertions instead
 
 ---
 

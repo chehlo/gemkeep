@@ -1130,7 +1130,10 @@ mod tests {
 
         let result = tauri::test::get_ipc_response(
             &wv,
-            invoke_req("suggest_slug", serde_json::json!({ "name": "My Wedding Shoot" })),
+            invoke_req(
+                "suggest_slug",
+                serde_json::json!({ "name": "My Wedding Shoot" }),
+            ),
         );
         assert!(result.is_ok(), "suggest_slug must succeed: {:?}", result);
         let val: serde_json::Value = result.unwrap().deserialize().unwrap();
@@ -1189,11 +1192,7 @@ mod tests {
                 serde_json::json!({ "name": "My Test Project" }),
             ),
         );
-        assert!(
-            result.is_ok(),
-            "create_project must succeed: {:?}",
-            result
-        );
+        assert!(result.is_ok(), "create_project must succeed: {:?}", result);
         let val: serde_json::Value = result.unwrap().deserialize().unwrap();
 
         // Verify JSON shape matches TypeScript Project interface
@@ -1209,10 +1208,7 @@ mod tests {
             !val["slug"].as_str().unwrap().is_empty(),
             "slug must not be empty"
         );
-        assert!(
-            val["created_at"].is_string(),
-            "created_at must be a string"
-        );
+        assert!(val["created_at"].is_string(), "created_at must be a string");
         // last_opened_at can be null or string
         assert!(
             val["last_opened_at"].is_null() || val["last_opened_at"].is_string(),
@@ -1234,10 +1230,8 @@ mod tests {
         let wv = make_webview(&app);
 
         // Verify project exists before delete
-        let list_before = tauri::test::get_ipc_response(
-            &wv,
-            invoke_req("list_projects", serde_json::json!({})),
-        );
+        let list_before =
+            tauri::test::get_ipc_response(&wv, invoke_req("list_projects", serde_json::json!({})));
         assert!(list_before.is_ok(), "list_projects must succeed");
         let before_val: serde_json::Value = list_before.unwrap().deserialize().unwrap();
         assert_eq!(
@@ -1258,11 +1252,12 @@ mod tests {
         );
 
         // Verify project is gone
-        let list_after = tauri::test::get_ipc_response(
-            &wv,
-            invoke_req("list_projects", serde_json::json!({})),
+        let list_after =
+            tauri::test::get_ipc_response(&wv, invoke_req("list_projects", serde_json::json!({})));
+        assert!(
+            list_after.is_ok(),
+            "list_projects must succeed after delete"
         );
-        assert!(list_after.is_ok(), "list_projects must succeed after delete");
         let after_val: serde_json::Value = list_after.unwrap().deserialize().unwrap();
         assert_eq!(
             after_val.as_array().unwrap().len(),
@@ -1310,11 +1305,7 @@ mod tests {
             &wv,
             invoke_req("cancel_indexing", serde_json::json!({})),
         );
-        assert!(
-            result.is_ok(),
-            "cancel_indexing must succeed: {:?}",
-            result
-        );
+        assert!(result.is_ok(), "cancel_indexing must succeed: {:?}", result);
     }
 
     #[test]
@@ -1329,10 +1320,8 @@ mod tests {
         let wv = make_webview(&app);
 
         // Call pause_indexing
-        let pause_result = tauri::test::get_ipc_response(
-            &wv,
-            invoke_req("pause_indexing", serde_json::json!({})),
-        );
+        let pause_result =
+            tauri::test::get_ipc_response(&wv, invoke_req("pause_indexing", serde_json::json!({})));
         assert!(
             pause_result.is_ok(),
             "pause_indexing must succeed: {:?}",
@@ -1365,10 +1354,8 @@ mod tests {
         let wv = make_webview(&app);
 
         // First pause
-        let pause_result = tauri::test::get_ipc_response(
-            &wv,
-            invoke_req("pause_indexing", serde_json::json!({})),
-        );
+        let pause_result =
+            tauri::test::get_ipc_response(&wv, invoke_req("pause_indexing", serde_json::json!({})));
         assert!(pause_result.is_ok(), "pause_indexing must succeed");
 
         // Then resume
@@ -1424,7 +1411,10 @@ mod tests {
             &wv,
             invoke_req("list_stacks", serde_json::json!({ "slug": "test" })),
         );
-        assert!(stacks_result.is_ok(), "list_stacks must succeed after restack");
+        assert!(
+            stacks_result.is_ok(),
+            "list_stacks must succeed after restack"
+        );
         let stacks: serde_json::Value = stacks_result.unwrap().deserialize().unwrap();
         assert!(
             !stacks.as_array().unwrap().is_empty(),
@@ -1464,10 +1454,7 @@ mod tests {
 
         // Verify JSON shape of each stack matches TypeScript StackSummary
         for stack in stacks {
-            assert!(
-                stack["stack_id"].is_number(),
-                "stack_id must be a number"
-            );
+            assert!(stack["stack_id"].is_number(), "stack_id must be a number");
             assert!(
                 stack["logical_photo_count"].is_number(),
                 "logical_photo_count must be a number"
@@ -1476,14 +1463,8 @@ mod tests {
                 stack["earliest_capture"].is_null() || stack["earliest_capture"].is_string(),
                 "earliest_capture must be null or string"
             );
-            assert!(
-                stack["has_raw"].is_boolean(),
-                "has_raw must be a boolean"
-            );
-            assert!(
-                stack["has_jpeg"].is_boolean(),
-                "has_jpeg must be a boolean"
-            );
+            assert!(stack["has_raw"].is_boolean(), "has_raw must be a boolean");
+            assert!(stack["has_jpeg"].is_boolean(), "has_jpeg must be a boolean");
             assert!(
                 stack["thumbnail_path"].is_null() || stack["thumbnail_path"].is_string(),
                 "thumbnail_path must be null or string"
@@ -1619,16 +1600,10 @@ mod tests {
         // If there are transactions (e.g., from import), verify their shape
         for txn in txns {
             assert!(txn["id"].is_number(), "id must be a number");
-            assert!(
-                txn["project_id"].is_number(),
-                "project_id must be a number"
-            );
+            assert!(txn["project_id"].is_number(), "project_id must be a number");
             assert!(txn["action"].is_string(), "action must be a string");
             assert!(txn["details"].is_string(), "details must be a string");
-            assert!(
-                txn["created_at"].is_string(),
-                "created_at must be a string"
-            );
+            assert!(txn["created_at"].is_string(), "created_at must be a string");
         }
 
         // Now create a merge transaction to guarantee at least one entry
@@ -1680,10 +1655,7 @@ mod tests {
                 Some("merge"),
                 "action must be 'merge'"
             );
-            assert!(
-                merge_txn["details"].is_string(),
-                "details must be a string"
-            );
+            assert!(merge_txn["details"].is_string(), "details must be a string");
             assert!(
                 merge_txn["created_at"].is_string(),
                 "created_at must be a string"
@@ -1806,29 +1778,15 @@ mod tests {
 
         let result = tauri::test::get_ipc_response(
             &wv,
-            invoke_req(
-                "open_project",
-                serde_json::json!({ "slug": "shape-test" }),
-            ),
+            invoke_req("open_project", serde_json::json!({ "slug": "shape-test" })),
         );
         assert!(result.is_ok(), "open_project must succeed: {:?}", result);
         let val: serde_json::Value = result.unwrap().deserialize().unwrap();
 
         assert!(val["id"].is_number(), "id must be a number");
-        assert_eq!(
-            val["name"].as_str(),
-            Some("Shape Test"),
-            "name must match"
-        );
-        assert_eq!(
-            val["slug"].as_str(),
-            Some("shape-test"),
-            "slug must match"
-        );
-        assert!(
-            val["created_at"].is_string(),
-            "created_at must be a string"
-        );
+        assert_eq!(val["name"].as_str(), Some("Shape Test"), "name must match");
+        assert_eq!(val["slug"].as_str(), Some("shape-test"), "slug must match");
+        assert!(val["created_at"].is_string(), "created_at must be a string");
         assert!(
             val["last_opened_at"].is_null() || val["last_opened_at"].is_string(),
             "last_opened_at must be null or string"
@@ -1849,10 +1807,8 @@ mod tests {
         let app = make_app(home);
         let wv = make_webview(&app);
 
-        let result = tauri::test::get_ipc_response(
-            &wv,
-            invoke_req("list_projects", serde_json::json!({})),
-        );
+        let result =
+            tauri::test::get_ipc_response(&wv, invoke_req("list_projects", serde_json::json!({})));
         assert!(result.is_ok(), "list_projects must succeed");
         let val: serde_json::Value = result.unwrap().deserialize().unwrap();
         let projects = val.as_array().expect("must return an array");

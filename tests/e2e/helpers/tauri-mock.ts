@@ -333,7 +333,7 @@ export async function injectTauriMock(
           case 'get_burst_gap':
             return store.burstGap
           case 'set_burst_gap':
-            store.burstGap = args.gap as number
+            store.burstGap = args.secs as number
             return undefined
           case 'restack':
             store.restacked = true

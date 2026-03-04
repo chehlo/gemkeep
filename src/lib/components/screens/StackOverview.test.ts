@@ -1225,6 +1225,38 @@ describe('StackOverview — SO-27: Esc back to ProjectList', () => {
   })
 })
 
+// --- BUG B4: Esc navigates away when burst panel is open ---
+
+describe('StackOverview — B4: Esc closes burst panel instead of navigating away', () => {
+  it('Escape closes burst panel without navigating away from StackOverview', async () => {
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2], status: DONE_STATUS })
+    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(2))
+
+    // Open burst panel via Ctrl+B
+    mockInvoke.mockResolvedValueOnce(3)  // get_burst_gap
+    await fireEvent.keyDown(document, { key: 'b', ctrlKey: true })
+
+    // Verify the burst panel is visible (the modal overlay with "Burst gap" heading)
+    await waitFor(() => {
+      expect(screen.getByText(/burst gap/i)).toBeInTheDocument()
+    })
+
+    // Press Escape — should close the burst panel, NOT navigate away
+    await fireEvent.keyDown(document, { key: 'Escape' })
+
+    // Burst panel should be gone
+    await waitFor(() => {
+      expect(screen.queryByText(/burst gap/i)).not.toBeInTheDocument()
+    })
+
+    // Navigation should still be on stack-overview (NOT project-list)
+    expect(navigation.current.kind).toBe('stack-overview')
+
+    // Stack cards should still be visible (component is still mounted)
+    expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(2)
+  })
+})
+
 // ── SO-36: Burst gap panel: 'Recalculating stacks…' transient message ────────
 
 describe('StackOverview — SO-36: burst gap recalculating message', () => {
@@ -1453,5 +1485,235 @@ describe('StackOverview — SO-63/64/65: Shift+Arrow multi-select directions', (
     const cards = document.querySelectorAll('[data-stack-card]')
     expect(cards[5].className).toMatch(/ring-yellow|border-yellow/)
     expect(cards[1].className).toMatch(/ring-yellow|border-yellow/)
+  })
+})
+
+// ── M3: mergeStacks visible error feedback ─────────────────────────────────
+
+describe('StackOverview — M3: mergeStacks error shows visible feedback', () => {
+  it('merge_stacks rejection shows error banner', async () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2, STACK_3], status: DONE_STATUS })
+    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(3))
+
+    // Select 2 stacks via Shift+Arrow
+    await fireEvent.keyDown(document, { key: 'ArrowRight', shiftKey: true })
+
+    // Mock merge_stacks rejection
+    mockInvoke.mockRejectedValueOnce(new Error('Cannot merge'))
+
+    await fireEvent.keyDown(document, { key: 'm' })
+
+    await waitFor(() => {
+      expect(screen.getByTestId('action-error')).toBeInTheDocument()
+      expect(screen.getByText('Failed to merge stacks. Please try again.')).toBeInTheDocument()
+    })
+
+    consoleSpy.mockRestore()
+  })
+})
+
+// ── M4: undoLastMerge visible error feedback ───────────────────────────────
+
+describe('StackOverview — M4: undoLastMerge error shows visible feedback', () => {
+  it('undo_last_merge rejection shows error banner', async () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2], status: DONE_STATUS })
+    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(2))
+
+    // Mock undo_last_merge rejection
+    mockInvoke.mockRejectedValueOnce(new Error('Nothing to undo'))
+
+    await fireEvent.keyDown(document, { key: 'z', ctrlKey: true })
+
+    await waitFor(() => {
+      expect(screen.getByTestId('action-error')).toBeInTheDocument()
+      expect(screen.getByText('Failed to undo merge. Please try again.')).toBeInTheDocument()
+    })
+
+    consoleSpy.mockRestore()
+  })
+})
+
+// ── M5: startIndexing failure resets stuck UI ──────────────────────────────
+
+describe('StackOverview — M5: startIndexing failure resets UI', () => {
+  it('start_indexing rejection resets status back to idle, shows error', async () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    // Initial state: folders present, no stacks -> auto-start indexing path
+    // But we override to control the mock chain manually
+    mockInvoke.mockResolvedValueOnce([FOLDER_A])    // list_source_folders
+    mockInvoke.mockResolvedValueOnce([])             // list_stacks
+    mockInvoke.mockResolvedValueOnce(IDLE_STATUS)    // get_indexing_status
+    // loadAll sees folders.length > 0 && stacks.length === 0 -> auto-start
+    mockInvoke.mockRejectedValueOnce(new Error('Permission denied'))  // start_indexing FAILS
+    mockInvoke.mockResolvedValueOnce(IDLE_STATUS)    // get_indexing_status (recovery fetch)
+    mockInvoke.mockResolvedValueOnce([])             // list_stacks (recovery fetch)
+
+    render(StackOverview)
+
+    // After failure, UI should NOT be stuck in running state
+    await waitFor(() => {
+      expect(screen.getByTestId('action-error')).toBeInTheDocument()
+      expect(screen.getByText('Failed to start indexing. Please try again.')).toBeInTheDocument()
+    })
+
+    // The "Indexing..." indicator should NOT be visible
+    expect(screen.queryByText('Indexing…')).not.toBeInTheDocument()
+
+    consoleSpy.mockRestore()
+  })
+
+  it('start_indexing failure with get_indexing_status also failing resets running flag', async () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    mockInvoke.mockResolvedValueOnce([FOLDER_A])    // list_source_folders
+    mockInvoke.mockResolvedValueOnce([])             // list_stacks
+    mockInvoke.mockResolvedValueOnce(IDLE_STATUS)    // get_indexing_status
+    // Auto-start path:
+    mockInvoke.mockRejectedValueOnce(new Error('Permission denied'))  // start_indexing FAILS
+    mockInvoke.mockRejectedValueOnce(new Error('DB error'))           // get_indexing_status ALSO FAILS
+    mockInvoke.mockResolvedValueOnce([])             // list_stacks (recovery)
+
+    render(StackOverview)
+
+    // Error banner should appear
+    await waitFor(() => {
+      expect(screen.getByTestId('action-error')).toBeInTheDocument()
+    })
+
+    // Running state should be reset even if getIndexingStatus also fails
+    expect(screen.queryByText('Indexing…')).not.toBeInTheDocument()
+
+    consoleSpy.mockRestore()
+  })
+})
+
+// ── M7: polling interval leak on unmount ───────────────────────────────────
+
+describe('StackOverview — M7: polling cleanup on unmount', () => {
+  it('unmount during active polling clears interval cleanly', async () => {
+    // Mount with running status to trigger polling
+    mockInvoke.mockResolvedValueOnce([FOLDER_A])        // list_source_folders
+    mockInvoke.mockResolvedValueOnce([])                // list_stacks
+    mockInvoke.mockResolvedValueOnce(RUNNING_STATUS)    // get_indexing_status (running=true -> startPolling)
+    // First poll cycle: keep running so polling stays active
+    mockInvoke.mockResolvedValueOnce(RUNNING_STATUS)    // poll: get_indexing_status (still running)
+    mockInvoke.mockResolvedValueOnce([])                // poll: list_stacks
+
+    const { unmount } = render(StackOverview)
+
+    // Wait for polling to start
+    await waitFor(() => {
+      expect(screen.getByText('Indexing…')).toBeInTheDocument()
+    })
+
+    // Unmount while polling is active — should not throw
+    unmount()
+
+    // Verify no errors — if interval wasn't cleared, subsequent poll ticks
+    // would call unmocked invoke and throw. We wait briefly to confirm.
+    await new Promise(r => setTimeout(r, 100))
+    // If we reach here without error, cleanup was successful
+  })
+})
+
+// ── M10: loadAll failure during mount ──────────────────────────────────────
+
+describe('StackOverview — M10: loadAll failure during mount', () => {
+  it('list_source_folders rejection shows empty state (not stuck loading)', async () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    // list_source_folders rejects — loadAll fails at the first await
+    mockInvoke.mockRejectedValueOnce(new Error('DB not found'))
+
+    render(StackOverview)
+
+    // Loading indicator should disappear (initialLoading set to false in finally block)
+    await waitFor(() => {
+      expect(screen.queryByText('Loading…')).not.toBeInTheDocument()
+    })
+
+    consoleSpy.mockRestore()
+  })
+
+  it('list_stacks rejection shows empty state (not stuck loading)', async () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    mockInvoke.mockResolvedValueOnce([FOLDER_A])           // list_source_folders OK
+    mockInvoke.mockRejectedValueOnce(new Error('DB locked'))  // list_stacks FAILS
+
+    render(StackOverview)
+
+    // Should not stay stuck on "Loading…"
+    await waitFor(() => {
+      expect(screen.queryByText('Loading…')).not.toBeInTheDocument()
+    })
+
+    consoleSpy.mockRestore()
+  })
+})
+
+// ── Bug 4 RED TEST: thumbnail-ready event floods listStacks ──────────────
+
+describe('StackOverview — Bug 4: thumbnail-ready debounce', () => {
+  it('debounces rapid thumbnail-ready events instead of calling listStacks per event', async () => {
+    // BUG: Every thumbnail-ready event fires an immediate listStacks call.
+    // With 5000+ photos, this means 5000+ IPC round-trips to the Rust backend,
+    // each doing a DB query + filesystem readdir. This saturates the IPC channel
+    // and makes the UI sluggish during thumbnail generation.
+    //
+    // EXPECTED: thumbnail-ready events should be debounced so that rapid-fire
+    // events within a short window (e.g. 200ms) are collapsed into a single
+    // listStacks call.
+    //
+    // This test fires 10 events rapidly and asserts <= 3 listStacks calls.
+    // On current code this FAILS because every event triggers its own call.
+
+    // Capture the thumbnail-ready callback by intercepting listen()
+    let thumbnailCallback: ((event: any) => void) | null = null
+    mockListen.mockImplementation(async (eventName: string, cb: any) => {
+      if (eventName === 'thumbnail-ready') {
+        thumbnailCallback = cb
+      }
+      return () => {} // unlisten
+    })
+
+    // Render with stacks visible (state 4, DONE_STATUS, all thumbs present = no resume)
+    renderStackOverview({
+      folders: [FOLDER_A],
+      stacks: [STACK_WITH_THUMB],
+      status: DONE_STATUS,
+    })
+
+    await waitFor(() => expect(screen.getByText('Index complete.')).toBeInTheDocument())
+    expect(thumbnailCallback).not.toBeNull()
+
+    // Clear mock call history so we only count calls from thumbnail-ready events
+    mockInvoke.mockClear()
+    // Reset the throwing default, then mock unlimited list_stacks responses
+    mockInvoke.mockImplementation((cmd: string, args?: any) => {
+      if (cmd === 'list_stacks') {
+        return Promise.resolve([STACK_WITH_THUMB])
+      }
+      // Allow other calls to pass through silently
+      return Promise.resolve(undefined)
+    })
+
+    // Fire 10 thumbnail-ready events rapidly (simulating rayon pool bursts)
+    for (let i = 0; i < 10; i++) {
+      thumbnailCallback!({ payload: { logical_photo_id: 100 + i } })
+    }
+
+    // Wait for all async callbacks to settle
+    await new Promise(r => setTimeout(r, 500))
+
+    // Count how many times list_stacks was called
+    const listStacksCalls = mockInvoke.mock.calls.filter(c => c[0] === 'list_stacks')
+
+    // With proper debouncing, 10 rapid events should be collapsed into <= 3 calls.
+    // Current code calls listStacks for EVERY event, so this will be 10.
+    expect(listStacksCalls.length).toBeLessThanOrEqual(3)
   })
 })

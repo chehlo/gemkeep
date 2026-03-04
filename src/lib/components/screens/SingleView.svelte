@@ -24,6 +24,14 @@
   let roundStatus = $state<RoundStatus | null>(null)
   let currentIndex = $state(0)
   let showCameraParams = $state(true)
+  let decisionError = $state<string | null>(null)
+  let decisionErrorTimer: ReturnType<typeof setTimeout> | null = null
+
+  function showDecisionError(msg: string) {
+    decisionError = msg
+    if (decisionErrorTimer) clearTimeout(decisionErrorTimer)
+    decisionErrorTimer = setTimeout(() => { decisionError = null }, 3000)
+  }
 
   onMount(async () => {
     window.addEventListener('keydown', handleKey)
@@ -48,6 +56,7 @@
 
   onDestroy(() => {
     window.removeEventListener('keydown', handleKey)
+    if (decisionErrorTimer) clearTimeout(decisionErrorTimer)
   })
 
   async function handleKey(e: KeyboardEvent) {
@@ -63,7 +72,18 @@
 
     if (e.key === 'Enter' && e.ctrlKey) {
       e.preventDefault()
-      await commitRound(projectSlug, stackId)
+      try {
+        await commitRound(projectSlug, stackId)
+      } catch (err) {
+        console.error('commitRound failed:', err)
+        showDecisionError('Failed to commit round. Please try again.')
+        return
+      }
+      try {
+        roundStatus = await getRoundStatus(projectSlug, stackId)
+      } catch (e) {
+        console.error('getRoundStatus after commit failed:', e)
+      }
       return
     }
 
@@ -127,7 +147,10 @@
         await makeDecision(projectSlug, currentPhoto.logical_photo_id, 'keep')
         currentPhoto = { ...currentPhoto, current_status: 'keep' }
         updateDecisionState(currentPhoto.logical_photo_id, 'keep')
-      } catch (err) { console.error('makeDecision failed:', err) }
+      } catch (err) {
+        console.error('makeDecision failed:', err)
+        showDecisionError('Failed to save decision. Please try again.')
+      }
       return
     }
 
@@ -137,7 +160,10 @@
         await makeDecision(projectSlug, currentPhoto.logical_photo_id, 'eliminate')
         currentPhoto = { ...currentPhoto, current_status: 'eliminate' }
         updateDecisionState(currentPhoto.logical_photo_id, 'eliminate')
-      } catch (err) { console.error('makeDecision failed:', err) }
+      } catch (err) {
+        console.error('makeDecision failed:', err)
+        showDecisionError('Failed to save decision. Please try again.')
+      }
       return
     }
 
@@ -197,10 +223,12 @@
   {:else if currentPhoto}
     <!-- Photo display -->
     <div class="flex-1 relative flex items-center justify-center">
-      {#if currentPhoto.jpeg_path}
-        <img src={getThumbnailUrl(currentPhoto.jpeg_path)} alt="Photo" class="max-w-full max-h-full object-contain" />
-      {:else if currentPhoto.thumbnail_path}
+      {#if currentPhoto.thumbnail_path}
         <img src={getThumbnailUrl(currentPhoto.thumbnail_path)} alt="Photo" class="max-w-full max-h-full object-contain" />
+      {:else if currentPhoto.jpeg_path}
+        <img src={getThumbnailUrl(currentPhoto.jpeg_path)} alt="Photo" class="max-w-full max-h-full object-contain" />
+      {:else}
+        <div class="text-gray-500 text-sm" data-testid="no-preview">No preview available</div>
       {/if}
 
       <!-- Decision borders -->
@@ -249,6 +277,13 @@
             <span>{formatCaptureTime(currentPhoto.capture_time)}</span>
           {/if}
         </div>
+      </div>
+    {/if}
+
+    <!-- Decision error banner -->
+    {#if decisionError}
+      <div class="px-4 py-2 bg-red-900/80 text-red-200 text-sm" data-testid="decision-error">
+        {decisionError}
       </div>
     {/if}
 

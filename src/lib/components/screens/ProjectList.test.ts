@@ -474,6 +474,51 @@ describe('ProjectList — error display (PL-27)', () => {
   })
 })
 
+describe('ProjectList — M6: delete last project clears resume card', () => {
+  it('deleting the resume project removes the resume card', async () => {
+    // Set up with skipAutoOpen + resumeProject so the resume card is visible
+    navigate({
+      kind: 'project-list',
+      skipAutoOpen: true,
+      resumeProject: { slug: 'iceland-2024', name: 'Iceland 2024' },
+    })
+    mockInvoke.mockResolvedValueOnce([ICELAND])  // list_projects
+    render(ProjectList)
+
+    // Wait for resume card AND project list to render
+    await waitFor(() => {
+      expect(screen.getByText('Resume')).toBeInTheDocument()
+      expect(screen.getByText('Open →')).toBeInTheDocument()
+      expect(screen.getByText('Recent Projects')).toBeInTheDocument()
+    })
+
+    // Click Delete on Iceland in the project list
+    const user = userEvent.setup()
+    const deleteButtons = screen.getAllByText('Delete')
+    await user.click(deleteButtons[0])
+
+    // Confirm delete modal appears
+    await waitFor(() => {
+      expect(screen.getByText('Delete project?')).toBeInTheDocument()
+    })
+
+    // Mock delete_project + refreshed list_projects (empty after deletion)
+    mockInvoke.mockResolvedValueOnce(undefined)  // delete_project
+    mockInvoke.mockResolvedValueOnce([])          // list_projects (refresh — empty)
+
+    const modalDeleteBtn = screen.getAllByText('Delete').find(
+      btn => btn.closest('.fixed') !== null
+    )!
+    await user.click(modalDeleteBtn)
+
+    // Resume card should disappear since we deleted the lastProject
+    await waitFor(() => {
+      expect(screen.queryByText('Resume')).not.toBeInTheDocument()
+      expect(screen.queryByText('Open →')).not.toBeInTheDocument()
+    })
+  })
+})
+
 describe('ProjectList — Recent Projects heading (PL-34)', () => {
   it('shows "Recent Projects" heading when projects exist', async () => {
     await renderWithProjects()

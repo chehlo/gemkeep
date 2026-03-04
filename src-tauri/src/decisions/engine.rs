@@ -234,7 +234,7 @@ pub fn get_photo_detail(
 
     // Build thumbnail path
     let thumbnail_path = {
-        let thumb = cache_dir.join(format!("thumb_{}.jpg", logical_photo_id));
+        let thumb = cache_dir.join(format!("{}.jpg", logical_photo_id));
         if thumb.exists() {
             Some(thumb.to_string_lossy().to_string())
         } else {
@@ -974,5 +974,71 @@ mod tests {
         assert!(detail.raw_path.is_some(), "raw_path must be set for a pair");
         assert_eq!(detail.jpeg_path.as_deref(), Some("/test/shot.JPG"));
         assert_eq!(detail.raw_path.as_deref(), Some("/test/shot.CR2"));
+    }
+
+    // ── Bug 1 RED TEST: Thumbnail path prefix mismatch ─────────────────────
+
+    #[test]
+    fn test_bug1_get_photo_detail_finds_thumbnail_with_correct_filename() {
+        // BUG: get_photo_detail looks for "thumb_{lp_id}.jpg" but thumbnails.rs
+        // generates "{lp_id}.jpg". This causes thumbnail_path to be None even
+        // when the thumbnail file exists on disk.
+        //
+        // This test creates a thumbnail at the REAL path ({lp_id}.jpg) and
+        // asserts that get_photo_detail returns Some(thumbnail_path).
+        // On current code this FAILS because engine.rs looks for thumb_{lp_id}.jpg.
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO projects (name, slug, created_at) VALUES ('P', 'p', '2024-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        let project_id = conn.last_insert_rowid();
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO stacks (project_id, created_at) VALUES (?1, ?2)",
+            params![project_id, now],
+        )
+        .unwrap();
+        let stack_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO photos (path, format, capture_time) VALUES ('/test/photo.jpg', 'jpeg', '2024-01-01T10:00:00Z')",
+            [],
+        )
+        .unwrap();
+        let photo_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO logical_photos (project_id, representative_photo_id, stack_id) VALUES (?1, ?2, ?3)",
+            params![project_id, photo_id, stack_id],
+        )
+        .unwrap();
+        let lp_id = conn.last_insert_rowid();
+        conn.execute(
+            "UPDATE photos SET logical_photo_id = ?1 WHERE id = ?2",
+            params![lp_id, photo_id],
+        )
+        .unwrap();
+
+        // Create a thumbnail at the REAL path that thumbnails.rs would generate
+        let cache_dir = tempfile::tempdir().unwrap();
+        let real_thumb_path = cache_dir.path().join(format!("{}.jpg", lp_id));
+        std::fs::write(&real_thumb_path, b"fake-jpeg-data").unwrap();
+        assert!(real_thumb_path.exists(), "sanity: thumb file must exist");
+
+        let detail = get_photo_detail(&conn, lp_id, cache_dir.path()).unwrap();
+
+        // This assertion WILL FAIL on current code because engine.rs looks for
+        // "thumb_{lp_id}.jpg" but the file on disk is "{lp_id}.jpg".
+        assert!(
+            detail.thumbnail_path.is_some(),
+            "BUG 1: thumbnail_path must be Some when {}.jpg exists on disk, \
+             but get_photo_detail looks for thumb_{}.jpg instead",
+            lp_id,
+            lp_id
+        );
     }
 }

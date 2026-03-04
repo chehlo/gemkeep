@@ -113,13 +113,14 @@ describe('SingleView — loading and rendering', () => {
     expect(screen.getByTestId('loading-indicator')).toBeInTheDocument()
   })
 
-  it('renders photo image with asset:// URL from jpeg_path', async () => {
+  it('renders photo image with asset:// URL from thumbnail_path (preferred over jpeg_path)', async () => {
     vi.mocked(convertFileSrc).mockImplementation((p: string) => `asset://localhost${p}`)
     mockMountSequence()
     render(SingleView)
     await waitFor(() => {
       const img = screen.getByRole('img')
-      expect(img).toHaveAttribute('src', `asset://localhost/home/user/Photos/IMG_001.jpg`)
+      // thumbnail_path is preferred because it's inside .gem-keep (asset protocol scope)
+      expect(img).toHaveAttribute('src', `asset://localhost/cache/thumbnails/1.jpg`)
     })
   })
 
@@ -560,6 +561,166 @@ describe('SingleView — X key blocked when committed (SV-35)', () => {
   })
 })
 
+describe('SingleView — makeDecision error feedback (H4)', () => {
+  it('Y key failure shows visible error banner', async () => {
+    mockMountSequence()
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    render(SingleView)
+    await waitFor(() => screen.getByRole('img'))
+
+    // Mock make_decision rejection
+    mockInvoke.mockRejectedValueOnce(new Error('Network error'))
+
+    await fireEvent.keyDown(document, { key: 'y' })
+
+    await waitFor(() => {
+      expect(screen.getByTestId('decision-error')).toBeInTheDocument()
+      expect(screen.getByText('Failed to save decision. Please try again.')).toBeInTheDocument()
+    })
+
+    consoleSpy.mockRestore()
+  })
+
+  it('X key failure shows visible error banner', async () => {
+    mockMountSequence()
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    render(SingleView)
+    await waitFor(() => screen.getByRole('img'))
+
+    // Mock make_decision rejection
+    mockInvoke.mockRejectedValueOnce(new Error('DB locked'))
+
+    await fireEvent.keyDown(document, { key: 'x' })
+
+    await waitFor(() => {
+      expect(screen.getByTestId('decision-error')).toBeInTheDocument()
+      expect(screen.getByText('Failed to save decision. Please try again.')).toBeInTheDocument()
+    })
+
+    consoleSpy.mockRestore()
+  })
+
+  it('error banner does not appear on successful decision', async () => {
+    mockMountSequence()
+    render(SingleView)
+    await waitFor(() => screen.getByRole('img'))
+
+    // Mock successful make_decision
+    mockInvoke.mockResolvedValueOnce({
+      decision_id: 1, round_id: 1, action: 'keep',
+      current_status: 'keep', round_auto_created: false,
+    })
+
+    await fireEvent.keyDown(document, { key: 'y' })
+
+    // Small delay to ensure any async effects settle
+    await new Promise(r => setTimeout(r, 50))
+    expect(screen.queryByTestId('decision-error')).not.toBeInTheDocument()
+  })
+})
+
+describe('SingleView — M1: commitRound error handling', () => {
+  it('Ctrl+Enter failure shows visible error banner', async () => {
+    mockMountSequence()
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    render(SingleView)
+    await waitFor(() => screen.getByRole('img'))
+
+    // Mock commit_round rejection
+    mockInvoke.mockRejectedValueOnce(new Error('DB locked'))
+
+    await fireEvent.keyDown(document, { key: 'Enter', ctrlKey: true })
+
+    await waitFor(() => {
+      expect(screen.getByTestId('decision-error')).toBeInTheDocument()
+      expect(screen.getByText('Failed to commit round. Please try again.')).toBeInTheDocument()
+    })
+
+    consoleSpy.mockRestore()
+  })
+
+  it('Ctrl+Enter success does NOT show error banner', async () => {
+    mockMountSequence()
+    render(SingleView)
+    await waitFor(() => screen.getByRole('img'))
+
+    mockInvoke.mockResolvedValueOnce(undefined) // commit_round
+
+    await fireEvent.keyDown(document, { key: 'Enter', ctrlKey: true })
+
+    await new Promise(r => setTimeout(r, 50))
+    expect(screen.queryByTestId('decision-error')).not.toBeInTheDocument()
+  })
+})
+
+describe('SingleView — M9: Tab wrap-around', () => {
+  it('Tab at last undecided wraps to first undecided', async () => {
+    // Photo list: 1=keep, 2=keep, 3=undecided (start here), all others decided
+    const THREE_PHOTOS: LogicalPhotoSummary[] = [
+      { logical_photo_id: 1, thumbnail_path: null, capture_time: null, camera_model: null, lens: null, has_raw: false, has_jpeg: true },
+      { logical_photo_id: 2, thumbnail_path: null, capture_time: null, camera_model: null, lens: null, has_raw: false, has_jpeg: true },
+      { logical_photo_id: 3, thumbnail_path: null, capture_time: null, camera_model: null, lens: null, has_raw: false, has_jpeg: true },
+    ]
+
+    // Start at photo 3 (last photo, only undecided one)
+    setupNav(3)
+    mockMountSequence({
+      detail: { ...PHOTO_DETAIL, logical_photo_id: 3 },
+      photos: THREE_PHOTOS,
+      decisions: [
+        { logical_photo_id: 1, current_status: 'keep' },
+        { logical_photo_id: 2, current_status: 'eliminate' },
+        { logical_photo_id: 3, current_status: 'undecided' },
+      ],
+    })
+    render(SingleView)
+    await waitFor(() => screen.getByRole('img'))
+
+    // Tab should wrap around — since photo 3 is the only undecided, it stays
+    // (No other undecided to jump to, so no get_photo_detail call)
+    const callCountBefore = mockInvoke.mock.calls.length
+
+    await fireEvent.keyDown(document, { key: 'Tab' })
+
+    await new Promise(r => setTimeout(r, 50))
+    // No additional calls — already at the only undecided photo
+    expect(mockInvoke.mock.calls.length).toBe(callCountBefore)
+  })
+
+  it('Tab wraps from last to first undecided when multiple undecided exist', async () => {
+    // Photos: 1=undecided, 2=keep, 3=undecided (start here)
+    const THREE_PHOTOS: LogicalPhotoSummary[] = [
+      { logical_photo_id: 1, thumbnail_path: null, capture_time: null, camera_model: null, lens: null, has_raw: false, has_jpeg: true },
+      { logical_photo_id: 2, thumbnail_path: null, capture_time: null, camera_model: null, lens: null, has_raw: false, has_jpeg: true },
+      { logical_photo_id: 3, thumbnail_path: null, capture_time: null, camera_model: null, lens: null, has_raw: false, has_jpeg: true },
+    ]
+
+    setupNav(3)
+    mockMountSequence({
+      detail: { ...PHOTO_DETAIL, logical_photo_id: 3 },
+      photos: THREE_PHOTOS,
+      decisions: [
+        { logical_photo_id: 1, current_status: 'undecided' },
+        { logical_photo_id: 2, current_status: 'keep' },
+        { logical_photo_id: 3, current_status: 'undecided' },
+      ],
+    })
+    render(SingleView)
+    await waitFor(() => screen.getByRole('img'))
+
+    // Tab from photo 3 (index 2) should wrap to photo 1 (index 0) — the first undecided
+    mockInvoke.mockResolvedValueOnce({ ...PHOTO_DETAIL, logical_photo_id: 1 })
+
+    await fireEvent.keyDown(document, { key: 'Tab' })
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith('get_photo_detail', {
+        slug: 'test-project', logicalPhotoId: 1,
+      })
+    })
+  })
+})
+
 describe('SingleView — thumbnail_path fallback (SV-40)', () => {
   it('renders thumbnail_path when jpeg_path is null', async () => {
     vi.mocked(convertFileSrc).mockImplementation((p: string) => `asset://localhost${p}`)
@@ -572,5 +733,85 @@ describe('SingleView — thumbnail_path fallback (SV-40)', () => {
       const img = screen.getByRole('img')
       expect(img).toHaveAttribute('src', 'asset://localhost/cache/thumbnails/1.jpg')
     })
+  })
+
+  it('renders jpeg_path as fallback when thumbnail_path is null', async () => {
+    vi.mocked(convertFileSrc).mockImplementation((p: string) => `asset://localhost${p}`)
+    mockMountSequence({
+      detail: { ...PHOTO_DETAIL, thumbnail_path: null, jpeg_path: '/home/user/Photos/IMG_001.jpg' },
+    })
+    render(SingleView)
+
+    await waitFor(() => {
+      const img = screen.getByRole('img')
+      expect(img).toHaveAttribute('src', 'asset://localhost/home/user/Photos/IMG_001.jpg')
+    })
+  })
+
+  it('shows "No preview available" placeholder when both thumbnail_path and jpeg_path are null', async () => {
+    mockMountSequence({
+      detail: { ...PHOTO_DETAIL, thumbnail_path: null, jpeg_path: null },
+    })
+    render(SingleView)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('no-preview')).toBeInTheDocument()
+      expect(screen.getByText('No preview available')).toBeInTheDocument()
+      expect(screen.queryByRole('img')).not.toBeInTheDocument()
+    })
+  })
+})
+
+// --- BUG B3: roundStatus stale after Ctrl+Enter commit ---
+
+describe('SingleView — B3: Y blocked after Ctrl+Enter commit', () => {
+  it('Y key is blocked after committing the round via Ctrl+Enter', async () => {
+    mockMountSequence({
+      detail: { ...PHOTO_DETAIL, current_status: 'keep' },
+      decisions: [
+        { logical_photo_id: 1, current_status: 'keep' },
+        { logical_photo_id: 2, current_status: 'keep' },
+        { logical_photo_id: 3, current_status: 'eliminate' },
+      ],
+      roundStatus: {
+        ...OPEN_ROUND,
+        decided: 3, kept: 2, eliminated: 1, undecided: 0,
+      },
+    })
+
+    render(SingleView)
+    await waitFor(() => screen.getByRole('img'))
+
+    // Mock commit_round success
+    mockInvoke.mockResolvedValueOnce(undefined)  // commit_round
+
+    // Mock the get_round_status that SHOULD be called after commit (returns committed)
+    mockInvoke.mockResolvedValueOnce({
+      ...COMMITTED_ROUND,
+    })  // get_round_status (after commit)
+
+    // Commit the round
+    await fireEvent.keyDown(document, { key: 'Enter', ctrlKey: true })
+
+    // Wait for commit to process
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith('commit_round', {
+        slug: 'test-project', stackId: 1,
+      })
+    })
+
+    // Clear mock call counts so we can precisely track what happens after Y
+    const callCountAfterCommit = mockInvoke.mock.calls.length
+
+    // Now press Y — this should be BLOCKED because round is committed
+    await fireEvent.keyDown(document, { key: 'y' })
+
+    // Wait a bit for any async effects
+    await new Promise(r => setTimeout(r, 100))
+
+    // make_decision should NOT have been called after the commit
+    const callsAfterCommit = mockInvoke.mock.calls.slice(callCountAfterCommit)
+    const makeDecisionCalls = callsAfterCommit.filter(c => c[0] === 'make_decision')
+    expect(makeDecisionCalls).toHaveLength(0)
   })
 })

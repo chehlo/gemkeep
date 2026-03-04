@@ -33,15 +33,27 @@
   let burstGapInput = $state(3)
   let burstRestacking = $state(false)
   let selectedStacks = $state<Set<number>>(new Set())
+  let actionError = $state<string | null>(null)
+  let actionErrorTimer: ReturnType<typeof setTimeout> | null = null
+  let thumbnailDebounceTimer: ReturnType<typeof setTimeout> | null = null
+
+  function showActionError(msg: string) {
+    actionError = msg
+    if (actionErrorTimer) clearTimeout(actionErrorTimer)
+    actionErrorTimer = setTimeout(() => { actionError = null }, 5000)
+  }
 
   // Load initial state
   onMount(async () => {
     window.addEventListener('keydown', handleKey)
 
-    // Progressive thumbnail updates: each thumbnail-ready event triggers a stack reload
-    // so cards show their images as soon as they are written, not all at once.
-    unlistenThumbnail = await listen('thumbnail-ready', async () => {
-      if (projectSlug) stacks = await listStacks(projectSlug)
+    // Progressive thumbnail updates: debounce rapid thumbnail-ready events so that
+    // bursts from the rayon pool are collapsed into a single listStacks call.
+    unlistenThumbnail = await listen('thumbnail-ready', () => {
+      if (thumbnailDebounceTimer) clearTimeout(thumbnailDebounceTimer)
+      thumbnailDebounceTimer = setTimeout(async () => {
+        if (projectSlug) stacks = await listStacks(projectSlug)
+      }, 300)
     })
 
     let restoreIdx: number | null = null
@@ -64,6 +76,8 @@
     window.removeEventListener('keydown', handleKey)
     if (pollInterval) clearInterval(pollInterval)
     unlistenThumbnail?.()
+    if (actionErrorTimer) clearTimeout(actionErrorTimer)
+    if (thumbnailDebounceTimer) clearTimeout(thumbnailDebounceTimer)
   })
 
   async function loadAll(): Promise<number | null> {
@@ -140,8 +154,11 @@
       startPolling()
     } catch (e) {
       console.error("startIndexing failed:", e)
-      try { status = await getIndexingStatus() } catch {}
+      try { status = await getIndexingStatus() } catch {
+        status = { ...status, running: false, thumbnails_running: false }
+      }
       try { stacks = await listStacks(projectSlug) } catch {}
+      showActionError('Failed to start indexing. Please try again.')
     }
   }
 
@@ -196,6 +213,7 @@
   function handleKey(e: KeyboardEvent) {
     if (e.key.toLowerCase() === 'b' && e.ctrlKey) { e.preventDefault(); openBurstPanel(); return }
     if (e.key.toLowerCase() === 'z' && e.ctrlKey) { e.preventDefault(); handleUndoMerge(); return }
+    if (e.key === 'Escape' && showBurstPanel) { showBurstPanel = false; return }
     if (e.key === 'Escape') { back(); return }
     if (e.key === 'i' && sourceFolders.length > 0 && !status.running) { handleIndex(); return }
     if (e.key === 'r' && stacks.length > 0 && !status.running) { handleIndex(); return }
@@ -245,6 +263,7 @@
       focusedIndex = mergedIdx >= 0 ? mergedIdx : 0
     } catch (e) {
       console.error('mergeStacks failed:', e)
+      showActionError('Failed to merge stacks. Please try again.')
     }
   }
 
@@ -254,6 +273,7 @@
       stacks = await listStacks(projectSlug)
     } catch (e) {
       console.error('undoLastMerge failed:', e)
+      showActionError('Failed to undo merge. Please try again.')
     }
   }
 
@@ -556,6 +576,12 @@
       </div>
     {/if}
 
+    {/if}
+
+    {#if actionError}
+      <div class="px-4 py-2 bg-red-900/80 text-red-200 text-sm rounded" data-testid="action-error">
+        {actionError}
+      </div>
     {/if}
 
   </main>

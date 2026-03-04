@@ -3,7 +3,7 @@
   import { navigation, navigate } from '$lib/stores/navigation.svelte.js'
   import {
     listLogicalPhotos, getThumbnailUrl, getStackDecisions, getRoundStatus,
-    makeDecision, commitRound,
+    makeDecision, commitRound, undoDecision,
     type LogicalPhotoSummary, type PhotoDecisionStatus, type RoundStatus
   } from '$lib/api/index.js'
 
@@ -21,6 +21,14 @@
   let focusedIndex = $state(0)
   let decisions = $state<PhotoDecisionStatus[]>([])
   let roundStatus = $state<RoundStatus | null>(null)
+  let actionError = $state<string | null>(null)
+  let actionErrorTimer: ReturnType<typeof setTimeout> | null = null
+
+  function showActionError(msg: string) {
+    actionError = msg
+    if (actionErrorTimer) clearTimeout(actionErrorTimer)
+    actionErrorTimer = setTimeout(() => { actionError = null }, 3000)
+  }
 
   function getDecisionStatus(photoId: number): string {
     const d = decisions.find(d => d.logical_photo_id === photoId)
@@ -58,12 +66,24 @@
 
   onDestroy(() => {
     window.removeEventListener('keydown', handleKey)
+    if (actionErrorTimer) clearTimeout(actionErrorTimer)
   })
 
   async function handleKey(e: KeyboardEvent) {
     if (e.key === 'Enter' && e.ctrlKey) {
       e.preventDefault()
-      await commitRound(projectSlug, stackId)
+      try {
+        await commitRound(projectSlug, stackId)
+      } catch (err) {
+        console.error('commitRound failed:', err)
+        showActionError('Failed to commit round. Please try again.')
+        return
+      }
+      try {
+        roundStatus = await getRoundStatus(projectSlug, stackId)
+      } catch (e) {
+        console.error('getRoundStatus after commit failed:', e)
+      }
       return
     }
 
@@ -120,18 +140,32 @@
     }
 
     if ((e.key === 'y' || e.key === 'Y') && photos.length > 0) {
+      if (roundStatus && roundStatus.state === 'committed') return
       try {
         await makeDecision(projectSlug, photos[focusedIndex].logical_photo_id, 'keep')
         updateDecisionState(photos[focusedIndex].logical_photo_id, 'keep')
+        roundStatus = await getRoundStatus(projectSlug, stackId)
       } catch (err) { console.error('makeDecision failed:', err) }
       return
     }
 
     if ((e.key === 'x' || e.key === 'X') && photos.length > 0) {
+      if (roundStatus && roundStatus.state === 'committed') return
       try {
         await makeDecision(projectSlug, photos[focusedIndex].logical_photo_id, 'eliminate')
         updateDecisionState(photos[focusedIndex].logical_photo_id, 'eliminate')
+        roundStatus = await getRoundStatus(projectSlug, stackId)
       } catch (err) { console.error('makeDecision failed:', err) }
+      return
+    }
+
+    if ((e.key === 'u' || e.key === 'U') && photos.length > 0) {
+      if (roundStatus && roundStatus.state === 'committed') return
+      try {
+        await undoDecision(projectSlug, photos[focusedIndex].logical_photo_id)
+        updateDecisionState(photos[focusedIndex].logical_photo_id, 'undecided')
+        roundStatus = await getRoundStatus(projectSlug, stackId)
+      } catch (err) { console.error('undoDecision failed:', err) }
       return
     }
 
@@ -267,6 +301,12 @@
             </div>
           </div>
         {/each}
+      </div>
+    {/if}
+
+    {#if actionError}
+      <div class="px-4 py-2 bg-red-900/80 text-red-200 text-sm rounded" data-testid="action-error">
+        {actionError}
       </div>
     {/if}
   </main>

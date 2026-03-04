@@ -46,6 +46,12 @@ function setupNav() {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  // Reset mock queue (unconsumed mockResolvedValueOnce values from previous tests) and
+  // reinstall the Rule 9 throwing default so under-mocked commands fail loudly.
+  mockInvoke.mockReset()
+  mockInvoke.mockImplementation((cmd: string) => {
+    throw new Error(`Unmocked invoke("${cmd}"). Add mockInvoke.mockResolvedValueOnce(...) before this call.`)
+  })
   setupNav()
 })
 
@@ -446,6 +452,53 @@ describe('StackFocus — Sprint 7: decision badges', () => {
   })
 })
 
+// --- COMMITTED ROUND GUARD ---
+
+describe('StackFocus — committed round behavior', () => {
+  const COMMITTED_ROUND = {
+    round_id: 1, round_number: 1, state: 'committed',
+    total_photos: 3, decided: 3, kept: 2, eliminated: 1, undecided: 0,
+    committed_at: '2024-01-15T12:00:00Z',
+  }
+
+  it('Y key does NOT call makeDecision when round is committed', async () => {
+    mockInvoke.mockResolvedValueOnce(mockPhotos)  // list_logical_photos
+    mockInvoke.mockResolvedValueOnce([
+      { logical_photo_id: 1, current_status: 'keep' },
+      { logical_photo_id: 2, current_status: 'keep' },
+      { logical_photo_id: 3, current_status: 'eliminate' },
+    ])  // get_stack_decisions
+    mockInvoke.mockResolvedValueOnce(COMMITTED_ROUND)  // get_round_status
+
+    render(StackFocus)
+    await waitFor(() => screen.getAllByTestId('photo-card'))
+
+    await fireEvent.keyDown(document, { key: 'y' })
+
+    // Small delay to flush async
+    await new Promise(r => setTimeout(r, 50))
+    expect(mockInvoke).not.toHaveBeenCalledWith('make_decision', expect.anything())
+  })
+
+  it('X key does NOT call makeDecision when round is committed', async () => {
+    mockInvoke.mockResolvedValueOnce(mockPhotos)  // list_logical_photos
+    mockInvoke.mockResolvedValueOnce([
+      { logical_photo_id: 1, current_status: 'keep' },
+      { logical_photo_id: 2, current_status: 'keep' },
+      { logical_photo_id: 3, current_status: 'eliminate' },
+    ])  // get_stack_decisions
+    mockInvoke.mockResolvedValueOnce(COMMITTED_ROUND)  // get_round_status
+
+    render(StackFocus)
+    await waitFor(() => screen.getAllByTestId('photo-card'))
+
+    await fireEvent.keyDown(document, { key: 'x' })
+
+    await new Promise(r => setTimeout(r, 50))
+    expect(mockInvoke).not.toHaveBeenCalledWith('make_decision', expect.anything())
+  })
+})
+
 // --- HIGH PRIORITY ---
 
 describe('StackFocus — SF-22: back button navigates to StackOverview', () => {
@@ -555,6 +608,89 @@ describe('StackFocus — SF-28: optimistic UI update after Y/X', () => {
     const invokeCalls = mockInvoke.mock.calls.map(c => c[0])
     const decisionFetches = invokeCalls.filter(c => c === 'get_stack_decisions')
     expect(decisionFetches).toHaveLength(1)
+  })
+})
+
+describe('StackFocus — H5: optimistic UI acknowledges DecisionResult', () => {
+  it('Y press calls makeDecision AND shows keep badge on the card', async () => {
+    mockInvoke.mockResolvedValueOnce(mockPhotos)  // list_logical_photos
+    mockInvoke.mockResolvedValueOnce([
+      { logical_photo_id: 1, current_status: 'undecided' },
+      { logical_photo_id: 2, current_status: 'undecided' },
+      { logical_photo_id: 3, current_status: 'undecided' },
+    ])  // get_stack_decisions
+    mockInvoke.mockResolvedValueOnce({
+      round_id: 1, round_number: 1, state: 'open',
+      total_photos: 3, decided: 0, kept: 0, eliminated: 0, undecided: 3, committed_at: null,
+    })  // get_round_status
+
+    render(StackFocus)
+    await waitFor(() => screen.getAllByTestId('photo-card'))
+
+    // No badge before decision
+    const cardsBefore = screen.getAllByTestId('photo-card')
+    expect(cardsBefore[0].querySelector('.badge-keep')).not.toBeInTheDocument()
+
+    // Mock the make_decision response with full DecisionResult
+    mockInvoke.mockResolvedValueOnce({
+      decision_id: 42, round_id: 1, action: 'keep',
+      current_status: 'keep', round_auto_created: true,
+    })
+
+    await fireEvent.keyDown(document, { key: 'y' })
+
+    // Verify the IPC call was made with correct arguments
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith('make_decision', {
+        slug: 'test-project', logicalPhotoId: 1, action: 'keep',
+      })
+    })
+
+    // Verify the UI shows the correct badge after the call resolves
+    await waitFor(() => {
+      const cardsAfter = screen.getAllByTestId('photo-card')
+      expect(cardsAfter[0].querySelector('.badge-keep')).toBeInTheDocument()
+      expect(cardsAfter[0].querySelector('.badge-eliminate')).not.toBeInTheDocument()
+    })
+  })
+
+  it('X press calls makeDecision AND shows eliminate badge + dim on the card', async () => {
+    mockInvoke.mockResolvedValueOnce(mockPhotos)
+    mockInvoke.mockResolvedValueOnce([
+      { logical_photo_id: 1, current_status: 'undecided' },
+      { logical_photo_id: 2, current_status: 'undecided' },
+      { logical_photo_id: 3, current_status: 'undecided' },
+    ])
+    mockInvoke.mockResolvedValueOnce({
+      round_id: 1, round_number: 1, state: 'open',
+      total_photos: 3, decided: 0, kept: 0, eliminated: 0, undecided: 3, committed_at: null,
+    })
+
+    render(StackFocus)
+    await waitFor(() => screen.getAllByTestId('photo-card'))
+
+    // Mock the make_decision response
+    mockInvoke.mockResolvedValueOnce({
+      decision_id: 43, round_id: 1, action: 'eliminate',
+      current_status: 'eliminate', round_auto_created: false,
+    })
+
+    await fireEvent.keyDown(document, { key: 'x' })
+
+    // Verify the IPC call
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith('make_decision', {
+        slug: 'test-project', logicalPhotoId: 1, action: 'eliminate',
+      })
+    })
+
+    // Verify the UI: eliminate badge + opacity dimming
+    await waitFor(() => {
+      const cardsAfter = screen.getAllByTestId('photo-card')
+      expect(cardsAfter[0].querySelector('.badge-eliminate')).toBeInTheDocument()
+      expect(cardsAfter[0].querySelector('.badge-keep')).not.toBeInTheDocument()
+      expect(cardsAfter[0].className).toContain('opacity-50')
+    })
   })
 })
 
@@ -825,6 +961,323 @@ describe('StackFocus — SF-42: getStackDecisions error handling', () => {
     expect(cards[0].querySelector('.badge-eliminate')).not.toBeInTheDocument()
 
     consoleSpy.mockRestore()
+  })
+})
+
+describe('StackFocus — M2: commitRound error handling', () => {
+  it('Ctrl+Enter failure shows visible error banner', async () => {
+    mockStackFocusMount(mockPhotos)
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    render(StackFocus)
+    await waitFor(() => screen.getAllByTestId('photo-card'))
+
+    // Mock commit_round rejection
+    mockInvoke.mockRejectedValueOnce(new Error('DB locked'))
+
+    await fireEvent.keyDown(document, { key: 'Enter', ctrlKey: true })
+
+    await waitFor(() => {
+      expect(screen.getByTestId('action-error')).toBeInTheDocument()
+      expect(screen.getByText('Failed to commit round. Please try again.')).toBeInTheDocument()
+    })
+
+    consoleSpy.mockRestore()
+  })
+
+  it('Ctrl+Enter success does NOT show error banner', async () => {
+    mockStackFocusMount(mockPhotos)
+    render(StackFocus)
+    await waitFor(() => screen.getAllByTestId('photo-card'))
+
+    mockInvoke.mockResolvedValueOnce(undefined)  // commit_round
+
+    await fireEvent.keyDown(document, { key: 'Enter', ctrlKey: true })
+
+    await new Promise(r => setTimeout(r, 50))
+    expect(screen.queryByTestId('action-error')).not.toBeInTheDocument()
+  })
+})
+
+describe('StackFocus — M9: Tab wrap-around', () => {
+  it('Tab at last undecided wraps to first undecided', async () => {
+    const PHOTO_4: LogicalPhotoSummary = {
+      logical_photo_id: 4,
+      thumbnail_path: null, capture_time: null, camera_model: null,
+      lens: null, has_raw: false, has_jpeg: true,
+    }
+    const photos4 = [PHOTO_1, PHOTO_2, PHOTO_3, PHOTO_4]
+
+    mockInvoke.mockResolvedValueOnce(photos4)  // list_logical_photos
+    mockInvoke.mockResolvedValueOnce([
+      { logical_photo_id: 1, current_status: 'keep' },
+      { logical_photo_id: 2, current_status: 'eliminate' },
+      { logical_photo_id: 3, current_status: 'keep' },
+      { logical_photo_id: 4, current_status: 'undecided' },
+    ])  // get_stack_decisions
+    mockInvoke.mockResolvedValueOnce({
+      round_id: 1, round_number: 1, state: 'open',
+      total_photos: 4, decided: 3, kept: 2, eliminated: 1, undecided: 1, committed_at: null,
+    })  // get_round_status
+
+    render(StackFocus)
+    await waitFor(() => screen.getAllByTestId('photo-card'))
+
+    // Navigate to index 3 (the only undecided photo)
+    await fireEvent.keyDown(document, { key: 'ArrowRight' })
+    await fireEvent.keyDown(document, { key: 'ArrowRight' })
+    await fireEvent.keyDown(document, { key: 'ArrowRight' })
+
+    // Verify we're at index 3
+    let cards = screen.getAllByTestId('photo-card')
+    expect(cards[3].className).toContain('border-blue-500')
+
+    // Tab should wrap — since index 3 is the only undecided, it stays at index 3
+    await fireEvent.keyDown(document, { key: 'Tab' })
+
+    cards = screen.getAllByTestId('photo-card')
+    // Still at index 3 (only undecided)
+    expect(cards[3].className).toContain('border-blue-500')
+  })
+
+  it('Tab wraps from last to first undecided when multiple exist', async () => {
+    const PHOTO_4: LogicalPhotoSummary = {
+      logical_photo_id: 4,
+      thumbnail_path: null, capture_time: null, camera_model: null,
+      lens: null, has_raw: false, has_jpeg: true,
+    }
+    const photos4 = [PHOTO_1, PHOTO_2, PHOTO_3, PHOTO_4]
+
+    mockInvoke.mockResolvedValueOnce(photos4)
+    mockInvoke.mockResolvedValueOnce([
+      { logical_photo_id: 1, current_status: 'undecided' },
+      { logical_photo_id: 2, current_status: 'keep' },
+      { logical_photo_id: 3, current_status: 'keep' },
+      { logical_photo_id: 4, current_status: 'undecided' },
+    ])
+    mockInvoke.mockResolvedValueOnce({
+      round_id: 1, round_number: 1, state: 'open',
+      total_photos: 4, decided: 2, kept: 2, eliminated: 0, undecided: 2, committed_at: null,
+    })
+
+    render(StackFocus)
+    await waitFor(() => screen.getAllByTestId('photo-card'))
+
+    // Navigate to index 3 (undecided)
+    await fireEvent.keyDown(document, { key: 'ArrowRight' })
+    await fireEvent.keyDown(document, { key: 'ArrowRight' })
+    await fireEvent.keyDown(document, { key: 'ArrowRight' })
+
+    // Tab from index 3 should wrap to index 0 (first undecided)
+    await fireEvent.keyDown(document, { key: 'Tab' })
+
+    await waitFor(() => {
+      const cards = screen.getAllByTestId('photo-card')
+      expect(cards[0].className).toContain('border-blue-500')
+    })
+  })
+})
+
+// --- BUG B2: roundStatus never refreshes after Y/X decisions ---
+
+describe('StackFocus — B2: roundStatus refreshes after Y/X decision', () => {
+  it('Y key triggers a second get_round_status call after makeDecision', async () => {
+    mockInvoke.mockResolvedValueOnce(mockPhotos)  // list_logical_photos
+    mockInvoke.mockResolvedValueOnce([
+      { logical_photo_id: 1, current_status: 'undecided' },
+      { logical_photo_id: 2, current_status: 'undecided' },
+      { logical_photo_id: 3, current_status: 'undecided' },
+    ])  // get_stack_decisions
+    mockInvoke.mockResolvedValueOnce({
+      round_id: 1, round_number: 1, state: 'open',
+      total_photos: 3, decided: 0, kept: 0, eliminated: 0, undecided: 3, committed_at: null,
+    })  // get_round_status (mount)
+
+    render(StackFocus)
+    await waitFor(() => screen.getAllByTestId('photo-card'))
+
+    // Mock the make_decision response
+    mockInvoke.mockResolvedValueOnce({
+      decision_id: 1, round_id: 1, action: 'keep',
+      current_status: 'keep', round_auto_created: false,
+    })  // make_decision
+
+    // Mock the second get_round_status call that should happen after decision
+    mockInvoke.mockResolvedValueOnce({
+      round_id: 1, round_number: 1, state: 'open',
+      total_photos: 3, decided: 1, kept: 1, eliminated: 0, undecided: 2, committed_at: null,
+    })  // get_round_status (after decision)
+
+    await fireEvent.keyDown(document, { key: 'y' })
+
+    // Wait for async effects to settle
+    await waitFor(() => {
+      const roundStatusCalls = mockInvoke.mock.calls.filter(c => c[0] === 'get_round_status')
+      // Must be called at least twice: once on mount, once after decision
+      expect(roundStatusCalls.length).toBeGreaterThanOrEqual(2)
+    })
+  })
+
+  it('X key triggers a second get_round_status call after makeDecision', async () => {
+    mockInvoke.mockResolvedValueOnce(mockPhotos)  // list_logical_photos
+    mockInvoke.mockResolvedValueOnce([
+      { logical_photo_id: 1, current_status: 'undecided' },
+      { logical_photo_id: 2, current_status: 'undecided' },
+      { logical_photo_id: 3, current_status: 'undecided' },
+    ])  // get_stack_decisions
+    mockInvoke.mockResolvedValueOnce({
+      round_id: 1, round_number: 1, state: 'open',
+      total_photos: 3, decided: 0, kept: 0, eliminated: 0, undecided: 3, committed_at: null,
+    })  // get_round_status (mount)
+
+    render(StackFocus)
+    await waitFor(() => screen.getAllByTestId('photo-card'))
+
+    // Mock the make_decision response
+    mockInvoke.mockResolvedValueOnce({
+      decision_id: 1, round_id: 1, action: 'eliminate',
+      current_status: 'eliminate', round_auto_created: false,
+    })  // make_decision
+
+    // Mock the second get_round_status call that should happen after decision
+    mockInvoke.mockResolvedValueOnce({
+      round_id: 1, round_number: 1, state: 'open',
+      total_photos: 3, decided: 1, kept: 0, eliminated: 1, undecided: 2, committed_at: null,
+    })  // get_round_status (after decision)
+
+    await fireEvent.keyDown(document, { key: 'x' })
+
+    // Wait for async effects to settle
+    await waitFor(() => {
+      const roundStatusCalls = mockInvoke.mock.calls.filter(c => c[0] === 'get_round_status')
+      // Must be called at least twice: once on mount, once after decision
+      expect(roundStatusCalls.length).toBeGreaterThanOrEqual(2)
+    })
+  })
+})
+
+// --- BUG B3: roundStatus stale after Ctrl+Enter commit ---
+
+describe('StackFocus — B3: Y blocked after Ctrl+Enter commit', () => {
+  it('Y key is blocked after committing the round via Ctrl+Enter', async () => {
+    mockInvoke.mockResolvedValueOnce(mockPhotos)  // list_logical_photos
+    mockInvoke.mockResolvedValueOnce([
+      { logical_photo_id: 1, current_status: 'keep' },
+      { logical_photo_id: 2, current_status: 'keep' },
+      { logical_photo_id: 3, current_status: 'eliminate' },
+    ])  // get_stack_decisions
+    mockInvoke.mockResolvedValueOnce({
+      round_id: 1, round_number: 1, state: 'open',
+      total_photos: 3, decided: 3, kept: 2, eliminated: 1, undecided: 0, committed_at: null,
+    })  // get_round_status (mount — state is 'open')
+
+    render(StackFocus)
+    await waitFor(() => screen.getAllByTestId('photo-card'))
+
+    // Mock commit_round success
+    mockInvoke.mockResolvedValueOnce(undefined)  // commit_round
+
+    // Mock the get_round_status that SHOULD be called after commit (returns committed)
+    mockInvoke.mockResolvedValueOnce({
+      round_id: 1, round_number: 1, state: 'committed',
+      total_photos: 3, decided: 3, kept: 2, eliminated: 1, undecided: 0,
+      committed_at: '2024-01-15T12:00:00Z',
+    })  // get_round_status (after commit)
+
+    // Commit the round
+    await fireEvent.keyDown(document, { key: 'Enter', ctrlKey: true })
+
+    // Wait for commit to process
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith('commit_round', {
+        slug: 'test-project', stackId: 1,
+      })
+    })
+
+    // Clear mock call counts so we can precisely track what happens after Y
+    const callCountAfterCommit = mockInvoke.mock.calls.length
+
+    // Now press Y — this should be BLOCKED because round is committed
+    await fireEvent.keyDown(document, { key: 'y' })
+
+    // Wait a bit for any async effects
+    await new Promise(r => setTimeout(r, 100))
+
+    // make_decision should NOT have been called after the commit
+    const callsAfterCommit = mockInvoke.mock.calls.slice(callCountAfterCommit)
+    const makeDecisionCalls = callsAfterCommit.filter(c => c[0] === 'make_decision')
+    expect(makeDecisionCalls).toHaveLength(0)
+  })
+})
+
+// --- BUG U-KEY: No undo decision (U key) ---
+
+describe('StackFocus — U-KEY: undo decision via U key', () => {
+  it('U key calls undo_decision for the focused photo', async () => {
+    mockInvoke.mockResolvedValueOnce(mockPhotos)  // list_logical_photos
+    mockInvoke.mockResolvedValueOnce([
+      { logical_photo_id: 1, current_status: 'keep' },
+      { logical_photo_id: 2, current_status: 'undecided' },
+      { logical_photo_id: 3, current_status: 'undecided' },
+    ])  // get_stack_decisions
+    mockInvoke.mockResolvedValueOnce({
+      round_id: 1, round_number: 1, state: 'open',
+      total_photos: 3, decided: 1, kept: 1, eliminated: 0, undecided: 2, committed_at: null,
+    })  // get_round_status
+
+    render(StackFocus)
+    await waitFor(() => screen.getAllByTestId('photo-card'))
+
+    // Photo 1 (index 0) is 'keep'. Press U to undo.
+    mockInvoke.mockResolvedValueOnce(undefined)  // undo_decision
+
+    await fireEvent.keyDown(document, { key: 'u' })
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith('undo_decision', {
+        slug: 'test-project', logicalPhotoId: 1,
+      })
+    })
+  })
+
+  it('U key after Y reverses the decision', async () => {
+    mockInvoke.mockResolvedValueOnce(mockPhotos)  // list_logical_photos
+    mockInvoke.mockResolvedValueOnce([
+      { logical_photo_id: 1, current_status: 'undecided' },
+      { logical_photo_id: 2, current_status: 'undecided' },
+      { logical_photo_id: 3, current_status: 'undecided' },
+    ])  // get_stack_decisions
+    mockInvoke.mockResolvedValueOnce({
+      round_id: 1, round_number: 1, state: 'open',
+      total_photos: 3, decided: 0, kept: 0, eliminated: 0, undecided: 3, committed_at: null,
+    })  // get_round_status
+
+    render(StackFocus)
+    await waitFor(() => screen.getAllByTestId('photo-card'))
+
+    // Press Y to keep
+    mockInvoke.mockResolvedValueOnce({
+      decision_id: 1, round_id: 1, action: 'keep',
+      current_status: 'keep', round_auto_created: false,
+    })  // make_decision
+
+    await fireEvent.keyDown(document, { key: 'y' })
+
+    // Verify keep badge appeared
+    await waitFor(() => {
+      const cards = screen.getAllByTestId('photo-card')
+      expect(cards[0].querySelector('.badge-keep')).toBeInTheDocument()
+    })
+
+    // Press U to undo
+    mockInvoke.mockResolvedValueOnce(undefined)  // undo_decision
+
+    await fireEvent.keyDown(document, { key: 'u' })
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith('undo_decision', {
+        slug: 'test-project', logicalPhotoId: 1,
+      })
+    })
   })
 })
 

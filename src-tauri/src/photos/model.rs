@@ -92,3 +92,26 @@ pub struct SourceFolderRow {
     pub id: i64,
     pub path: String,
 }
+
+/// Result of a merge operation.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MergeResult {
+    /// The id of the newly created merged stack
+    pub merged_stack_id: i64,
+    /// Number of logical photos moved into the merged stack
+    pub logical_photos_moved: usize,
+    /// IDs of the source stacks that were deleted
+    pub source_stack_ids: Vec<i64>,
+    /// Transaction log entry id
+    pub transaction_id: i64,
+}
+
+/// A record from the stack_transactions table.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct StackTransaction {
+    pub id: i64,
+    pub project_id: i64,
+    pub action: String,     // "merge" | "split" | "restack" | "import"
+    pub details: String,    // JSON string
+    pub created_at: String, // ISO-8601
+}

@@ -46,7 +46,12 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
             orientation      INTEGER,
             camera_model     TEXT,
             lens             TEXT,
-            logical_photo_id INTEGER REFERENCES logical_photos(id)
+            logical_photo_id INTEGER REFERENCES logical_photos(id),
+            aperture         REAL,
+            shutter_speed    TEXT,
+            iso              INTEGER,
+            focal_length     REAL,
+            exposure_comp    REAL
         );
 
         CREATE TABLE IF NOT EXISTS rounds (
@@ -77,15 +82,35 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
             undone              INTEGER NOT NULL DEFAULT 0
         );
 
+        CREATE TABLE IF NOT EXISTS stack_transactions (
+            id          INTEGER PRIMARY KEY,
+            project_id  INTEGER NOT NULL REFERENCES projects(id),
+            action      TEXT NOT NULL,
+            details     TEXT NOT NULL,
+            created_at  TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS manual_merges (
+            id          INTEGER PRIMARY KEY,
+            project_id  INTEGER NOT NULL REFERENCES projects(id),
+            merge_group TEXT NOT NULL,
+            created_at  TEXT NOT NULL,
+            active      INTEGER NOT NULL DEFAULT 1
+        );
+
         CREATE INDEX IF NOT EXISTS idx_photos_capture_time ON photos(capture_time);
         CREATE INDEX IF NOT EXISTS idx_logical_stack        ON logical_photos(stack_id);
         CREATE INDEX IF NOT EXISTS idx_logical_project      ON logical_photos(project_id);
+        CREATE INDEX IF NOT EXISTS idx_stack_tx_project
+            ON stack_transactions(project_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_manual_merges_project
+            ON manual_merges(project_id, active);
 
-        -- Set version = 3. On a fresh DB: insert 0 first, then update.
-        -- On an existing v3 DB: INSERT is skipped (row exists), UPDATE is no-op.
+        -- Set version = 4. On a fresh DB: insert 0 first, then update.
+        -- On an existing v4 DB: INSERT is skipped (row exists), UPDATE is no-op.
         INSERT INTO schema_version SELECT 0
             WHERE NOT EXISTS (SELECT 1 FROM schema_version);
-        UPDATE schema_version SET version = 3 WHERE version < 3;
+        UPDATE schema_version SET version = 4 WHERE version < 4;
         ",
     )?;
 
@@ -118,7 +143,7 @@ mod tests {
     fn test_schema_version_is_3_after_migration() {
         let conn = in_memory();
         run_migrations(&conn).unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), 3);
+        assert_eq!(schema_version(&conn).unwrap(), 4);
     }
 
     #[test]
@@ -153,7 +178,7 @@ mod tests {
         let conn = in_memory();
         run_migrations(&conn).unwrap();
         assert!(run_migrations(&conn).is_ok()); // second call must succeed
-        assert_eq!(schema_version(&conn).unwrap(), 3);
+        assert_eq!(schema_version(&conn).unwrap(), 4);
     }
 
     #[test]
@@ -196,6 +221,85 @@ mod tests {
                 col
             );
         }
+    }
+
+    #[test]
+    fn test_schema_version_is_4_after_migration() {
+        // Sprint 7: migration bumps schema version from 3 to 4.
+        let conn = in_memory();
+        run_migrations(&conn).unwrap();
+        assert_eq!(
+            schema_version(&conn).unwrap(),
+            4,
+            "schema version must be 4 after Sprint 7 migration"
+        );
+    }
+
+    #[test]
+    fn test_photos_has_camera_param_columns() {
+        // Sprint 7 §3.3: photos table gains aperture, shutter_speed, iso,
+        // focal_length, exposure_comp columns for camera parameters.
+        let conn = in_memory();
+        run_migrations(&conn).unwrap();
+
+        let mut stmt = conn.prepare("PRAGMA table_info(photos)").unwrap();
+        let cols: Vec<String> = stmt
+            .query_map([], |r| r.get(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+
+        for col in &[
+            "aperture",
+            "shutter_speed",
+            "iso",
+            "focal_length",
+            "exposure_comp",
+        ] {
+            assert!(
+                cols.contains(&col.to_string()),
+                "photos table must have column '{}' (Sprint 7 camera params), found: {:?}",
+                col,
+                cols
+            );
+        }
+    }
+
+    #[test]
+    fn test_stack_transactions_table_exists() {
+        // Sprint 7 §3.1: stack_transactions table records every structural
+        // change (merge, split, restack, import) like a git log.
+        let conn = in_memory();
+        run_migrations(&conn).unwrap();
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='stack_transactions'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            count, 1,
+            "stack_transactions table must exist after migration"
+        );
+    }
+
+    #[test]
+    fn test_manual_merges_table_exists() {
+        // Sprint 7 §3.2: manual_merges table tracks which logical photos
+        // were manually grouped so that restack can preserve them.
+        let conn = in_memory();
+        run_migrations(&conn).unwrap();
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='manual_merges'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "manual_merges table must exist after migration");
     }
 
     #[test]

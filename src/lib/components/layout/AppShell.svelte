@@ -6,7 +6,7 @@
   import SingleView from '$lib/components/screens/SingleView.svelte'
 </script>
 
-<main class="h-screen w-screen bg-gray-950 text-gray-100">
+<main class="h-screen w-screen bg-gray-950 text-gray-100" oncontextmenu={(e) => e.preventDefault()}>
   {#if navigation.current.kind === 'project-list'}
     <ProjectList />
   {:else if navigation.current.kind === 'stack-overview'}

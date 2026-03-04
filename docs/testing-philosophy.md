@@ -359,19 +359,22 @@ fix to `(p.slug)`.
 **Must test:** Config flow through pipeline (Rule 6), idempotency (Rule 11),
 IPC JSON shape (Rule 10), timing with tight thresholds (Rule 7).
 
-### Layer 3: Component Tests (Vitest + jsdom)
+### Layer 3: Component Tests (Vitest)
 
 **Scope:** Svelte component behavior with varied props and state.
-**Tools:** Vitest 3, @testing-library/svelte, jsdom.
+**Tools:** Vitest 3 + @testing-library/svelte + jsdom (current).
+Migration target: vitest-browser-svelte + real Chromium (see Section 8).
 **Must test:** Realistic mock data (Rule 4), second navigation (Rule 5),
-strict mock hygiene (Rule 9).
+strict mock hygiene (Rule 9). After browser mode migration, also:
+visual CSS assertions (Rule 14) at the component level.
 
 ### Layer 4: E2E Tests (Playwright, mocked IPC)
 
-**Scope:** Complete user journeys. Real Chromium rendering, mocked IPC.
+**Scope:** Complete user journeys + visual CSS correctness. Real Chromium rendering, mocked IPC.
 **Tools:** Playwright, `page.addInitScript()` for IPC mocking.
 **Must test:** Critical state machine transitions, timing assertions (Rule 7),
-new feature journeys (Rule 8).
+new feature journeys (Rule 8), visual CSS assertions (Rule 14) — boundingBox
+containment, computed styles, Tailwind class compilation.
 
 ### Layer 5: Smoke Test (Playwright, real binary)
 
@@ -382,7 +385,7 @@ No mocked IPC. Real SQLite, real filesystem, real asset:// protocol.
 
 ---
 
-## Section 4: Twelve Rules for Writing Tests
+## Section 4: Rules for Writing Tests
 
 ### Rule 1: Test the actual output, not the return type
 
@@ -589,6 +592,39 @@ cargo test test_restack_preserves_thumbnail_files -- --nocapture
 # ... ok (1 passed)
 ```
 
+### Rule 14: Visual CSS assertions use Playwright, not jsdom
+
+jsdom has no layout engine — it cannot verify CSS positioning, computed styles, or
+Tailwind class compilation. Any test that asserts visual correctness (borders visible,
+badges positioned inside cards, opacity applied, colors correct) **must** use Playwright
+Layer 4 E2E tests with `boundingBox()` and `getComputedStyle()`.
+
+**Never use jsdom to test:**
+- Element positioning (`absolute`, `relative`, `fixed`)
+- Computed CSS values (opacity, border-color, background-color)
+- Whether a Tailwind utility class produces visible output
+- Whether overflow clipping hides an element
+
+**Use jsdom only for:**
+- DOM presence (element exists after state change)
+- Class toggling logic (class added/removed in response to props)
+- Text content and attribute values
+
+```typescript
+// BAD — jsdom "passes" even when badge escapes its card
+expect(card.querySelector('.badge-keep')).toBeTruthy()
+
+// GOOD — Playwright catches positioning bugs
+const cardBox = await card.boundingBox()
+const badgeBox = await badge.boundingBox()
+expect(badgeBox!.y).toBeGreaterThanOrEqual(cardBox!.y)
+```
+
+This rule was earned by the StackFocus badge bug (Sprint 7): the badge had
+`absolute top-1 right-1` but its parent card lacked `position: relative`. jsdom
+tests showed the badge element existed. Playwright proved it rendered at
+`y=4` while the card was at `y=73` — the badge escaped the card entirely.
+
 ---
 
 ## Section 5: Test Infrastructure
@@ -722,7 +758,190 @@ be reached when the file has no embedded thumbnail and DCT scaling is unavailabl
 
 ---
 
-## Section 7: Pre-Sprint-Done Checklist
+## Section 7: BUG-08 — StackFocus badge escapes card (Sprint 7)
+
+**What the bug was.**
+Decision badges (`.badge-keep`, `.badge-eliminate`) in StackFocus used
+`absolute top-1 right-1` positioning, but the parent card div had no
+`position: relative`. The badges floated to the nearest positioned ancestor
+(the page body), rendering at `y=4` while the card was at `y=73`.
+
+**Tests that existed and why they missed it.**
+Vitest/jsdom component tests verified `document.querySelector('.badge-keep')` existed
+after pressing Y. jsdom has no layout engine — it cannot compute bounding boxes or
+detect that an absolutely-positioned element escaped its intended container.
+
+**What caught it.**
+A Playwright E2E test using `boundingBox()` comparison:
+```typescript
+const cardBox = await firstCard.boundingBox()
+const badgeBox = await badge.boundingBox()
+expect(badgeBox!.y).toBeGreaterThanOrEqual(cardBox!.y) // FAILED: 4 < 73
+```
+
+**Fix:** Add `relative` to the card div's class list.
+
+**Layers involved:** Playwright E2E (Layer 4, visual CSS assertions).
+This bug established Rule 14 and Section 8 of this document.
+
+---
+
+## Section 8: Visual Testing Methodology
+
+### The Problem jsdom Cannot Solve
+
+jsdom has no layout engine. It parses HTML and builds a DOM tree, but it does not
+compute CSS layout, resolve `position: absolute` containment, apply `opacity`
+transitions, or compile Tailwind utility classes into actual pixel values.
+
+A jsdom test can verify that `element.classList.contains('border-green-500')` is true.
+It cannot verify that the border is visible, correctly positioned, or the right color.
+The following bugs are **invisible to jsdom**:
+
+| Bug | jsdom sees | Playwright sees |
+|-----|------------|-----------------|
+| `absolute` badge escapes card (no `relative` on parent) | Class present, element exists | `boundingBox()` outside card bounds |
+| Tailwind class purged from build (not in content scan) | Class present in source | `getComputedStyle().borderColor` = transparent |
+| `opacity-50` not reactively applied after state change | Class added to DOM | `getComputedStyle().opacity` = 1.0 (stale) |
+| `z-index` stacking hides badge behind sibling | Element exists | `isVisible()` returns false |
+
+### Playwright Visual Assertions (Layer 4)
+
+Playwright runs real Chromium with full CSS layout, Tailwind compilation, and computed
+styles. Use these assertion patterns for visual correctness:
+
+**Bounding box containment** — verify positioned elements stay within their parent:
+```typescript
+const card = page.locator('[data-testid="photo-card"]').first()
+const badge = card.locator('.badge-keep')
+const cardBox = await card.boundingBox()
+const badgeBox = await badge.boundingBox()
+// Badge must be inside card
+expect(badgeBox!.y).toBeGreaterThanOrEqual(cardBox!.y)
+expect(badgeBox!.x + badgeBox!.width).toBeLessThanOrEqual(cardBox!.x + cardBox!.width)
+```
+
+**Computed style verification** — verify CSS values after Tailwind compilation:
+```typescript
+const opacity = await page.evaluate(() => {
+  const el = document.querySelector('[data-testid="photo-card"]')
+  return getComputedStyle(el!).opacity
+})
+expect(parseFloat(opacity)).toBeCloseTo(0.5, 1)
+```
+
+**Color verification** — verify Tailwind colors are compiled and applied:
+```typescript
+const bgColor = await page.evaluate(() => {
+  const badge = document.querySelector('.badge-keep')
+  return getComputedStyle(badge!).backgroundColor
+})
+expect(bgColor).toBe('rgb(34, 197, 94)') // Tailwind bg-green-500
+```
+
+### Cross-Engine Rendering Gap
+
+Playwright tests run in Chromium. The production app uses WebKitGTK (Linux) or WebKit
+(macOS). CSS edge cases can behave differently between engines. Playwright visual tests
+catch the majority of bugs (missing `relative`, purged classes, broken reactivity), but
+**pixel-exact rendering must be verified manually** in the real app for each sprint.
+
+### Test Tiering Strategy
+
+As the test suite grows, running everything on every commit becomes impractical.
+Tests are organized into tiers by cost and scope:
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  Tier 1: Pre-commit                         Budget: < 60s   │
+│  ─────────────────────────────────────────────────────────── │
+│  cargo clippy --manifest-path src-tauri/Cargo.toml           │
+│  npx vitest run --changed              (only modified files) │
+│  Total: ~15-40s depending on what changed                    │
+├──────────────────────────────────────────────────────────────┤
+│  Tier 2: Pre-push                           Budget: < 3 min  │
+│  ─────────────────────────────────────────────────────────── │
+│  cargo test --manifest-path src-tauri/Cargo.toml             │
+│  npx vitest run                                (full suite)  │
+│  npx playwright test                           (full E2E)    │
+│  Total: ~60-90s at current size                              │
+├──────────────────────────────────────────────────────────────┤
+│  Tier 3: CI / Pre-sprint-done               Budget: < 10 min │
+│  ─────────────────────────────────────────────────────────── │
+│  Everything in Tier 2                                        │
+│  + Visual regression screenshots (toHaveScreenshot)          │
+│  + Manual verification in real app (cargo tauri dev)         │
+│  + Cross-engine spot check (WebKitGTK vs Chromium)           │
+└──────────────────────────────────────────────────────────────┘
+```
+
+**`vitest --changed`** is the key enabler for Tier 1. It uses git to detect which
+source files changed since the last commit and runs only the tests that import those
+files. This keeps pre-commit feedback fast even as the component test suite grows
+to hundreds of tests.
+
+**When to run which tier:**
+- Tier 1: Every commit (automated via pre-commit hook or manual discipline)
+- Tier 2: Before pushing to remote / before opening PR
+- Tier 3: Sprint-done gate, dependency updates, weekly
+
+### Migration Plan: vitest-browser-svelte (replaces jsdom)
+
+**Problem:** jsdom cannot test CSS layout, positioning, computed styles, or Tailwind
+compilation. This forces visual correctness tests into the slow Playwright E2E layer.
+
+**Solution:** Vitest Browser Mode runs component tests in **real Chromium** instead of
+jsdom. Component tests gain full CSS support while remaining fast (~50-100ms per test).
+
+**Benefits:**
+- Component tests can verify `boundingBox()`, `getComputedStyle()`, opacity, colors
+- Many tests that currently require E2E (because jsdom can't test CSS) become
+  fast component tests instead
+- The `--changed` flag still works — only modified component tests run in Tier 1
+- Migration is incremental (both jsdom and browser projects can coexist)
+
+**Migration steps (to be executed in a dedicated sprint):**
+```bash
+npm install -D @vitest/browser vitest-browser-svelte
+```
+
+```typescript
+// vite.config.ts — add browser project alongside existing jsdom project
+test: {
+  browser: {
+    enabled: true,
+    provider: 'playwright',
+    instances: [{ browser: 'chromium' }],
+  },
+}
+```
+
+**Migration is NOT blocking.** Current jsdom tests continue to work. New visual
+component tests should be written using vitest-browser-svelte when available.
+Existing jsdom tests can be migrated incrementally.
+
+**References:**
+- [Svelte official testing docs](https://svelte.dev/docs/svelte/testing)
+- [vitest-browser-svelte](https://github.com/vitest-community/vitest-browser-svelte)
+- [Vitest Browser Mode](https://vitest.dev/guide/browser/component-testing)
+
+### Manual Verification Checklist (per sprint)
+
+Automated tests (both component-level and E2E) catch CSS positioning and computed
+style bugs. The following must still be verified manually in the real app
+(`cargo tauri dev`):
+
+- [ ] Colors render correctly in WebKitGTK (not just Chromium)
+- [ ] Animations/transitions are smooth (no jank)
+- [ ] Visual indicators are visible at all viewport sizes used in practice
+- [ ] Keyboard focus indicators (blue ring) are clearly visible against photo backgrounds
+
+---
+
+## Section 9: Pre-Sprint-Done Checklist (Tier 3)
+
+This checklist corresponds to **Tier 3** — the full gate before a sprint is done.
+See Section 8 for Tier 1 (pre-commit) and Tier 2 (pre-push) definitions.
 
 ```
 ### Rust Unit Tests
@@ -752,18 +971,25 @@ be reached when the file has no embedded thumbnail and DCT scaling is unavailabl
 ### E2E Tests (Playwright)
 - [ ] 1+ new spec file covering this sprint's primary feature
 - [ ] Timing assertions with 3x measured threshold
+- [ ] Visual CSS assertions for any new UI indicators (Rule 14)
+
+### Visual Verification
+- [ ] Visual E2E tests pass (boundingBox, computedStyle assertions)
+- [ ] Manual check in real app (cargo tauri dev) — colors, positions, transitions
+- [ ] Cross-engine spot check if CSS changes are non-trivial
 
 ### Smoke Test
 - [ ] 1 Playwright test against real cargo tauri dev binary
 - [ ] Tests the sprint's primary user journey end-to-end
 - [ ] No mocked IPC — real SQLite, real filesystem, real asset://
 
-### Overall
+### Overall (Tier 2 + 3 combined)
 - [ ] cargo test passes (0 failures)
 - [ ] cargo clippy -- -D warnings clean
 - [ ] cargo fmt --check clean
 - [ ] npm test passes (0 failures)
 - [ ] npm run test:e2e passes
+- [ ] Test tiering verified: `vitest --changed` works for Tier 1
 ```
 
 ---

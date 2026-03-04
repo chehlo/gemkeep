@@ -6,8 +6,10 @@
 
 #[cfg(test)]
 mod tests {
+    use crate::commands::decisions::*;
     use crate::commands::import::{get_burst_gap, set_burst_gap, *};
     use crate::commands::projects::*;
+    use crate::commands::stacks::*;
     use crate::state::AppState;
     use tauri::ipc::CallbackFn;
     use tauri::test::{mock_builder, mock_context, noop_assets};
@@ -41,6 +43,15 @@ mod tests {
                 list_logical_photos,
                 get_burst_gap,
                 set_burst_gap,
+                merge_stacks,
+                undo_last_merge,
+                list_stack_transactions,
+                make_decision,
+                undo_decision,
+                get_round_status,
+                commit_round,
+                get_photo_detail,
+                get_stack_decisions,
             ])
             .build(mock_context(noop_assets()))
             .unwrap()
@@ -580,5 +591,521 @@ mod tests {
         assert!(get_result.is_ok(), "get_burst_gap after set must succeed");
         let value: u64 = get_result.unwrap().deserialize().unwrap();
         assert_eq!(value, 10, "burst_gap must be 10 after set_burst_gap(10)");
+    }
+
+    // ── Sprint 7 §16.5: IPC Contract Tests ──────────────────────────────────
+
+    /// Helper: set up a project on disk with photos ingested via pipeline.
+    /// Returns (home_path, TempDir) — the TempDir must be kept alive for the
+    /// duration of the test to prevent the temp directory from being deleted.
+    fn setup_project_with_photos(tmp: &TempDir, num_photos: usize) -> std::path::PathBuf {
+        use crate::db::run_migrations;
+        use crate::photos::model::IndexingStatus;
+        use std::sync::atomic::{AtomicBool, AtomicUsize};
+        use std::sync::{Arc, Mutex};
+
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(home.join("projects")).unwrap();
+        create_project_on_disk(&home, "Test", "test");
+
+        let project_dir = home.join("projects").join("test");
+        let db_path = project_dir.join("project.db");
+        let conn = crate::db::open_connection(&db_path).unwrap();
+        run_migrations(&conn).unwrap();
+
+        let project_id: i64 = conn
+            .query_row("SELECT id FROM projects WHERE slug = 'test'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+
+        // Write minimal JPEGs
+        let photo_dir = tmp.path().join("photos");
+        std::fs::create_dir_all(&photo_dir).unwrap();
+        for i in 0..num_photos {
+            image::DynamicImage::new_rgb8(10, 10)
+                .save(photo_dir.join(format!("shot_{}.jpg", i)))
+                .unwrap();
+        }
+
+        std::fs::create_dir_all(project_dir.join("cache").join("thumbnails")).unwrap();
+
+        let status = Arc::new(Mutex::new(IndexingStatus::default()));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let pause = Arc::new(AtomicBool::new(false));
+
+        crate::import::pipeline::run_pipeline(
+            &conn,
+            project_id,
+            &project_dir,
+            vec![photo_dir],
+            3,
+            status,
+            cancel,
+            pause,
+            None,
+            Arc::new(AtomicUsize::new(0)),
+        );
+
+        drop(conn);
+        home
+    }
+
+    #[test]
+    fn test_ipc_merge_stacks_json_shape() {
+        // Sprint 7 §16.5: Contract test — verify merge_stacks returns JSON
+        // matching the TypeScript MergeResult interface.
+        // NOTE: This test will fail (panic) in RED phase because merge_stacks
+        // is not implemented. That is expected for TDD.
+        let tmp = TempDir::new().unwrap();
+        let home = setup_project_with_photos(&tmp, 4);
+        let app = make_app(home);
+        let wv = make_webview(&app);
+
+        // Open project
+        let open_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("open_project", serde_json::json!({ "slug": "test" })),
+        );
+        assert!(open_result.is_ok(), "open_project must succeed");
+
+        // Get stacks to find 2 stack IDs to merge
+        // (with burst_gap=3 and 4 photos, we may have 1 stack; we need at least 2
+        //  but in the RED phase the merge command panics anyway.)
+        let stacks_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("list_stacks", serde_json::json!({ "slug": "test" })),
+        );
+        assert!(stacks_result.is_ok(), "list_stacks must succeed");
+        let stacks: serde_json::Value = stacks_result.unwrap().deserialize().unwrap();
+        let stacks_arr = stacks.as_array().unwrap();
+
+        // For the contract test, we just need any two valid stack IDs.
+        // If only 1 stack exists, use it twice (the command should validate and
+        // error, but the test is primarily about JSON shape).
+        let sid1 = stacks_arr
+            .first()
+            .and_then(|s| s["stack_id"].as_i64())
+            .unwrap_or(1);
+        let sid2 = stacks_arr
+            .get(1)
+            .and_then(|s| s["stack_id"].as_i64())
+            .unwrap_or(sid1 + 1);
+
+        let result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req(
+                "merge_stacks",
+                serde_json::json!({ "slug": "test", "stackIds": [sid1, sid2] }),
+            ),
+        );
+        assert!(result.is_ok(), "merge_stacks must succeed: {:?}", result);
+        let val: serde_json::Value = result.unwrap().deserialize().unwrap();
+
+        // Verify JSON shape matches TypeScript MergeResult interface
+        assert!(
+            val["merged_stack_id"].is_number(),
+            "merged_stack_id must be a number"
+        );
+        assert!(
+            val["logical_photos_moved"].is_number(),
+            "logical_photos_moved must be a number"
+        );
+        assert!(
+            val["source_stack_ids"].is_array(),
+            "source_stack_ids must be an array"
+        );
+        assert!(
+            val["transaction_id"].is_number(),
+            "transaction_id must be a number"
+        );
+    }
+
+    #[test]
+    fn test_ipc_make_decision_json_shape() {
+        // Sprint 7 §16.5: Contract test — verify make_decision returns JSON
+        // matching the TypeScript DecisionResult interface.
+        let tmp = TempDir::new().unwrap();
+        let home = setup_project_with_photos(&tmp, 2);
+        let app = make_app(home);
+        let wv = make_webview(&app);
+
+        // Open project
+        let open_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("open_project", serde_json::json!({ "slug": "test" })),
+        );
+        assert!(open_result.is_ok(), "open_project must succeed");
+
+        // Get a logical_photo_id
+        let stacks_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("list_stacks", serde_json::json!({ "slug": "test" })),
+        );
+        let stacks: serde_json::Value = stacks_result.unwrap().deserialize().unwrap();
+        let stack_id = stacks.as_array().unwrap()[0]["stack_id"].as_i64().unwrap();
+
+        let lp_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req(
+                "list_logical_photos",
+                serde_json::json!({ "slug": "test", "stackId": stack_id }),
+            ),
+        );
+        let lps: serde_json::Value = lp_result.unwrap().deserialize().unwrap();
+        let lp_id = lps.as_array().unwrap()[0]["logical_photo_id"]
+            .as_i64()
+            .unwrap();
+
+        // Call make_decision
+        let result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req(
+                "make_decision",
+                serde_json::json!({
+                    "slug": "test",
+                    "logicalPhotoId": lp_id,
+                    "action": "keep"
+                }),
+            ),
+        );
+        assert!(result.is_ok(), "make_decision must succeed: {:?}", result);
+        let val: serde_json::Value = result.unwrap().deserialize().unwrap();
+
+        // Verify JSON shape matches TypeScript DecisionResult interface
+        assert!(
+            val["decision_id"].is_number(),
+            "decision_id must be a number"
+        );
+        assert!(val["round_id"].is_number(), "round_id must be a number");
+        assert!(val["action"].is_string(), "action must be a string");
+        assert!(
+            val["current_status"].is_string(),
+            "current_status must be a string"
+        );
+        assert!(
+            val["round_auto_created"].is_boolean(),
+            "round_auto_created must be a boolean"
+        );
+    }
+
+    #[test]
+    fn test_ipc_get_round_status_json_shape() {
+        // Sprint 7 §16.5: Contract test — verify get_round_status returns JSON
+        // matching the TypeScript RoundStatus interface.
+        let tmp = TempDir::new().unwrap();
+        let home = setup_project_with_photos(&tmp, 3);
+        let app = make_app(home);
+        let wv = make_webview(&app);
+
+        // Open project
+        let open_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("open_project", serde_json::json!({ "slug": "test" })),
+        );
+        assert!(open_result.is_ok(), "open_project must succeed");
+
+        // Get a stack_id
+        let stacks_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("list_stacks", serde_json::json!({ "slug": "test" })),
+        );
+        let stacks: serde_json::Value = stacks_result.unwrap().deserialize().unwrap();
+        let stack_id = stacks.as_array().unwrap()[0]["stack_id"].as_i64().unwrap();
+
+        // Call get_round_status
+        let result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req(
+                "get_round_status",
+                serde_json::json!({ "slug": "test", "stackId": stack_id }),
+            ),
+        );
+        assert!(
+            result.is_ok(),
+            "get_round_status must succeed: {:?}",
+            result
+        );
+        let val: serde_json::Value = result.unwrap().deserialize().unwrap();
+
+        // Verify JSON shape matches TypeScript RoundStatus interface
+        assert!(val["round_id"].is_number(), "round_id must be a number");
+        assert!(
+            val["round_number"].is_number(),
+            "round_number must be a number"
+        );
+        assert!(val["state"].is_string(), "state must be a string");
+        assert!(
+            val["total_photos"].is_number(),
+            "total_photos must be a number"
+        );
+        assert!(val["decided"].is_number(), "decided must be a number");
+        assert!(val["kept"].is_number(), "kept must be a number");
+        assert!(val["eliminated"].is_number(), "eliminated must be a number");
+        assert!(val["undecided"].is_number(), "undecided must be a number");
+        // committed_at is nullable (null when round is open)
+        assert!(
+            val["committed_at"].is_null() || val["committed_at"].is_string(),
+            "committed_at must be null or string"
+        );
+    }
+
+    #[test]
+    fn test_ipc_get_photo_detail_json_shape() {
+        // Sprint 7 §16.5: Contract test — verify get_photo_detail returns JSON
+        // matching the TypeScript PhotoDetail interface.
+        let tmp = TempDir::new().unwrap();
+        let home = setup_project_with_photos(&tmp, 1);
+        let app = make_app(home);
+        let wv = make_webview(&app);
+
+        // Open project
+        let open_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("open_project", serde_json::json!({ "slug": "test" })),
+        );
+        assert!(open_result.is_ok(), "open_project must succeed");
+
+        // Get a logical_photo_id
+        let stacks_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("list_stacks", serde_json::json!({ "slug": "test" })),
+        );
+        let stacks: serde_json::Value = stacks_result.unwrap().deserialize().unwrap();
+        let stack_id = stacks.as_array().unwrap()[0]["stack_id"].as_i64().unwrap();
+        let lp_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req(
+                "list_logical_photos",
+                serde_json::json!({ "slug": "test", "stackId": stack_id }),
+            ),
+        );
+        let lps: serde_json::Value = lp_result.unwrap().deserialize().unwrap();
+        let lp_id = lps.as_array().unwrap()[0]["logical_photo_id"]
+            .as_i64()
+            .unwrap();
+
+        // Call get_photo_detail
+        let result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req(
+                "get_photo_detail",
+                serde_json::json!({ "slug": "test", "logicalPhotoId": lp_id }),
+            ),
+        );
+        assert!(
+            result.is_ok(),
+            "get_photo_detail must succeed: {:?}",
+            result
+        );
+        let val: serde_json::Value = result.unwrap().deserialize().unwrap();
+
+        // Verify JSON shape matches TypeScript PhotoDetail interface
+        assert!(
+            val["logical_photo_id"].is_number(),
+            "logical_photo_id must be a number"
+        );
+        assert!(
+            val["thumbnail_path"].is_null() || val["thumbnail_path"].is_string(),
+            "thumbnail_path must be null or string"
+        );
+        assert!(
+            val["capture_time"].is_null() || val["capture_time"].is_string(),
+            "capture_time must be null or string"
+        );
+        assert!(
+            val["camera_model"].is_null() || val["camera_model"].is_string(),
+            "camera_model must be null or string"
+        );
+        assert!(
+            val["lens"].is_null() || val["lens"].is_string(),
+            "lens must be null or string"
+        );
+        assert!(val["has_raw"].is_boolean(), "has_raw must be a boolean");
+        assert!(val["has_jpeg"].is_boolean(), "has_jpeg must be a boolean");
+        assert!(
+            val["current_status"].is_string(),
+            "current_status must be a string"
+        );
+        // Camera parameters (all nullable)
+        assert!(
+            val["aperture"].is_null() || val["aperture"].is_number(),
+            "aperture must be null or number"
+        );
+        assert!(
+            val["shutter_speed"].is_null() || val["shutter_speed"].is_string(),
+            "shutter_speed must be null or string"
+        );
+        assert!(
+            val["iso"].is_null() || val["iso"].is_number(),
+            "iso must be null or number"
+        );
+        assert!(
+            val["focal_length"].is_null() || val["focal_length"].is_number(),
+            "focal_length must be null or number"
+        );
+        assert!(
+            val["exposure_comp"].is_null() || val["exposure_comp"].is_number(),
+            "exposure_comp must be null or number"
+        );
+        // File paths (nullable)
+        assert!(
+            val["jpeg_path"].is_null() || val["jpeg_path"].is_string(),
+            "jpeg_path must be null or string"
+        );
+        assert!(
+            val["raw_path"].is_null() || val["raw_path"].is_string(),
+            "raw_path must be null or string"
+        );
+    }
+
+    #[test]
+    fn test_ipc_get_stack_decisions_json_shape() {
+        // Sprint 7 §16.5: Contract test — verify get_stack_decisions returns JSON
+        // matching the TypeScript PhotoDecisionStatus[] interface.
+        let tmp = TempDir::new().unwrap();
+        let home = setup_project_with_photos(&tmp, 3);
+        let app = make_app(home);
+        let wv = make_webview(&app);
+
+        // Open project
+        let open_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("open_project", serde_json::json!({ "slug": "test" })),
+        );
+        assert!(open_result.is_ok(), "open_project must succeed");
+
+        // Get a stack_id
+        let stacks_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("list_stacks", serde_json::json!({ "slug": "test" })),
+        );
+        let stacks: serde_json::Value = stacks_result.unwrap().deserialize().unwrap();
+        let stack_id = stacks.as_array().unwrap()[0]["stack_id"].as_i64().unwrap();
+
+        // Call get_stack_decisions
+        let result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req(
+                "get_stack_decisions",
+                serde_json::json!({ "slug": "test", "stackId": stack_id }),
+            ),
+        );
+        assert!(
+            result.is_ok(),
+            "get_stack_decisions must succeed: {:?}",
+            result
+        );
+        let val: serde_json::Value = result.unwrap().deserialize().unwrap();
+
+        // Must be an array
+        let arr = val
+            .as_array()
+            .expect("get_stack_decisions must return an array");
+        assert!(
+            !arr.is_empty(),
+            "get_stack_decisions must return at least 1 entry for a stack with photos"
+        );
+
+        // Verify shape of each entry matches PhotoDecisionStatus
+        for entry in arr {
+            assert!(
+                entry["logical_photo_id"].is_number(),
+                "logical_photo_id must be a number"
+            );
+            assert!(
+                entry["current_status"].is_string(),
+                "current_status must be a string"
+            );
+        }
+    }
+
+    #[test]
+    fn test_ipc_commit_round_then_decision_rejected() {
+        // Sprint 7 §16.5: Full IPC integration test — create project, add photos,
+        // make_decision, commit_round, attempt make_decision → must error.
+        let tmp = TempDir::new().unwrap();
+        let home = setup_project_with_photos(&tmp, 2);
+        let app = make_app(home);
+        let wv = make_webview(&app);
+
+        // Open project
+        let open_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("open_project", serde_json::json!({ "slug": "test" })),
+        );
+        assert!(open_result.is_ok(), "open_project must succeed");
+
+        // Get a stack_id and lp_id
+        let stacks_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("list_stacks", serde_json::json!({ "slug": "test" })),
+        );
+        let stacks: serde_json::Value = stacks_result.unwrap().deserialize().unwrap();
+        let stack_id = stacks.as_array().unwrap()[0]["stack_id"].as_i64().unwrap();
+
+        let lp_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req(
+                "list_logical_photos",
+                serde_json::json!({ "slug": "test", "stackId": stack_id }),
+            ),
+        );
+        let lps: serde_json::Value = lp_result.unwrap().deserialize().unwrap();
+        let lp_ids: Vec<i64> = lps
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|lp| lp["logical_photo_id"].as_i64().unwrap())
+            .collect();
+
+        // Step 1: Make a decision (this auto-creates Round 1)
+        let decision_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req(
+                "make_decision",
+                serde_json::json!({
+                    "slug": "test",
+                    "logicalPhotoId": lp_ids[0],
+                    "action": "keep"
+                }),
+            ),
+        );
+        assert!(
+            decision_result.is_ok(),
+            "first make_decision must succeed: {:?}",
+            decision_result
+        );
+
+        // Step 2: Commit the round
+        let commit_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req(
+                "commit_round",
+                serde_json::json!({ "slug": "test", "stackId": stack_id }),
+            ),
+        );
+        assert!(
+            commit_result.is_ok(),
+            "commit_round must succeed: {:?}",
+            commit_result
+        );
+
+        // Step 3: Attempt another decision — must be rejected
+        let rejected_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req(
+                "make_decision",
+                serde_json::json!({
+                    "slug": "test",
+                    "logicalPhotoId": lp_ids[0],
+                    "action": "eliminate"
+                }),
+            ),
+        );
+        assert!(
+            rejected_result.is_err(),
+            "make_decision after commit must be rejected (round is committed)"
+        );
     }
 }

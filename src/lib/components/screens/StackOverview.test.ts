@@ -736,3 +736,178 @@ describe('StackOverview — thumbnail auto-resume (TH-D1..TH-D3)', () => {
     expect(allCommands).not.toContain('cancel_indexing')
   })
 })
+
+describe('StackOverview — Sprint 7: multi-select and merge', () => {
+  it('Shift+ArrowRight selects multiple stacks', async () => {
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2, STACK_3], status: DONE_STATUS })
+    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(3))
+
+    await fireEvent.keyDown(document, { key: 'ArrowRight', shiftKey: true })
+    await fireEvent.keyDown(document, { key: 'ArrowRight', shiftKey: true })
+
+    const cards = document.querySelectorAll('[data-stack-card]')
+    // At least 2 cards should have selection indicator
+    const selectedCards = Array.from(cards).filter(c => c.className.includes('ring-yellow') || c.className.includes('border-yellow'))
+    expect(selectedCards.length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('M key merges selected stacks', async () => {
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2, STACK_3], status: DONE_STATUS })
+    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(3))
+
+    // Select 2 stacks
+    await fireEvent.keyDown(document, { key: 'ArrowRight', shiftKey: true })
+
+    // Mock merge response
+    mockInvoke.mockResolvedValueOnce({
+      merged_stack_id: 10, logical_photos_moved: 10,
+      source_stack_ids: [1, 2], transaction_id: 1,
+    })  // merge_stacks
+    mockInvoke.mockResolvedValueOnce([STACK_3])  // list_stacks (after merge)
+
+    await fireEvent.keyDown(document, { key: 'm' })
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith('merge_stacks', {
+        slug: 'iceland-2024', stackIds: expect.arrayContaining([1, 2]),
+      })
+    })
+  })
+
+  it('Ctrl+Z undoes last merge', async () => {
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2], status: DONE_STATUS })
+    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(2))
+
+    mockInvoke.mockResolvedValueOnce(undefined)              // undo_last_merge
+    mockInvoke.mockResolvedValueOnce([STACK_1, STACK_2, STACK_3])  // list_stacks (after undo)
+
+    await fireEvent.keyDown(document, { key: 'z', ctrlKey: true })
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith('undo_last_merge', { slug: 'iceland-2024' })
+    })
+  })
+
+  it('M key with only 1 stack selected does NOT call merge', async () => {
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2], status: DONE_STATUS })
+    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(2))
+
+    // No shift-select, just press M with focus on 1 stack
+    await fireEvent.keyDown(document, { key: 'm' })
+
+    await new Promise(r => setTimeout(r, 50))
+    expect(mockInvoke).not.toHaveBeenCalledWith('merge_stacks', expect.anything())
+  })
+
+  it('selection cleared after successful merge', async () => {
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2, STACK_3], status: DONE_STATUS })
+    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(3))
+
+    // Select 2 stacks
+    await fireEvent.keyDown(document, { key: 'ArrowRight', shiftKey: true })
+
+    // Mock merge
+    mockInvoke.mockResolvedValueOnce({
+      merged_stack_id: 10, logical_photos_moved: 10,
+      source_stack_ids: [1, 2], transaction_id: 1,
+    })
+    mockInvoke.mockResolvedValueOnce([{ ...STACK_3, stack_id: 10 }])  // list_stacks
+
+    await fireEvent.keyDown(document, { key: 'm' })
+
+    await waitFor(() => {
+      const cards = document.querySelectorAll('[data-stack-card]')
+      const selectedCards = Array.from(cards).filter(c =>
+        c.className.includes('ring-yellow') || c.className.includes('border-yellow')
+      )
+      expect(selectedCards.length).toBe(0)
+    })
+  })
+
+  it('ArrowDown scrolls focused card into view', async () => {
+    const scrollSpy = vi.spyOn(Element.prototype, 'scrollIntoView')
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2, STACK_3], status: DONE_STATUS })
+    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(3))
+
+    // Clear mount-related scrollIntoView calls
+    scrollSpy.mockClear()
+
+    await fireEvent.keyDown(document, { key: 'ArrowDown' })
+
+    // StackOverview should scroll the newly focused card into view after arrow navigation
+    await waitFor(() => {
+      expect(scrollSpy).toHaveBeenCalled()
+    })
+
+    scrollSpy.mockRestore()
+  })
+
+  it('Arrow without Shift clears selection', async () => {
+    const STACK_4: StackSummary = {
+      stack_id: 4, logical_photo_count: 2, earliest_capture: null,
+      has_raw: false, has_jpeg: true, thumbnail_path: null
+    }
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2, STACK_3, STACK_4], status: DONE_STATUS })
+    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(4))
+
+    // Shift+ArrowRight to select stacks
+    await fireEvent.keyDown(document, { key: 'ArrowRight', shiftKey: true })
+    await fireEvent.keyDown(document, { key: 'ArrowRight', shiftKey: true })
+
+    // Verify selection exists
+    let cards = document.querySelectorAll('[data-stack-card]')
+    let selectedCards = Array.from(cards).filter(c =>
+      c.className.includes('ring-yellow') || c.className.includes('border-yellow')
+    )
+    expect(selectedCards.length).toBeGreaterThanOrEqual(2)
+
+    // Press ArrowRight WITHOUT Shift
+    await fireEvent.keyDown(document, { key: 'ArrowRight' })
+
+    // Verify selection is cleared
+    cards = document.querySelectorAll('[data-stack-card]')
+    selectedCards = Array.from(cards).filter(c =>
+      c.className.includes('ring-yellow') || c.className.includes('border-yellow')
+    )
+    expect(selectedCards.length).toBe(0)
+  })
+
+  it('After merge, focusedIndex moves to merged stack', async () => {
+    const STACK_4: StackSummary = {
+      stack_id: 4, logical_photo_count: 2, earliest_capture: null,
+      has_raw: false, has_jpeg: true, thumbnail_path: null
+    }
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2, STACK_3, STACK_4], status: DONE_STATUS })
+    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(4))
+
+    // Select stacks 1 and 2 via Shift+Arrow
+    await fireEvent.keyDown(document, { key: 'ArrowRight', shiftKey: true })
+
+    // Mock merge: returns merged_stack_id = 99
+    mockInvoke.mockResolvedValueOnce({
+      merged_stack_id: 99, logical_photos_moved: 10,
+      source_stack_ids: [1, 2], transaction_id: 1,
+    })
+    // Updated stacks: merged stack replaces originals
+    const MERGED_STACK: StackSummary = {
+      stack_id: 99, logical_photo_count: 10, earliest_capture: '2024-03-15T10:00:00Z',
+      has_raw: true, has_jpeg: true, thumbnail_path: null
+    }
+    mockInvoke.mockResolvedValueOnce([MERGED_STACK, STACK_3, STACK_4])  // list_stacks
+
+    // Resume thumbnails triggered because MERGED_STACK has null thumbnail
+    mockInvoke.mockResolvedValueOnce(undefined)    // resume_thumbnails
+    mockInvoke.mockResolvedValueOnce(IDLE_STATUS)  // poll: get_indexing_status
+    mockInvoke.mockResolvedValueOnce([MERGED_STACK, STACK_3, STACK_4])  // poll: list_stacks
+
+    await fireEvent.keyDown(document, { key: 'm' })
+
+    // After merge, the focused card should be the one with stack_id 99
+    await waitFor(() => {
+      const cards = document.querySelectorAll('[data-stack-card]')
+      expect(cards.length).toBe(3)
+      // The focused card (index 0 = merged stack) should have the focus ring
+      expect(cards[0].className).toContain('border-blue-500')
+    })
+  })
+})

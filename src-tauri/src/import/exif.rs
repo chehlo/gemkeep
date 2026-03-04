@@ -7,6 +7,26 @@ pub struct ExifData {
     pub camera_model: Option<String>,
     pub lens: Option<String>,
     pub orientation: Option<u16>,
+    // Sprint 7: camera parameters for Single View overlay
+    pub aperture: Option<f64>,         // f-number, e.g. 2.8
+    pub shutter_speed: Option<String>, // formatted string "1/250" or "2.5s"
+    pub iso: Option<u32>,              // e.g. 400
+    pub focal_length: Option<f64>,     // mm, e.g. 85.0
+    pub exposure_comp: Option<f64>,    // EV, e.g. +0.7
+}
+
+/// Format a shutter speed value (in seconds) as a human-readable string.
+/// Values < 1s are formatted as fractions (e.g. "1/250"), values >= 1s as decimal (e.g. "2.5s").
+pub fn format_shutter_speed(rational_value: f64) -> String {
+    if rational_value <= 0.0 {
+        return "?".to_string();
+    }
+    if rational_value >= 1.0 {
+        format!("{:.1}s", rational_value)
+    } else {
+        let denom = (1.0 / rational_value).round() as u32;
+        format!("1/{}", denom)
+    }
 }
 
 /// Extract EXIF metadata from a JPEG file using kamadak-exif.
@@ -44,11 +64,24 @@ fn extract_jpeg_exif_inner(path: &Path) -> ExifData {
     let lens = read_ascii_tag(&exif, exif::Tag::LensModel);
     let orientation = read_orientation(&exif);
 
+    // Sprint 7: camera parameters
+    let aperture = read_rational_tag(&exif, exif::Tag::FNumber);
+    let exposure_time = read_rational_tag(&exif, exif::Tag::ExposureTime);
+    let shutter_speed = exposure_time.map(format_shutter_speed);
+    let iso = read_iso(&exif);
+    let focal_length = read_rational_tag(&exif, exif::Tag::FocalLength);
+    let exposure_comp = read_srational_tag(&exif, exif::Tag::ExposureBiasValue);
+
     ExifData {
         capture_time,
         camera_model,
         lens,
         orientation,
+        aperture,
+        shutter_speed,
+        iso,
+        focal_length,
+        exposure_comp,
     }
 }
 
@@ -100,6 +133,43 @@ fn read_orientation(exif: &exif::Exif) -> Option<u16> {
     let field = exif.get_field(exif::Tag::Orientation, exif::In::PRIMARY)?;
     match &field.value {
         exif::Value::Short(v) => v.first().copied(),
+        _ => None,
+    }
+}
+
+fn read_rational_tag(exif: &exif::Exif, tag: exif::Tag) -> Option<f64> {
+    let field = exif.get_field(tag, exif::In::PRIMARY)?;
+    match &field.value {
+        exif::Value::Rational(v) => {
+            let r = v.first()?;
+            if r.denom == 0 {
+                return None;
+            }
+            Some(r.num as f64 / r.denom as f64)
+        }
+        _ => None,
+    }
+}
+
+fn read_srational_tag(exif: &exif::Exif, tag: exif::Tag) -> Option<f64> {
+    let field = exif.get_field(tag, exif::In::PRIMARY)?;
+    match &field.value {
+        exif::Value::SRational(v) => {
+            let r = v.first()?;
+            if r.denom == 0 {
+                return None;
+            }
+            Some(r.num as f64 / r.denom as f64)
+        }
+        _ => None,
+    }
+}
+
+fn read_iso(exif: &exif::Exif) -> Option<u32> {
+    let field = exif.get_field(exif::Tag::PhotographicSensitivity, exif::In::PRIMARY)?;
+    match &field.value {
+        exif::Value::Short(v) => v.first().map(|&v| v as u32),
+        exif::Value::Long(v) => v.first().copied(),
         _ => None,
     }
 }
@@ -172,11 +242,43 @@ fn extract_raw_exif_inner(path: &Path) -> ExifData {
 
     let orientation = metadata.exif.orientation;
 
+    // Sprint 7: camera parameters from rawler EXIF
+    let aperture = metadata
+        .exif
+        .fnumber
+        .filter(|r| r.d != 0)
+        .map(|r| r.n as f64 / r.d as f64);
+    let exposure_time_val = metadata
+        .exif
+        .exposure_time
+        .filter(|r| r.d != 0)
+        .map(|r| r.n as f64 / r.d as f64);
+    let shutter_speed = exposure_time_val.map(format_shutter_speed);
+    let iso = metadata
+        .exif
+        .iso_speed
+        .or_else(|| metadata.exif.iso_speed_ratings.map(|v| v as u32));
+    let focal_length = metadata
+        .exif
+        .focal_length
+        .filter(|r| r.d != 0)
+        .map(|r| r.n as f64 / r.d as f64);
+    let exposure_comp = metadata
+        .exif
+        .exposure_bias
+        .filter(|r| r.d != 0)
+        .map(|r| r.n as f64 / r.d as f64);
+
     ExifData {
         capture_time,
         camera_model,
         lens,
         orientation,
+        aperture,
+        shutter_speed,
+        iso,
+        focal_length,
+        exposure_comp,
     }
 }
 
@@ -519,6 +621,273 @@ mod tests {
             model.contains("Canon EOS 5D"),
             "camera_model must contain Canon EOS 5D, got: {}",
             model
+        );
+    }
+
+    /// Build a minimal valid JPEG containing an APP1/EXIF segment with camera parameters:
+    /// FNumber, ExposureTime, ISOSpeedRatings, FocalLength, ExposureBiasValue.
+    ///
+    /// All camera param tags live in the ExifIFD sub-IFD.
+    /// IFD0 contains Orientation (0x0112) + ExifIFD pointer (0x8769).
+    /// ExifIFD contains 5 entries:
+    ///   - FNumber (0x829D), Rational
+    ///   - ExposureTime (0x829A), Rational
+    ///   - ISOSpeedRatings/PhotographicSensitivity (0x8827), Short
+    ///   - FocalLength (0x920A), Rational
+    ///   - ExposureBiasValue (0x9204), SRational
+    fn make_jpeg_with_camera_params(
+        aperture_num: u32,
+        aperture_den: u32,
+        exposure_time_num: u32,
+        exposure_time_den: u32,
+        iso: u16,
+        focal_length_num: u32,
+        focal_length_den: u32,
+        exposure_bias_num: i32,
+        exposure_bias_den: i32,
+    ) -> tempfile::NamedTempFile {
+        // TIFF layout (little-endian):
+        //   0..8     TIFF header: "II" + 0x002A + IFD0 offset (8)
+        //   8..10    IFD0 entry count: 2
+        //   10..22   IFD0 entry 0: Orientation (0x0112), SHORT, count=1, inline=1
+        //   22..34   IFD0 entry 1: ExifIFD ptr (0x8769), LONG, count=1, offset→38
+        //   34..38   IFD0 next-IFD pointer: 0
+        //   38..40   ExifIFD entry count: 5
+        //   40..52   ExifIFD entry 0: ExposureTime (0x829A), Rational(5), count=1, offset→value_area
+        //   52..64   ExifIFD entry 1: FNumber (0x829D), Rational(5), count=1, offset→value_area+8
+        //   64..76   ExifIFD entry 2: PhotographicSensitivity (0x8827), Short(3), count=1, inline
+        //   76..88   ExifIFD entry 3: ExposureBiasValue (0x9204), SRational(10), count=1, offset→value_area+16
+        //   88..100  ExifIFD entry 4: FocalLength (0x920A), Rational(5), count=1, offset→value_area+24
+        //   100..104 ExifIFD next-IFD pointer: 0
+        //   104..112 ExposureTime value (8 bytes: num + den)
+        //   112..120 FNumber value (8 bytes: num + den)
+        //   120..128 ExposureBiasValue value (8 bytes: num + den, signed)
+        //   128..136 FocalLength value (8 bytes: num + den)
+
+        let exif_ifd_offset: u32 = 38;
+        // value area starts after ExifIFD (5 entries * 12 bytes + 2 count + 4 next-IFD = 66 bytes from 38)
+        let value_area_offset: u32 = 38 + 2 + 5 * 12 + 4; // = 104
+        let exposure_time_value_offset: u32 = value_area_offset;
+        let fnumber_value_offset: u32 = value_area_offset + 8;
+        let exposure_bias_value_offset: u32 = value_area_offset + 16;
+        let focal_length_value_offset: u32 = value_area_offset + 24;
+
+        let mut tiff: Vec<u8> = Vec::new();
+
+        // TIFF header (8 bytes)
+        tiff.extend_from_slice(b"II");
+        tiff.extend_from_slice(&[0x2A, 0x00]);
+        tiff.extend_from_slice(&8u32.to_le_bytes());
+
+        // IFD0: 2 entries
+        tiff.extend_from_slice(&2u16.to_le_bytes());
+
+        // IFD0 entry 0: Orientation (0x0112), SHORT, count=1, value=1
+        tiff.extend_from_slice(&0x0112u16.to_le_bytes());
+        tiff.extend_from_slice(&3u16.to_le_bytes()); // SHORT
+        tiff.extend_from_slice(&1u32.to_le_bytes());
+        tiff.extend_from_slice(&1u32.to_le_bytes()); // orientation = 1 (normal)
+
+        // IFD0 entry 1: ExifIFD pointer (0x8769), LONG, count=1
+        tiff.extend_from_slice(&0x8769u16.to_le_bytes());
+        tiff.extend_from_slice(&4u16.to_le_bytes()); // LONG
+        tiff.extend_from_slice(&1u32.to_le_bytes());
+        tiff.extend_from_slice(&exif_ifd_offset.to_le_bytes());
+
+        // IFD0 next-IFD pointer
+        tiff.extend_from_slice(&0u32.to_le_bytes());
+
+        assert_eq!(tiff.len(), exif_ifd_offset as usize);
+
+        // ExifIFD: 5 entries (tags in ascending order:
+        //   0x829A ExposureTime < 0x829D FNumber < 0x8827 PhotographicSensitivity
+        //   < 0x9204 ExposureBiasValue < 0x920A FocalLength)
+        tiff.extend_from_slice(&5u16.to_le_bytes());
+
+        // ExifIFD entry 0: ExposureTime (0x829A), Rational(5), count=1
+        tiff.extend_from_slice(&0x829Au16.to_le_bytes());
+        tiff.extend_from_slice(&5u16.to_le_bytes()); // RATIONAL
+        tiff.extend_from_slice(&1u32.to_le_bytes());
+        tiff.extend_from_slice(&exposure_time_value_offset.to_le_bytes());
+
+        // ExifIFD entry 1: FNumber (0x829D), Rational(5), count=1
+        tiff.extend_from_slice(&0x829Du16.to_le_bytes());
+        tiff.extend_from_slice(&5u16.to_le_bytes()); // RATIONAL
+        tiff.extend_from_slice(&1u32.to_le_bytes());
+        tiff.extend_from_slice(&fnumber_value_offset.to_le_bytes());
+
+        // ExifIFD entry 2: PhotographicSensitivity (0x8827), Short(3), count=1, inline
+        tiff.extend_from_slice(&0x8827u16.to_le_bytes());
+        tiff.extend_from_slice(&3u16.to_le_bytes()); // SHORT
+        tiff.extend_from_slice(&1u32.to_le_bytes());
+        tiff.extend_from_slice(&(iso as u32).to_le_bytes()); // inline value
+
+        // ExifIFD entry 3: ExposureBiasValue (0x9204), SRational(10), count=1
+        tiff.extend_from_slice(&0x9204u16.to_le_bytes());
+        tiff.extend_from_slice(&10u16.to_le_bytes()); // SRATIONAL
+        tiff.extend_from_slice(&1u32.to_le_bytes());
+        tiff.extend_from_slice(&exposure_bias_value_offset.to_le_bytes());
+
+        // ExifIFD entry 4: FocalLength (0x920A), Rational(5), count=1
+        tiff.extend_from_slice(&0x920Au16.to_le_bytes());
+        tiff.extend_from_slice(&5u16.to_le_bytes()); // RATIONAL
+        tiff.extend_from_slice(&1u32.to_le_bytes());
+        tiff.extend_from_slice(&focal_length_value_offset.to_le_bytes());
+
+        // ExifIFD next-IFD pointer
+        tiff.extend_from_slice(&0u32.to_le_bytes());
+
+        assert_eq!(tiff.len(), value_area_offset as usize);
+
+        // Value area: ExposureTime rational (8 bytes)
+        tiff.extend_from_slice(&exposure_time_num.to_le_bytes());
+        tiff.extend_from_slice(&exposure_time_den.to_le_bytes());
+
+        // FNumber rational (8 bytes)
+        tiff.extend_from_slice(&aperture_num.to_le_bytes());
+        tiff.extend_from_slice(&aperture_den.to_le_bytes());
+
+        // ExposureBiasValue srational (8 bytes, signed)
+        tiff.extend_from_slice(&exposure_bias_num.to_le_bytes());
+        tiff.extend_from_slice(&exposure_bias_den.to_le_bytes());
+
+        // FocalLength rational (8 bytes)
+        tiff.extend_from_slice(&focal_length_num.to_le_bytes());
+        tiff.extend_from_slice(&focal_length_den.to_le_bytes());
+
+        // Build APP1 segment
+        let mut app1_data = b"Exif\x00\x00".to_vec();
+        app1_data.extend_from_slice(&tiff);
+        let app1_len = (app1_data.len() + 2) as u16;
+
+        let mut jpeg: Vec<u8> = Vec::new();
+        jpeg.extend_from_slice(&[0xFF, 0xD8]); // SOI
+        jpeg.extend_from_slice(&[0xFF, 0xE1]); // APP1 marker
+        jpeg.extend_from_slice(&app1_len.to_be_bytes());
+        jpeg.extend_from_slice(&app1_data);
+        jpeg.extend_from_slice(&[0xFF, 0xD9]); // EOI
+
+        let f = tempfile::Builder::new().suffix(".jpg").tempfile().unwrap();
+        std::fs::write(f.path(), &jpeg).unwrap();
+        f
+    }
+
+    #[test]
+    fn test_exif_jpeg_extracts_aperture() {
+        // Sprint 7 §4.2: extract FNumber tag as f64.
+        // Synthetic JPEG with FNumber = 28/10 = 2.8
+        let f = make_jpeg_with_camera_params(
+            28, 10, // aperture = 2.8
+            1, 250, // exposure_time = 1/250
+            400, // iso
+            850, 10, // focal_length = 85.0
+            7, 10, // exposure_comp = 0.7
+        );
+        let data = extract_jpeg_exif(f.path());
+        let aperture = data
+            .aperture
+            .expect("aperture must be extracted from FNumber EXIF tag");
+        assert!(
+            (aperture - 2.8).abs() < 0.001,
+            "aperture must be 2.8, got {}",
+            aperture
+        );
+    }
+
+    #[test]
+    fn test_exif_jpeg_extracts_shutter_speed() {
+        // Sprint 7 §4.2: extract ExposureTime tag and format as string.
+        // ExposureTime = 1/250 → shutter_speed = "1/250"
+        let f = make_jpeg_with_camera_params(
+            28, 10, 1, 250, // exposure_time = 1/250
+            400, 850, 10, 7, 10,
+        );
+        let data = extract_jpeg_exif(f.path());
+        let ss = data
+            .shutter_speed
+            .expect("shutter_speed must be extracted from ExposureTime EXIF tag");
+        assert_eq!(ss, "1/250", "shutter_speed must be formatted as '1/250'");
+    }
+
+    #[test]
+    fn test_exif_jpeg_extracts_iso() {
+        // Sprint 7 §4.2: extract ISOSpeedRatings/PhotographicSensitivity tag.
+        let f = make_jpeg_with_camera_params(
+            28, 10, 1, 250, 400, // iso = 400
+            850, 10, 7, 10,
+        );
+        let data = extract_jpeg_exif(f.path());
+        let iso = data
+            .iso
+            .expect("iso must be extracted from PhotographicSensitivity EXIF tag");
+        assert_eq!(iso, 400, "iso must be 400");
+    }
+
+    #[test]
+    fn test_exif_jpeg_extracts_focal_length() {
+        // Sprint 7 §4.2: extract FocalLength tag as f64.
+        // FocalLength = 850/10 = 85.0
+        let f = make_jpeg_with_camera_params(
+            28, 10, 1, 250, 400, 850, 10, // focal_length = 85.0
+            7, 10,
+        );
+        let data = extract_jpeg_exif(f.path());
+        let fl = data
+            .focal_length
+            .expect("focal_length must be extracted from FocalLength EXIF tag");
+        assert!(
+            (fl - 85.0).abs() < 0.001,
+            "focal_length must be 85.0, got {}",
+            fl
+        );
+    }
+
+    #[test]
+    fn test_exif_jpeg_extracts_exposure_comp() {
+        // Sprint 7 §4.2: extract ExposureBiasValue (SRational) as f64.
+        // ExposureBiasValue = 7/10 = 0.7
+        let f = make_jpeg_with_camera_params(
+            28, 10, 1, 250, 400, 850, 10, 7, 10, // exposure_comp = +0.7
+        );
+        let data = extract_jpeg_exif(f.path());
+        let ec = data
+            .exposure_comp
+            .expect("exposure_comp must be extracted from ExposureBiasValue EXIF tag");
+        assert!(
+            (ec - 0.7).abs() < 0.001,
+            "exposure_comp must be 0.7, got {}",
+            ec
+        );
+    }
+
+    #[test]
+    fn test_format_shutter_speed_fraction() {
+        // Sprint 7 §4.2: values < 1 second formatted as "1/{denom}"
+        // 0.004 = 1/250
+        assert_eq!(
+            format_shutter_speed(0.004),
+            "1/250",
+            "0.004s should format as 1/250"
+        );
+    }
+
+    #[test]
+    fn test_format_shutter_speed_seconds() {
+        // Sprint 7 §4.2: values >= 1 second formatted as "{value}s"
+        assert_eq!(
+            format_shutter_speed(2.5),
+            "2.5s",
+            "2.5s should format as 2.5s"
+        );
+    }
+
+    #[test]
+    fn test_format_shutter_speed_one_second() {
+        // Sprint 7 §4.2: exactly 1.0 second formatted as "1.0s"
+        assert_eq!(
+            format_shutter_speed(1.0),
+            "1.0s",
+            "1.0s should format as 1.0s"
         );
     }
 }

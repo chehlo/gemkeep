@@ -509,13 +509,14 @@ pub fn restack(slug: String, state: State<'_, AppState>) -> Result<(), String> {
     // Read burst gap from config
     let config = manager::read_config(&state.gemkeep_home).map_err(|e| e.to_string())?;
 
-    // Do restack with DB lock
+    // Do merge-aware restack with DB lock
     {
         let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
         let conn = db_guard
             .as_ref()
             .ok_or_else(|| "No DB connection".to_string())?;
-        pipeline::restack_from_existing_photos(conn, project_id, config.burst_gap_secs)?;
+        repository::restack_merge_aware(conn, project_id, config.burst_gap_secs)
+            .map_err(|e| e.to_string())?;
     }
 
     Ok(())

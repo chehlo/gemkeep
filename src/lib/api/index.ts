@@ -141,3 +141,100 @@ export async function setBurstGap(secs: number): Promise<void> {
 export async function restack(slug: string): Promise<void> {
   await invoke('restack', { slug })
 }
+
+// Sprint 7: Decision engine types
+export interface DecisionResult {
+  decision_id: number
+  round_id: number
+  action: string
+  current_status: string
+  round_auto_created: boolean
+}
+
+export interface RoundStatus {
+  round_id: number
+  round_number: number
+  state: string  // "open" | "committed"
+  total_photos: number
+  decided: number
+  kept: number
+  eliminated: number
+  undecided: number
+  committed_at: string | null
+}
+
+export interface PhotoDetail {
+  logical_photo_id: number
+  thumbnail_path: string | null
+  capture_time: string | null
+  camera_model: string | null
+  lens: string | null
+  has_raw: boolean
+  has_jpeg: boolean
+  current_status: string  // "undecided" | "keep" | "eliminate"
+  aperture: number | null
+  shutter_speed: string | null
+  iso: number | null
+  focal_length: number | null
+  exposure_comp: number | null
+  jpeg_path: string | null
+  raw_path: string | null
+}
+
+export interface PhotoDecisionStatus {
+  logical_photo_id: number
+  current_status: string  // "undecided" | "keep" | "eliminate"
+}
+
+export interface MergeResult {
+  merged_stack_id: number
+  logical_photos_moved: number
+  source_stack_ids: number[]
+  transaction_id: number
+}
+
+export interface StackTransaction {
+  id: number
+  project_id: number
+  action: string
+  details: string
+  created_at: string
+}
+
+// Sprint 7: Decision commands
+export async function makeDecision(slug: string, logicalPhotoId: number, action: string): Promise<DecisionResult> {
+  return invoke('make_decision', { slug, logicalPhotoId, action })
+}
+
+export async function undoDecision(slug: string, logicalPhotoId: number): Promise<void> {
+  return invoke('undo_decision', { slug, logicalPhotoId })
+}
+
+export async function getRoundStatus(slug: string, stackId: number): Promise<RoundStatus> {
+  return invoke('get_round_status', { slug, stackId })
+}
+
+export async function commitRound(slug: string, stackId: number): Promise<void> {
+  return invoke('commit_round', { slug, stackId })
+}
+
+export async function getPhotoDetail(slug: string, logicalPhotoId: number): Promise<PhotoDetail> {
+  return invoke('get_photo_detail', { slug, logicalPhotoId })
+}
+
+export async function getStackDecisions(slug: string, stackId: number): Promise<PhotoDecisionStatus[]> {
+  return invoke('get_stack_decisions', { slug, stackId })
+}
+
+// Sprint 7: Stack merge commands
+export async function mergeStacks(slug: string, stackIds: number[]): Promise<MergeResult> {
+  return invoke('merge_stacks', { slug, stackIds })
+}
+
+export async function undoLastMerge(slug: string): Promise<void> {
+  return invoke('undo_last_merge', { slug })
+}
+
+export async function listStackTransactions(slug: string): Promise<StackTransaction[]> {
+  return invoke('list_stack_transactions', { slug })
+}

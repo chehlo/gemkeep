@@ -2,8 +2,9 @@
   import { onMount, onDestroy } from 'svelte'
   import { navigation, navigate } from '$lib/stores/navigation.svelte.js'
   import {
-    listLogicalPhotos, getThumbnailUrl,
-    type LogicalPhotoSummary
+    listLogicalPhotos, getThumbnailUrl, getStackDecisions, getRoundStatus,
+    makeDecision, commitRound,
+    type LogicalPhotoSummary, type PhotoDecisionStatus, type RoundStatus
   } from '$lib/api/index.js'
 
   // Derive screen info from navigation state
@@ -18,14 +19,38 @@
   let loading = $state(true)
   let photos = $state<LogicalPhotoSummary[]>([])
   let focusedIndex = $state(0)
+  let decisions = $state<PhotoDecisionStatus[]>([])
+  let roundStatus = $state<RoundStatus | null>(null)
 
-  onMount(() => {
+  function getDecisionStatus(photoId: number): string {
+    const d = decisions.find(d => d.logical_photo_id === photoId)
+    return d?.current_status ?? 'undecided'
+  }
+
+  const decidedCount = $derived(
+    decisions.filter(d => d.current_status !== 'undecided').length
+  )
+
+  onMount(async () => {
     window.addEventListener('keydown', handleKey)
     if (projectSlug && stackId) {
-      listLogicalPhotos(projectSlug, stackId)
-        .then(result => { photos = result })
-        .catch(e => console.error('listLogicalPhotos failed:', e))
-        .finally(() => { loading = false })
+      try {
+        photos = await listLogicalPhotos(projectSlug, stackId)
+        try {
+          decisions = await getStackDecisions(projectSlug, stackId)
+        } catch (e) {
+          console.error('getStackDecisions failed:', e)
+        }
+        try {
+          roundStatus = await getRoundStatus(projectSlug, stackId)
+        } catch (e) {
+          console.error('getRoundStatus failed:', e)
+        }
+      } catch (e) {
+        console.error('listLogicalPhotos failed:', e)
+      } finally {
+        loading = false
+      }
     } else {
       loading = false
     }
@@ -35,19 +60,96 @@
     window.removeEventListener('keydown', handleKey)
   })
 
-  function handleKey(e: KeyboardEvent) {
+  async function handleKey(e: KeyboardEvent) {
+    if (e.key === 'Enter' && e.ctrlKey) {
+      e.preventDefault()
+      await commitRound(projectSlug, stackId)
+      return
+    }
+
+    if (e.key === 'Enter' && photos.length > 0) {
+      navigate({
+        kind: 'single-view',
+        projectSlug,
+        stackId,
+        photoId: photos[focusedIndex].logical_photo_id,
+        projectName,
+      })
+      return
+    }
+
     if (e.key === 'Escape') {
       if (screen) {
         navigate({ kind: 'stack-overview', projectSlug: screen.projectSlug, projectName: screen.projectName })
       }
       return
     }
+
+    if (e.key === 'Tab' && !e.shiftKey) {
+      e.preventDefault()
+      // Jump to next undecided photo
+      if (decisions.length > 0 && photos.length > 0) {
+        for (let offset = 1; offset < photos.length; offset++) {
+          const idx = (focusedIndex + offset) % photos.length
+          const photoAtIdx = photos[idx]
+          const decision = decisions.find(d => d.logical_photo_id === photoAtIdx.logical_photo_id)
+          if (!decision || decision.current_status === 'undecided') {
+            focusedIndex = idx
+            return
+          }
+        }
+      }
+      return
+    }
+
+    if (e.key === 'Tab' && e.shiftKey) {
+      e.preventDefault()
+      // Jump to previous undecided photo
+      if (decisions.length > 0 && photos.length > 0) {
+        for (let offset = 1; offset < photos.length; offset++) {
+          const idx = (focusedIndex - offset + photos.length) % photos.length
+          const photoAtIdx = photos[idx]
+          const decision = decisions.find(d => d.logical_photo_id === photoAtIdx.logical_photo_id)
+          if (!decision || decision.current_status === 'undecided') {
+            focusedIndex = idx
+            return
+          }
+        }
+      }
+      return
+    }
+
+    if ((e.key === 'y' || e.key === 'Y') && photos.length > 0) {
+      try {
+        await makeDecision(projectSlug, photos[focusedIndex].logical_photo_id, 'keep')
+        updateDecisionState(photos[focusedIndex].logical_photo_id, 'keep')
+      } catch (err) { console.error('makeDecision failed:', err) }
+      return
+    }
+
+    if ((e.key === 'x' || e.key === 'X') && photos.length > 0) {
+      try {
+        await makeDecision(projectSlug, photos[focusedIndex].logical_photo_id, 'eliminate')
+        updateDecisionState(photos[focusedIndex].logical_photo_id, 'eliminate')
+      } catch (err) { console.error('makeDecision failed:', err) }
+      return
+    }
+
     if (photos.length > 0) {
       const cols = 4
       if (e.key === 'ArrowRight') { focusedIndex = Math.min(focusedIndex + 1, photos.length - 1); e.preventDefault() }
       if (e.key === 'ArrowLeft')  { focusedIndex = Math.max(focusedIndex - 1, 0); e.preventDefault() }
       if (e.key === 'ArrowDown')  { focusedIndex = Math.min(focusedIndex + cols, photos.length - 1); e.preventDefault() }
       if (e.key === 'ArrowUp')    { focusedIndex = Math.max(focusedIndex - cols, 0); e.preventDefault() }
+    }
+  }
+
+  function updateDecisionState(photoId: number, status: string) {
+    const existing = decisions.findIndex(d => d.logical_photo_id === photoId)
+    if (existing >= 0) {
+      decisions[existing] = { ...decisions[existing], current_status: status }
+    } else {
+      decisions = [...decisions, { logical_photo_id: photoId, current_status: status }]
     }
   }
 
@@ -89,6 +191,12 @@
     <span class="text-sm text-gray-400">{projectName}</span>
     <span class="text-gray-600">›</span>
     <span class="text-sm text-gray-200 font-medium">Stack #{stackId}</span>
+    {#if decisions?.length > 0}
+      <span class="text-sm text-gray-400 ml-2">{decidedCount}/{photos.length} decided</span>
+      {#if roundStatus}
+        <span class="text-sm text-gray-400 ml-1">&middot; {roundStatus.kept} kept &middot; {roundStatus.eliminated} eliminated &middot; {roundStatus.undecided} undecided &middot; Round {roundStatus.round_number}</span>
+      {/if}
+    {/if}
     <span class="ml-auto text-xs text-gray-600">Esc</span>
   </header>
 
@@ -101,17 +209,26 @@
       <!-- Photo grid -->
       <div class="grid grid-cols-4 gap-3">
         {#each photos as photo, i (photo.logical_photo_id)}
+          {@const status = getDecisionStatus(photo.logical_photo_id)}
           <div
             data-testid="photo-card"
-            class="flex flex-col rounded-lg overflow-hidden border transition-all
+            class="relative flex flex-col rounded-lg overflow-hidden border transition-all
               {i === focusedIndex
                 ? 'border-blue-500 ring-2 ring-blue-500/30 bg-gray-800'
-                : 'border-gray-800 bg-gray-900 hover:border-gray-600'}"
+                : 'border-gray-800 bg-gray-900 hover:border-gray-600'}
+              {status === 'eliminate' ? 'opacity-50' : ''}"
             role="button"
             tabindex="0"
             onclick={() => { focusedIndex = i }}
             onkeydown={(e) => { if (e.key === 'Enter') focusedIndex = i }}
           >
+            <!-- Decision badge -->
+            {#if status === 'keep'}
+              <div class="badge-keep absolute top-1 right-1 w-3 h-3 rounded-full bg-green-500"></div>
+            {:else if status === 'eliminate'}
+              <div class="badge-eliminate absolute top-1 right-1 w-3 h-3 rounded-full bg-red-500"></div>
+            {/if}
+
             <!-- Thumbnail -->
             <div class="aspect-square w-full bg-gray-800 flex items-center justify-center overflow-hidden">
               {#if photo.thumbnail_path}

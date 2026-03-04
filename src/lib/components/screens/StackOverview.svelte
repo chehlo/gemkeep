@@ -7,7 +7,7 @@
     addSourceFolder, removeSourceFolder, listSourceFolders,
     startIndexing, cancelIndexing, pauseIndexing, resumeIndexing,
     getIndexingStatus, listStacks, getThumbnailUrl, resumeThumbnails,
-    getBurstGap, setBurstGap, restack,
+    getBurstGap, setBurstGap, restack, mergeStacks, undoLastMerge,
     type SourceFolder, type IndexingStatus, type StackSummary
   } from '$lib/api/index.js'
   import { formatDate } from '$lib/utils/date.js'
@@ -32,6 +32,7 @@
   let showBurstPanel = $state(false)
   let burstGapInput = $state(3)
   let burstRestacking = $state(false)
+  let selectedStacks = $state<Set<number>>(new Set())
 
   // Load initial state
   onMount(async () => {
@@ -194,20 +195,65 @@
 
   function handleKey(e: KeyboardEvent) {
     if (e.key.toLowerCase() === 'b' && e.ctrlKey) { e.preventDefault(); openBurstPanel(); return }
+    if (e.key.toLowerCase() === 'z' && e.ctrlKey) { e.preventDefault(); handleUndoMerge(); return }
     if (e.key === 'Escape') { back(); return }
     if (e.key === 'i' && sourceFolders.length > 0 && !status.running) { handleIndex(); return }
     if (e.key === 'r' && stacks.length > 0 && !status.running) { handleIndex(); return }
+    if ((e.key === 'm' || e.key === 'M') && stacks.length > 0 && !status.running) { handleMerge(); return }
     if (stacks.length > 0 && !status.running) {
       const cols = 4
-      if (e.key === 'ArrowRight') { focusedIndex = Math.min(focusedIndex + 1, stacks.length - 1); e.preventDefault() }
-      if (e.key === 'ArrowLeft') { focusedIndex = Math.max(focusedIndex - 1, 0); e.preventDefault() }
-      if (e.key === 'ArrowDown') { focusedIndex = Math.min(focusedIndex + cols, stacks.length - 1); e.preventDefault() }
-      if (e.key === 'ArrowUp') { focusedIndex = Math.max(focusedIndex - cols, 0); e.preventDefault() }
+      // Shift+Arrow: multi-select stacks in all 4 directions
+      if (e.shiftKey && ['ArrowRight', 'ArrowLeft', 'ArrowDown', 'ArrowUp'].includes(e.key)) {
+        selectedStacks.add(stacks[focusedIndex].stack_id)
+        if (e.key === 'ArrowRight') focusedIndex = Math.min(focusedIndex + 1, stacks.length - 1)
+        if (e.key === 'ArrowLeft')  focusedIndex = Math.max(focusedIndex - 1, 0)
+        if (e.key === 'ArrowDown')  focusedIndex = Math.min(focusedIndex + cols, stacks.length - 1)
+        if (e.key === 'ArrowUp')    focusedIndex = Math.max(focusedIndex - cols, 0)
+        selectedStacks.add(stacks[focusedIndex].stack_id)
+        selectedStacks = new Set(selectedStacks) // trigger reactivity
+        e.preventDefault()
+        scrollFocusedCardIntoView()
+        return
+      }
+      if (e.key === 'ArrowRight') { selectedStacks = new Set(); focusedIndex = Math.min(focusedIndex + 1, stacks.length - 1); e.preventDefault(); scrollFocusedCardIntoView() }
+      if (e.key === 'ArrowLeft') { selectedStacks = new Set(); focusedIndex = Math.max(focusedIndex - 1, 0); e.preventDefault(); scrollFocusedCardIntoView() }
+      if (e.key === 'ArrowDown') { selectedStacks = new Set(); focusedIndex = Math.min(focusedIndex + cols, stacks.length - 1); e.preventDefault(); scrollFocusedCardIntoView() }
+      if (e.key === 'ArrowUp') { selectedStacks = new Set(); focusedIndex = Math.max(focusedIndex - cols, 0); e.preventDefault(); scrollFocusedCardIntoView() }
       if (e.key === 'Enter' && !(e.target instanceof HTMLInputElement)) {
         const stack = stacks[focusedIndex]
         navigation.stackOverviewFocusIndex = focusedIndex
         navigate({ kind: 'stack-focus', projectSlug, projectName, stackId: stack.stack_id })
       }
+    }
+  }
+
+  function scrollFocusedCardIntoView() {
+    tick().then(() => {
+      const cards = document.querySelectorAll('[data-stack-card]')
+      cards[focusedIndex]?.scrollIntoView({ block: 'nearest' })
+    })
+  }
+
+  async function handleMerge() {
+    if (selectedStacks.size < 2) return
+    try {
+      const result = await mergeStacks(projectSlug, [...selectedStacks])
+      stacks = await listStacks(projectSlug)
+      selectedStacks = new Set()
+      // Focus on the merged stack
+      const mergedIdx = stacks.findIndex(s => s.stack_id === result.merged_stack_id)
+      focusedIndex = mergedIdx >= 0 ? mergedIdx : 0
+    } catch (e) {
+      console.error('mergeStacks failed:', e)
+    }
+  }
+
+  async function handleUndoMerge() {
+    try {
+      await undoLastMerge(projectSlug)
+      stacks = await listStacks(projectSlug)
+    } catch (e) {
+      console.error('undoLastMerge failed:', e)
     }
   }
 
@@ -480,7 +526,8 @@
             class="flex flex-col rounded-lg overflow-hidden border transition-all text-left
               {i === focusedIndex
                 ? 'border-blue-500 ring-2 ring-blue-500/30 bg-gray-800'
-                : 'border-gray-800 bg-gray-900 hover:border-gray-600'}"
+                : 'border-gray-800 bg-gray-900 hover:border-gray-600'}
+              {selectedStacks.has(stack.stack_id) ? 'ring-2 ring-yellow-400 border-yellow-400' : ''}"
             onclick={() => {
               focusedIndex = i
               navigation.stackOverviewFocusIndex = i

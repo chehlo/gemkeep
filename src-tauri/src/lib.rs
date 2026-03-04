@@ -1,6 +1,7 @@
 pub mod asset_scope_tests;
 pub mod commands;
 pub mod db;
+pub mod decisions;
 pub mod import;
 pub mod photos;
 pub mod projects;
@@ -38,6 +39,15 @@ pub fn run() {
             commands::import::get_burst_gap,
             commands::import::set_burst_gap,
             commands::import::restack,
+            commands::stacks::merge_stacks,
+            commands::stacks::undo_last_merge,
+            commands::stacks::list_stack_transactions,
+            commands::decisions::make_decision,
+            commands::decisions::undo_decision,
+            commands::decisions::get_round_status,
+            commands::decisions::commit_round,
+            commands::decisions::get_photo_detail,
+            commands::decisions::get_stack_decisions,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

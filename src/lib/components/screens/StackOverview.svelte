@@ -11,6 +11,7 @@
     type SourceFolder, type IndexingStatus, type StackSummary
   } from '$lib/api/index.js'
   import { formatDate } from '$lib/utils/date.js'
+  import { createTimedError } from '$lib/utils/errors.js'
 
   // Derive project info from navigation state
   const projectSlug = $derived(
@@ -34,14 +35,8 @@
   let burstRestacking = $state(false)
   let selectedStacks = $state<Set<number>>(new Set())
   let actionError = $state<string | null>(null)
-  let actionErrorTimer: ReturnType<typeof setTimeout> | null = null
   let thumbnailDebounceTimer: ReturnType<typeof setTimeout> | null = null
-
-  function showActionError(msg: string) {
-    actionError = msg
-    if (actionErrorTimer) clearTimeout(actionErrorTimer)
-    actionErrorTimer = setTimeout(() => { actionError = null }, 5000)
-  }
+  const { show: showActionError, cleanup: cleanupErrorTimer } = createTimedError(5000, (v) => { actionError = v })
 
   // Load initial state
   onMount(async () => {
@@ -76,7 +71,7 @@
     window.removeEventListener('keydown', handleKey)
     if (pollInterval) clearInterval(pollInterval)
     unlistenThumbnail?.()
-    if (actionErrorTimer) clearTimeout(actionErrorTimer)
+    cleanupErrorTimer()
     if (thumbnailDebounceTimer) clearTimeout(thumbnailDebounceTimer)
   })
 

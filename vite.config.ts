@@ -4,12 +4,13 @@ import path from "path";
 
 const host = process.env.TAURI_DEV_HOST;
 
-export default defineConfig(async () => ({
+export default defineConfig(() => ({
   plugins: [svelte()],
 
   resolve: {
     alias: {
       $lib: path.resolve(__dirname, "./src/lib"),
+      $test: path.resolve(__dirname, "./src/test"),
     },
   },
 

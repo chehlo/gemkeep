@@ -4,6 +4,7 @@ import { render, screen, waitFor, fireEvent } from '@testing-library/svelte'
 import { invoke, convertFileSrc } from '@tauri-apps/api/core'
 import { navigate, navigation } from '$lib/stores/navigation.svelte.js'
 import type { PhotoDetail, RoundStatus, LogicalPhotoSummary, PhotoDecisionStatus } from '$lib/api/index.js'
+import { ELIMINATE_BORDER_SELECTOR, DIM_OVERLAY_SELECTOR } from '$test/decision-helpers'
 import SingleView from './SingleView.svelte'
 
 const mockInvoke = vi.mocked(invoke)
@@ -471,10 +472,10 @@ describe('SingleView — eliminate visual feedback', () => {
 
     await waitFor(() => {
       // Red border should be present
-      const borderEl = document.querySelector('.border-red-500')
+      const borderEl = document.querySelector(ELIMINATE_BORDER_SELECTOR)
       expect(borderEl).toBeInTheDocument()
-      // Dim overlay (bg-black/50 or similar) should also be present for eliminated photos
-      const dimOverlay = document.querySelector('[class*="bg-black"]')
+      // Dim overlay should also be present for eliminated photos
+      const dimOverlay = document.querySelector(DIM_OVERLAY_SELECTOR)
       expect(dimOverlay).toBeInTheDocument()
     })
   })

@@ -15,6 +15,7 @@ import {
   FOLDER_ICELAND as FOLDER_A, DONE_STATUS,
   makePhotos, makePhotoDetail, makeRoundStatus, makeStacks,
 } from './helpers/tauri-mock'
+import { KEEP_SELECTOR } from './helpers/decision-selectors'
 
 const STACKS = makeStacks(1, true)
 const PHOTOS = makePhotos(3, 1)
@@ -56,7 +57,7 @@ test('Y key — green badge must be positioned inside its StackFocus card', asyn
 
   // The badge should exist and be visible
   const firstCard = page.locator('[data-testid="photo-card"]').first()
-  const badge = firstCard.locator('.decision-keep')
+  const badge = firstCard.locator(KEEP_SELECTOR)
   await expect(badge).toBeVisible({ timeout: 3_000 })
 
   // KEY ASSERTION: badge bounding box must be inside the card bounding box.

@@ -7,6 +7,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { invoke } from '@tauri-apps/api/core'
 import { navigate } from '$lib/stores/navigation.svelte.js'
 import type { LogicalPhotoSummary } from '$lib/api/index.js'
+import { DECISION_SELECTORS } from '$test/decision-helpers'
 import StackFocus from './StackFocus.svelte'
 
 const mockInvoke = vi.mocked(invoke)
@@ -98,7 +99,7 @@ describe('StackFocus — SF-07: green badge on kept photos (visual)', () => {
     const cards = await waitForCards(3)
 
     // Card 0 (kept) should have a green badge
-    const badge = cards[0].querySelector('.decision-keep') as HTMLElement
+    const badge = cards[0].querySelector(DECISION_SELECTORS.keep) as HTMLElement
     expect(badge).not.toBeNull()
 
     // Verify the badge is visible (has non-zero dimensions)
@@ -131,8 +132,8 @@ describe('StackFocus — SF-07: green badge on kept photos (visual)', () => {
 
     // No badge on any card
     for (const card of cards) {
-      expect(card.querySelector('.decision-keep')).toBeNull()
-      expect(card.querySelector('.decision-eliminate')).toBeNull()
+      expect(card.querySelector(DECISION_SELECTORS.keep)).toBeNull()
+      expect(card.querySelector(DECISION_SELECTORS.eliminate)).toBeNull()
     }
   })
 })
@@ -149,7 +150,7 @@ describe('StackFocus — SF-08: red badge on eliminated photos (visual)', () => 
     const cards = await waitForCards(3)
 
     // Card 1 (eliminated) should have a red badge
-    const badge = cards[1].querySelector('.decision-eliminate') as HTMLElement
+    const badge = cards[1].querySelector(DECISION_SELECTORS.eliminate) as HTMLElement
     expect(badge).not.toBeNull()
 
     // Verify the badge is visible

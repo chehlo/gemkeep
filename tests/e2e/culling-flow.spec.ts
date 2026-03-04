@@ -25,6 +25,7 @@ import {
   FOLDER_ICELAND as FOLDER_A, DONE_STATUS,
   makePhotos, makePhotoDetail, makeRoundStatus,
 } from './helpers/tauri-mock'
+import { KEEP_BORDER_SELECTOR } from './helpers/decision-selectors'
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -187,7 +188,7 @@ test('Sprint 7-J4: Decisions persist across navigation — back and re-enter sho
   // was updated by the make_decision call. SingleView fetches get_photo_detail on mount,
   // so it receives the persisted decision.
   await expect(page.getByText('KEPT')).toBeVisible({ timeout: 5_000 })
-  await expect(page.locator('.border-green-500')).toBeVisible({ timeout: 5_000 })
+  await expect(page.locator(KEEP_BORDER_SELECTOR)).toBeVisible({ timeout: 5_000 })
 })
 
 // ── Journey 5: Camera parameters display ─────────────────────────────────────

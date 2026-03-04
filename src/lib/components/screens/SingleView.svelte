@@ -6,6 +6,10 @@
     makeDecision, commitRound, undoDecision, getThumbnailUrl,
     type PhotoDetail, type LogicalPhotoSummary, type PhotoDecisionStatus, type RoundStatus
   } from '$lib/api/index.js'
+  import DecisionIndicator from '$lib/components/DecisionIndicator.svelte'
+  import { DECISION_TEXT, DECISION_TEXT_COLORS } from '$lib/constants/decisions'
+  import { updateDecisionState as _updateDecisionState, formatCaptureTime } from '$lib/utils/photos.js'
+  import { createTimedError } from '$lib/utils/errors.js'
 
   // Derive screen info from navigation state
   const screen = $derived(
@@ -25,13 +29,7 @@
   let currentIndex = $state(0)
   let showCameraParams = $state(true)
   let decisionError = $state<string | null>(null)
-  let decisionErrorTimer: ReturnType<typeof setTimeout> | null = null
-
-  function showDecisionError(msg: string) {
-    decisionError = msg
-    if (decisionErrorTimer) clearTimeout(decisionErrorTimer)
-    decisionErrorTimer = setTimeout(() => { decisionError = null }, 3000)
-  }
+  const { show: showDecisionError, cleanup: cleanupErrorTimer } = createTimedError(3000, (v) => { decisionError = v })
 
   onMount(async () => {
     window.addEventListener('keydown', handleKey)
@@ -56,7 +54,7 @@
 
   onDestroy(() => {
     window.removeEventListener('keydown', handleKey)
-    if (decisionErrorTimer) clearTimeout(decisionErrorTimer)
+    cleanupErrorTimer()
   })
 
   async function handleKey(e: KeyboardEvent) {
@@ -198,40 +196,11 @@
   }
 
   function updateDecisionState(photoId: number, status: string) {
-    const existing = decisions.findIndex(d => d.logical_photo_id === photoId)
-    if (existing >= 0) {
-      decisions[existing] = { ...decisions[existing], current_status: status }
-    } else {
-      decisions = [...decisions, { logical_photo_id: photoId, current_status: status }]
-    }
+    decisions = _updateDecisionState(decisions, photoId, status)
   }
 
-  function formatCaptureTime(iso: string | null): string {
-    if (!iso) return ''
-    try {
-      const d = new Date(iso)
-      const month = d.toLocaleString('en-US', { month: 'short' })
-      const day = d.getDate()
-      const hours = String(d.getUTCHours()).padStart(2, '0')
-      const minutes = String(d.getUTCMinutes()).padStart(2, '0')
-      const seconds = String(d.getUTCSeconds()).padStart(2, '0')
-      return `${month} ${day} ${hours}:${minutes}:${seconds}`
-    } catch {
-      return iso
-    }
-  }
-
-  function statusText(status: string): string {
-    if (status === 'keep') return 'KEPT'
-    if (status === 'eliminate') return 'ELIMINATED'
-    return 'UNDECIDED'
-  }
-
-  function statusClass(status: string): string {
-    if (status === 'keep') return 'text-green-400'
-    if (status === 'eliminate') return 'text-red-400'
-    return 'text-gray-400'
-  }
+  const statusText = (s: string) => DECISION_TEXT[s] || 'UNDECIDED'
+  const statusClass = (s: string) => DECISION_TEXT_COLORS[s] || 'text-gray-400'
 </script>
 
 <div class="min-h-screen bg-black text-gray-100 flex flex-col">
@@ -249,13 +218,7 @@
       {/if}
 
       <!-- Decision border overlay -->
-      {#if currentPhoto.current_status === 'keep'}
-        <div class="decision-keep absolute inset-0 border-4 border-green-500 pointer-events-none"></div>
-      {/if}
-      {#if currentPhoto.current_status === 'eliminate'}
-        <div class="decision-eliminate absolute inset-0 border-4 border-red-500 pointer-events-none"></div>
-        <div class="absolute inset-0 bg-black/50 pointer-events-none"></div>
-      {/if}
+      <DecisionIndicator status={currentPhoto.current_status} />
     </div>
 
     <!-- Camera params -->

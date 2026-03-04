@@ -6,6 +6,9 @@
     makeDecision, commitRound, undoDecision,
     type LogicalPhotoSummary, type PhotoDecisionStatus, type RoundStatus
   } from '$lib/api/index.js'
+  import DecisionIndicator from '$lib/components/DecisionIndicator.svelte'
+  import { updateDecisionState as _updateDecisionState, formatCaptureTime as _formatCaptureTime, truncate } from '$lib/utils/photos.js'
+  import { createTimedError } from '$lib/utils/errors.js'
 
   // Derive screen info from navigation state
   const screen = $derived(
@@ -22,13 +25,7 @@
   let decisions = $state<PhotoDecisionStatus[]>([])
   let roundStatus = $state<RoundStatus | null>(null)
   let actionError = $state<string | null>(null)
-  let actionErrorTimer: ReturnType<typeof setTimeout> | null = null
-
-  function showActionError(msg: string) {
-    actionError = msg
-    if (actionErrorTimer) clearTimeout(actionErrorTimer)
-    actionErrorTimer = setTimeout(() => { actionError = null }, 3000)
-  }
+  const { show: showActionError, cleanup: cleanupErrorTimer } = createTimedError(3000, (v) => { actionError = v })
 
   function getDecisionStatus(photoId: number): string {
     const d = decisions.find(d => d.logical_photo_id === photoId)
@@ -66,7 +63,7 @@
 
   onDestroy(() => {
     window.removeEventListener('keydown', handleKey)
-    if (actionErrorTimer) clearTimeout(actionErrorTimer)
+    cleanupErrorTimer()
   })
 
   async function handleKey(e: KeyboardEvent) {
@@ -199,32 +196,11 @@
   }
 
   function updateDecisionState(photoId: number, status: string) {
-    const existing = decisions.findIndex(d => d.logical_photo_id === photoId)
-    if (existing >= 0) {
-      decisions[existing] = { ...decisions[existing], current_status: status }
-    } else {
-      decisions = [...decisions, { logical_photo_id: photoId, current_status: status }]
-    }
+    decisions = _updateDecisionState(decisions, photoId, status)
   }
 
   function formatCaptureTime(iso: string | null): string {
-    if (!iso) return '(no date)'
-    try {
-      const d = new Date(iso)
-      const month = d.toLocaleString('en-US', { month: 'short' })
-      const day = d.getDate()
-      const hours = String(d.getUTCHours()).padStart(2, '0')
-      const minutes = String(d.getUTCMinutes()).padStart(2, '0')
-      const seconds = String(d.getUTCSeconds()).padStart(2, '0')
-      return `${month} ${day} ${hours}:${minutes}:${seconds}`
-    } catch {
-      return iso
-    }
-  }
-
-  function truncate(s: string | null, max: number): string {
-    if (!s) return ''
-    return s.length > max ? s.slice(0, max) : s
+    return _formatCaptureTime(iso, '(no date)')
   }
 </script>
 
@@ -277,12 +253,7 @@
             onkeydown={(e) => { if (e.key === 'Enter') focusedIndex = i }}
           >
             <!-- Decision border overlay -->
-            {#if status === 'keep'}
-              <div class="decision-keep absolute inset-0 border-4 border-green-500 rounded-lg pointer-events-none"></div>
-            {:else if status === 'eliminate'}
-              <div class="decision-eliminate absolute inset-0 border-4 border-red-500 rounded-lg pointer-events-none"></div>
-              <div class="absolute inset-0 bg-black/50 rounded-lg pointer-events-none"></div>
-            {/if}
+            <DecisionIndicator status={status} rounded={true} />
 
             <!-- Thumbnail -->
             <div class="aspect-square w-full bg-gray-800 flex items-center justify-center overflow-hidden">

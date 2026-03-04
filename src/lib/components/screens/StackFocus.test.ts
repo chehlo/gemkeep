@@ -4,6 +4,7 @@ import { render, screen, waitFor, fireEvent } from '@testing-library/svelte'
 import { invoke, convertFileSrc } from '@tauri-apps/api/core'
 import { navigate, navigation } from '$lib/stores/navigation.svelte.js'
 import type { LogicalPhotoSummary } from '$lib/api/index.js'
+import { DECISION_SELECTORS } from '$test/decision-helpers'
 import StackFocus from './StackFocus.svelte'
 
 const mockInvoke = vi.mocked(invoke)
@@ -165,7 +166,7 @@ describe('StackFocus — Sprint 7: decision badges', () => {
 
     await waitFor(() => {
       const cards = screen.getAllByTestId('photo-card')
-      expect(cards[0].querySelector('.decision-keep')).toBeInTheDocument()
+      expect(cards[0].querySelector(DECISION_SELECTORS.keep)).toBeInTheDocument()
     })
   })
 
@@ -185,7 +186,7 @@ describe('StackFocus — Sprint 7: decision badges', () => {
 
     await waitFor(() => {
       const cards = screen.getAllByTestId('photo-card')
-      const badge = cards[0].querySelector('.decision-keep') as HTMLElement
+      const badge = cards[0].querySelector(DECISION_SELECTORS.keep) as HTMLElement
       expect(badge).toBeInTheDocument()
       expect(badge.className).toContain('border-green-500')
       expect(badge.className).toContain('border-4')
@@ -209,7 +210,7 @@ describe('StackFocus — Sprint 7: decision badges', () => {
 
     await waitFor(() => {
       const cards = screen.getAllByTestId('photo-card')
-      const badge = cards[0].querySelector('.decision-eliminate') as HTMLElement
+      const badge = cards[0].querySelector(DECISION_SELECTORS.eliminate) as HTMLElement
       expect(badge).toBeInTheDocument()
       expect(badge.className).toContain('border-red-500')
       expect(badge.className).toContain('border-4')
@@ -233,7 +234,7 @@ describe('StackFocus — Sprint 7: decision badges', () => {
 
     await waitFor(() => {
       const cards = screen.getAllByTestId('photo-card')
-      expect(cards[1].querySelector('.decision-eliminate')).toBeInTheDocument()
+      expect(cards[1].querySelector(DECISION_SELECTORS.eliminate)).toBeInTheDocument()
     })
   })
 
@@ -382,7 +383,7 @@ describe('StackFocus — Sprint 7: decision badges', () => {
     await waitFor(() => {
       const cards = screen.getAllByTestId('photo-card')
       // Card at index 1 is the eliminated photo — it should have a red badge
-      const redBadge = cards[1].querySelector('.decision-eliminate, .bg-red-500')
+      const redBadge = cards[1].querySelector(`${DECISION_SELECTORS.eliminate}, .bg-red-500`)
       expect(redBadge).toBeInTheDocument()
     })
   })
@@ -615,7 +616,7 @@ describe('StackFocus — SF-28: optimistic UI update after Y/X', () => {
     // Badge should appear via optimistic update
     await waitFor(() => {
       const cards = screen.getAllByTestId('photo-card')
-      expect(cards[0].querySelector('.decision-keep')).toBeInTheDocument()
+      expect(cards[0].querySelector(DECISION_SELECTORS.keep)).toBeInTheDocument()
     })
 
     // Verify no additional get_stack_decisions call was made (only the initial 3 invoke calls + 1 make_decision)
@@ -648,7 +649,7 @@ describe('StackFocus — SF-28: optimistic UI update after Y/X', () => {
 
     await waitFor(() => {
       const cards = screen.getAllByTestId('photo-card')
-      expect(cards[0].querySelector('.decision-eliminate')).toBeInTheDocument()
+      expect(cards[0].querySelector(DECISION_SELECTORS.eliminate)).toBeInTheDocument()
     })
 
     // No additional get_stack_decisions call
@@ -676,7 +677,7 @@ describe('StackFocus — H5: optimistic UI acknowledges DecisionResult', () => {
 
     // No badge before decision
     const cardsBefore = screen.getAllByTestId('photo-card')
-    expect(cardsBefore[0].querySelector('.decision-keep')).not.toBeInTheDocument()
+    expect(cardsBefore[0].querySelector(DECISION_SELECTORS.keep)).not.toBeInTheDocument()
 
     // Mock the make_decision response with full DecisionResult
     mockInvoke.mockResolvedValueOnce({
@@ -696,8 +697,8 @@ describe('StackFocus — H5: optimistic UI acknowledges DecisionResult', () => {
     // Verify the UI shows the correct badge after the call resolves
     await waitFor(() => {
       const cardsAfter = screen.getAllByTestId('photo-card')
-      expect(cardsAfter[0].querySelector('.decision-keep')).toBeInTheDocument()
-      expect(cardsAfter[0].querySelector('.decision-eliminate')).not.toBeInTheDocument()
+      expect(cardsAfter[0].querySelector(DECISION_SELECTORS.keep)).toBeInTheDocument()
+      expect(cardsAfter[0].querySelector(DECISION_SELECTORS.eliminate)).not.toBeInTheDocument()
     })
   })
 
@@ -734,8 +735,8 @@ describe('StackFocus — H5: optimistic UI acknowledges DecisionResult', () => {
     // Verify the UI: eliminate badge + opacity dimming
     await waitFor(() => {
       const cardsAfter = screen.getAllByTestId('photo-card')
-      expect(cardsAfter[0].querySelector('.decision-eliminate')).toBeInTheDocument()
-      expect(cardsAfter[0].querySelector('.decision-keep')).not.toBeInTheDocument()
+      expect(cardsAfter[0].querySelector(DECISION_SELECTORS.eliminate)).toBeInTheDocument()
+      expect(cardsAfter[0].querySelector(DECISION_SELECTORS.keep)).not.toBeInTheDocument()
     })
   })
 })
@@ -758,7 +759,7 @@ describe('StackFocus — SF-41: decision re-decidable', () => {
     // Verify card starts as eliminated
     await waitFor(() => {
       const cards = screen.getAllByTestId('photo-card')
-      expect(cards[0].querySelector('.decision-eliminate')).toBeInTheDocument()
+      expect(cards[0].querySelector(DECISION_SELECTORS.eliminate)).toBeInTheDocument()
     })
 
     // Press Y to change from eliminate to keep
@@ -771,8 +772,8 @@ describe('StackFocus — SF-41: decision re-decidable', () => {
 
     await waitFor(() => {
       const cards = screen.getAllByTestId('photo-card')
-      expect(cards[0].querySelector('.decision-keep')).toBeInTheDocument()
-      expect(cards[0].querySelector('.decision-eliminate')).not.toBeInTheDocument()
+      expect(cards[0].querySelector(DECISION_SELECTORS.keep)).toBeInTheDocument()
+      expect(cards[0].querySelector(DECISION_SELECTORS.eliminate)).not.toBeInTheDocument()
     })
   })
 
@@ -792,7 +793,7 @@ describe('StackFocus — SF-41: decision re-decidable', () => {
 
     await waitFor(() => {
       const cards = screen.getAllByTestId('photo-card')
-      expect(cards[0].querySelector('.decision-keep')).toBeInTheDocument()
+      expect(cards[0].querySelector(DECISION_SELECTORS.keep)).toBeInTheDocument()
     })
 
     mockInvoke.mockResolvedValueOnce({
@@ -804,8 +805,8 @@ describe('StackFocus — SF-41: decision re-decidable', () => {
 
     await waitFor(() => {
       const cards = screen.getAllByTestId('photo-card')
-      expect(cards[0].querySelector('.decision-eliminate')).toBeInTheDocument()
-      expect(cards[0].querySelector('.decision-keep')).not.toBeInTheDocument()
+      expect(cards[0].querySelector(DECISION_SELECTORS.eliminate)).toBeInTheDocument()
+      expect(cards[0].querySelector(DECISION_SELECTORS.keep)).not.toBeInTheDocument()
     })
   })
 })
@@ -840,8 +841,8 @@ describe('StackFocus — SF-43: makeDecision error handling', () => {
 
     // No badge should appear — decisions state unchanged
     const cards = screen.getAllByTestId('photo-card')
-    expect(cards[0].querySelector('.decision-keep')).not.toBeInTheDocument()
-    expect(cards[0].querySelector('.decision-eliminate')).not.toBeInTheDocument()
+    expect(cards[0].querySelector(DECISION_SELECTORS.keep)).not.toBeInTheDocument()
+    expect(cards[0].querySelector(DECISION_SELECTORS.eliminate)).not.toBeInTheDocument()
 
     consoleSpy.mockRestore()
   })
@@ -1002,8 +1003,8 @@ describe('StackFocus — SF-42: getStackDecisions error handling', () => {
 
     // No decision badges should appear (decisions array stayed empty)
     const cards = screen.getAllByTestId('photo-card')
-    expect(cards[0].querySelector('.decision-keep')).not.toBeInTheDocument()
-    expect(cards[0].querySelector('.decision-eliminate')).not.toBeInTheDocument()
+    expect(cards[0].querySelector(DECISION_SELECTORS.keep)).not.toBeInTheDocument()
+    expect(cards[0].querySelector(DECISION_SELECTORS.eliminate)).not.toBeInTheDocument()
 
     consoleSpy.mockRestore()
   })
@@ -1310,7 +1311,7 @@ describe('StackFocus — U-KEY: undo decision via U key', () => {
     // Verify keep badge appeared
     await waitFor(() => {
       const cards = screen.getAllByTestId('photo-card')
-      expect(cards[0].querySelector('.decision-keep')).toBeInTheDocument()
+      expect(cards[0].querySelector(DECISION_SELECTORS.keep)).toBeInTheDocument()
     })
 
     // Press U to undo

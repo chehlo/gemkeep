@@ -445,3 +445,400 @@ describe('StackFocus — Sprint 7: decision badges', () => {
     })
   })
 })
+
+// --- HIGH PRIORITY ---
+
+describe('StackFocus — SF-22: back button navigates to StackOverview', () => {
+  it('clicking back button navigates to stack-overview', async () => {
+    mockStackFocusMount(mockPhotos)
+    render(StackFocus)
+    await waitFor(() => screen.getAllByTestId('photo-card'))
+
+    const backButton = screen.getByTitle('Back to Stacks (Esc)')
+    await fireEvent.click(backButton)
+
+    expect(navigation.current.kind).toBe('stack-overview')
+    if (navigation.current.kind === 'stack-overview') {
+      expect(navigation.current.projectSlug).toBe('test-project')
+      expect(navigation.current.projectName).toBe('Test Project')
+    }
+  })
+})
+
+describe('StackFocus — SF-23: card click sets focusedIndex', () => {
+  it('clicking a photo card makes it focused', async () => {
+    mockStackFocusMount(mockPhotos)
+    render(StackFocus)
+    await waitFor(() => screen.getAllByTestId('photo-card'))
+
+    const cards = screen.getAllByTestId('photo-card')
+    // Initially card 0 is focused (has border-blue-500)
+    expect(cards[0].className).toContain('border-blue-500')
+    expect(cards[2].className).not.toContain('border-blue-500')
+
+    // Click the third card
+    await fireEvent.click(cards[2])
+
+    await waitFor(() => {
+      const updatedCards = screen.getAllByTestId('photo-card')
+      expect(updatedCards[2].className).toContain('border-blue-500')
+      expect(updatedCards[0].className).not.toContain('border-blue-500')
+    })
+  })
+})
+
+describe('StackFocus — SF-28: optimistic UI update after Y/X', () => {
+  it('Y key shows keep badge immediately without re-fetching get_stack_decisions', async () => {
+    mockInvoke.mockResolvedValueOnce(mockPhotos)  // list_logical_photos
+    mockInvoke.mockResolvedValueOnce([
+      { logical_photo_id: 1, current_status: 'undecided' },
+      { logical_photo_id: 2, current_status: 'undecided' },
+      { logical_photo_id: 3, current_status: 'undecided' },
+    ])  // get_stack_decisions
+    mockInvoke.mockResolvedValueOnce({
+      round_id: 1, round_number: 1, state: 'open',
+      total_photos: 3, decided: 0, kept: 0, eliminated: 0, undecided: 3, committed_at: null,
+    })  // get_round_status
+
+    render(StackFocus)
+    await waitFor(() => screen.getAllByTestId('photo-card'))
+
+    // Mock the make_decision response
+    mockInvoke.mockResolvedValueOnce({
+      decision_id: 1, round_id: 1, action: 'keep',
+      current_status: 'keep', round_auto_created: false,
+    })
+
+    await fireEvent.keyDown(document, { key: 'y' })
+
+    // Badge should appear via optimistic update
+    await waitFor(() => {
+      const cards = screen.getAllByTestId('photo-card')
+      expect(cards[0].querySelector('.badge-keep')).toBeInTheDocument()
+    })
+
+    // Verify no additional get_stack_decisions call was made (only the initial 3 invoke calls + 1 make_decision)
+    const invokeCalls = mockInvoke.mock.calls.map(c => c[0])
+    const decisionFetches = invokeCalls.filter(c => c === 'get_stack_decisions')
+    expect(decisionFetches).toHaveLength(1)  // Only the initial mount fetch
+  })
+
+  it('X key shows eliminate badge and dims card immediately without re-fetching', async () => {
+    mockInvoke.mockResolvedValueOnce(mockPhotos)
+    mockInvoke.mockResolvedValueOnce([
+      { logical_photo_id: 1, current_status: 'undecided' },
+      { logical_photo_id: 2, current_status: 'undecided' },
+      { logical_photo_id: 3, current_status: 'undecided' },
+    ])
+    mockInvoke.mockResolvedValueOnce({
+      round_id: 1, round_number: 1, state: 'open',
+      total_photos: 3, decided: 0, kept: 0, eliminated: 0, undecided: 3, committed_at: null,
+    })
+
+    render(StackFocus)
+    await waitFor(() => screen.getAllByTestId('photo-card'))
+
+    mockInvoke.mockResolvedValueOnce({
+      decision_id: 1, round_id: 1, action: 'eliminate',
+      current_status: 'eliminate', round_auto_created: false,
+    })
+
+    await fireEvent.keyDown(document, { key: 'x' })
+
+    await waitFor(() => {
+      const cards = screen.getAllByTestId('photo-card')
+      expect(cards[0].querySelector('.badge-eliminate')).toBeInTheDocument()
+      expect(cards[0].className).toContain('opacity-50')
+    })
+
+    // No additional get_stack_decisions call
+    const invokeCalls = mockInvoke.mock.calls.map(c => c[0])
+    const decisionFetches = invokeCalls.filter(c => c === 'get_stack_decisions')
+    expect(decisionFetches).toHaveLength(1)
+  })
+})
+
+describe('StackFocus — SF-41: decision re-decidable', () => {
+  it('pressing Y on an eliminated photo overwrites to keep', async () => {
+    mockInvoke.mockResolvedValueOnce(mockPhotos)
+    mockInvoke.mockResolvedValueOnce([
+      { logical_photo_id: 1, current_status: 'eliminate' },
+      { logical_photo_id: 2, current_status: 'undecided' },
+      { logical_photo_id: 3, current_status: 'undecided' },
+    ])
+    mockInvoke.mockResolvedValueOnce({
+      round_id: 1, round_number: 1, state: 'open',
+      total_photos: 3, decided: 1, kept: 0, eliminated: 1, undecided: 2, committed_at: null,
+    })
+
+    render(StackFocus)
+
+    // Verify card starts as eliminated
+    await waitFor(() => {
+      const cards = screen.getAllByTestId('photo-card')
+      expect(cards[0].querySelector('.badge-eliminate')).toBeInTheDocument()
+    })
+
+    // Press Y to change from eliminate to keep
+    mockInvoke.mockResolvedValueOnce({
+      decision_id: 2, round_id: 1, action: 'keep',
+      current_status: 'keep', round_auto_created: false,
+    })
+
+    await fireEvent.keyDown(document, { key: 'y' })
+
+    await waitFor(() => {
+      const cards = screen.getAllByTestId('photo-card')
+      expect(cards[0].querySelector('.badge-keep')).toBeInTheDocument()
+      expect(cards[0].querySelector('.badge-eliminate')).not.toBeInTheDocument()
+    })
+  })
+
+  it('pressing X on a kept photo overwrites to eliminate', async () => {
+    mockInvoke.mockResolvedValueOnce(mockPhotos)
+    mockInvoke.mockResolvedValueOnce([
+      { logical_photo_id: 1, current_status: 'keep' },
+      { logical_photo_id: 2, current_status: 'undecided' },
+      { logical_photo_id: 3, current_status: 'undecided' },
+    ])
+    mockInvoke.mockResolvedValueOnce({
+      round_id: 1, round_number: 1, state: 'open',
+      total_photos: 3, decided: 1, kept: 1, eliminated: 0, undecided: 2, committed_at: null,
+    })
+
+    render(StackFocus)
+
+    await waitFor(() => {
+      const cards = screen.getAllByTestId('photo-card')
+      expect(cards[0].querySelector('.badge-keep')).toBeInTheDocument()
+    })
+
+    mockInvoke.mockResolvedValueOnce({
+      decision_id: 2, round_id: 1, action: 'eliminate',
+      current_status: 'eliminate', round_auto_created: false,
+    })
+
+    await fireEvent.keyDown(document, { key: 'x' })
+
+    await waitFor(() => {
+      const cards = screen.getAllByTestId('photo-card')
+      expect(cards[0].querySelector('.badge-eliminate')).toBeInTheDocument()
+      expect(cards[0].querySelector('.badge-keep')).not.toBeInTheDocument()
+      expect(cards[0].className).toContain('opacity-50')
+    })
+  })
+})
+
+describe('StackFocus — SF-43: makeDecision error handling', () => {
+  it('Y key with make_decision rejection does not crash and decisions unchanged', async () => {
+    mockInvoke.mockResolvedValueOnce(mockPhotos)
+    mockInvoke.mockResolvedValueOnce([
+      { logical_photo_id: 1, current_status: 'undecided' },
+      { logical_photo_id: 2, current_status: 'undecided' },
+      { logical_photo_id: 3, current_status: 'undecided' },
+    ])
+    mockInvoke.mockResolvedValueOnce({
+      round_id: 1, round_number: 1, state: 'open',
+      total_photos: 3, decided: 0, kept: 0, eliminated: 0, undecided: 3, committed_at: null,
+    })
+
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    render(StackFocus)
+    await waitFor(() => screen.getAllByTestId('photo-card'))
+
+    // make_decision rejects
+    mockInvoke.mockRejectedValueOnce(new Error('Network error'))
+
+    await fireEvent.keyDown(document, { key: 'y' })
+
+    // Wait for the rejection to be handled
+    await waitFor(() => {
+      expect(consoleSpy).toHaveBeenCalledWith('makeDecision failed:', expect.any(Error))
+    })
+
+    // No badge should appear — decisions state unchanged
+    const cards = screen.getAllByTestId('photo-card')
+    expect(cards[0].querySelector('.badge-keep')).not.toBeInTheDocument()
+    expect(cards[0].querySelector('.badge-eliminate')).not.toBeInTheDocument()
+
+    consoleSpy.mockRestore()
+  })
+})
+
+describe('StackFocus — SF-47: no-op when photos empty', () => {
+  it('Y key does nothing with 0 photos and no crash', async () => {
+    mockStackFocusMount([])
+    render(StackFocus)
+    await waitFor(() => screen.getByText('No photos in this stack.'))
+
+    // Should not call make_decision
+    await fireEvent.keyDown(document, { key: 'y' })
+    await fireEvent.keyDown(document, { key: 'x' })
+    await fireEvent.keyDown(document, { key: 'ArrowRight' })
+    await fireEvent.keyDown(document, { key: 'ArrowLeft' })
+
+    // Verify no make_decision call beyond the initial 3 mount calls
+    expect(mockInvoke).toHaveBeenCalledTimes(3)
+  })
+
+  it('Enter key does nothing with 0 photos (stays on stack-focus)', async () => {
+    mockStackFocusMount([])
+    render(StackFocus)
+    await waitFor(() => screen.getByText('No photos in this stack.'))
+
+    await fireEvent.keyDown(document, { key: 'Enter' })
+
+    // Should still be on stack-focus (Enter with photos navigates to single-view)
+    expect(navigation.current.kind).toBe('stack-focus')
+  })
+})
+
+// --- MEDIUM PRIORITY ---
+
+describe('StackFocus — SF-21: breadcrumb content', () => {
+  it('shows Back button, project name, and Stack #1', async () => {
+    mockStackFocusMount(mockPhotos)
+    render(StackFocus)
+    await waitFor(() => screen.getAllByTestId('photo-card'))
+
+    expect(screen.getByText('Back')).toBeInTheDocument()
+    expect(screen.getByText('Test Project')).toBeInTheDocument()
+    expect(screen.getByText('Stack #1')).toBeInTheDocument()
+  })
+})
+
+describe('StackFocus — SF-24: capture time formatting', () => {
+  it('formats capture time as Mon DD HH:MM:SS', async () => {
+    mockStackFocusMount([PHOTO_1])
+    render(StackFocus)
+
+    await waitFor(() => {
+      // PHOTO_1 capture_time is '2024-01-15T10:30:00Z'
+      // formatCaptureTime produces: "Jan 15 10:30:00"
+      expect(screen.getByText('Jan 15 10:30:00')).toBeInTheDocument()
+    })
+  })
+
+  it('shows "(no date)" when capture_time is null', async () => {
+    mockStackFocusMount([PHOTO_3])  // PHOTO_3 has capture_time: null
+    render(StackFocus)
+
+    await waitFor(() => {
+      expect(screen.getByText('(no date)')).toBeInTheDocument()
+    })
+  })
+})
+
+describe('StackFocus — SF-25: lens info shown', () => {
+  it('shows lens when present', async () => {
+    mockStackFocusMount([PHOTO_1])  // PHOTO_1 has lens: 'EF 85mm f/1.4'
+    render(StackFocus)
+
+    await waitFor(() => {
+      expect(screen.getByText('EF 85mm f/1.4')).toBeInTheDocument()
+    })
+  })
+
+  it('does not show lens element when lens is null', async () => {
+    mockStackFocusMount([PHOTO_2])  // PHOTO_2 has lens: null
+    render(StackFocus)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('photo-card')).toBeInTheDocument()
+    })
+
+    // No lens text should be present (PHOTO_2 has camera_model but no lens)
+    expect(screen.queryByText('EF 85mm f/1.4')).not.toBeInTheDocument()
+  })
+})
+
+describe('StackFocus — SF-26: long camera_model/lens truncated to 18 chars', () => {
+  it('truncates camera model longer than 18 chars', async () => {
+    const longModel = 'Canon EOS 5D Mark IV Plus Ultra'  // 30 chars
+    mockStackFocusMount([{ ...PHOTO_1, camera_model: longModel }])
+    render(StackFocus)
+
+    await waitFor(() => {
+      // truncate(s, 18) returns first 18 chars: "Canon EOS 5D Mark "
+      // Use a function matcher since getByText normalizes trailing whitespace
+      const truncated = longModel.slice(0, 18)
+      const el = screen.getByText((_content, element) => {
+        return element?.textContent === truncated
+      })
+      expect(el).toBeInTheDocument()
+    })
+
+    // Full string should NOT be present (querying by full string)
+    expect(screen.queryByText(/IV Plus Ultra/)).not.toBeInTheDocument()
+  })
+
+  it('does not truncate model at or under 18 chars', async () => {
+    const shortModel = 'Canon EOS 5D'  // 12 chars
+    mockStackFocusMount([{ ...PHOTO_1, camera_model: shortModel }])
+    render(StackFocus)
+
+    await waitFor(() => {
+      expect(screen.getByText('Canon EOS 5D')).toBeInTheDocument()
+    })
+  })
+})
+
+describe('StackFocus — SF-27: empty state', () => {
+  it('shows "No photos in this stack." when 0 photos', async () => {
+    mockStackFocusMount([])
+    render(StackFocus)
+
+    await waitFor(() => {
+      expect(screen.getByText('No photos in this stack.')).toBeInTheDocument()
+    })
+
+    // No photo cards should be rendered
+    expect(screen.queryAllByTestId('photo-card')).toHaveLength(0)
+  })
+})
+
+describe('StackFocus — SF-42: getStackDecisions error handling', () => {
+  it('getStackDecisions failure logs error but component still renders', async () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    mockInvoke.mockResolvedValueOnce(mockPhotos)       // list_logical_photos succeeds
+    mockInvoke.mockRejectedValueOnce(new Error('DB locked'))  // get_stack_decisions fails
+    mockInvoke.mockResolvedValueOnce({
+      round_id: 0, round_number: 0, state: 'open',
+      total_photos: 0, decided: 0, kept: 0, eliminated: 0, undecided: 0, committed_at: null,
+    })  // get_round_status
+
+    render(StackFocus)
+
+    await waitFor(() => {
+      const cards = screen.getAllByTestId('photo-card')
+      expect(cards).toHaveLength(3)
+    })
+
+    // Error was logged
+    expect(consoleSpy).toHaveBeenCalledWith('getStackDecisions failed:', expect.any(Error))
+
+    // No decision badges should appear (decisions array stayed empty)
+    const cards = screen.getAllByTestId('photo-card')
+    expect(cards[0].querySelector('.badge-keep')).not.toBeInTheDocument()
+    expect(cards[0].querySelector('.badge-eliminate')).not.toBeInTheDocument()
+
+    consoleSpy.mockRestore()
+  })
+})
+
+describe('StackFocus — SF-44: keyboard listener cleanup on destroy', () => {
+  it('removes keydown listener when component is unmounted', async () => {
+    mockStackFocusMount(mockPhotos)
+    const removeSpy = vi.spyOn(window, 'removeEventListener')
+
+    const { unmount } = render(StackFocus)
+    await waitFor(() => screen.getAllByTestId('photo-card'))
+
+    unmount()
+
+    expect(removeSpy).toHaveBeenCalledWith('keydown', expect.any(Function))
+    removeSpy.mockRestore()
+  })
+})

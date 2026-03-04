@@ -1171,8 +1171,10 @@ effort, while under-testing critical paths lets bugs ship.
 | New commands per sprint | 100% | Contract test written BEFORE frontend mock (Rule 10) |
 | Asset scope validation (path-returning commands) | 100% | Runtime scope mismatch (Pattern F) — paths must be servable by asset protocol (Rule 15) |
 
-Currently 6 of 29 commands have contract tests (20%). Each sprint should
-close this gap by adding contract tests for commands touched that sprint.
+Currently 21 of 29 commands have contract tests (72%). Remaining gaps are
+commands requiring `AppHandle` (start_indexing, resume_thumbnails) and
+source folder management commands. Each sprint should add contract tests
+for any new commands introduced that sprint.
 
 ### Frontend Components
 

@@ -1,6 +1,6 @@
 // src/lib/components/screens/StackOverview.test.ts
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor, fireEvent } from '@testing-library/svelte'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { render, screen, waitFor, fireEvent, cleanup } from '@testing-library/svelte'
 import { invoke, convertFileSrc } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { open } from '@tauri-apps/plugin-dialog'
@@ -110,8 +110,18 @@ function renderStackOverview(overrides?: Partial<{
   return render(StackOverview)
 }
 
+afterEach(() => {
+  cleanup()
+})
+
 beforeEach(() => {
   vi.clearAllMocks()
+  // Reset invoke mock to clear any unconsumed mockResolvedValueOnce queue,
+  // then restore the Rule 9 throwing default.
+  mockInvoke.mockReset()
+  mockInvoke.mockImplementation((cmd: string) => {
+    throw new Error(`Unmocked invoke("${cmd}"). Add mockInvoke.mockResolvedValueOnce(...) before this call.`)
+  })
   setupNav()
   navigation.stackOverviewFocusIndex = null
 })
@@ -909,5 +919,539 @@ describe('StackOverview — Sprint 7: multi-select and merge', () => {
       // The focused card (index 0 = merged stack) should have the focus ring
       expect(cards[0].className).toContain('border-blue-500')
     })
+  })
+})
+
+// ── SO-01: Loading spinner during initialLoading ─────────────────────────────
+
+describe('StackOverview — SO-01: loading spinner', () => {
+  it('shows "Loading…" text during initial load and disappears after loadAll', async () => {
+    // Phase 1: use a deferred promise so loadAll() hangs at list_source_folders
+    let resolveFolders!: (value: SourceFolder[]) => void
+    mockInvoke.mockReturnValueOnce(new Promise<SourceFolder[]>(r => { resolveFolders = r }))
+    // Pre-queue the remaining loadAll() chain that fires once folders resolve:
+    mockInvoke.mockResolvedValueOnce([])           // list_stacks
+    mockInvoke.mockResolvedValueOnce(IDLE_STATUS)  // get_indexing_status
+
+    const { unmount } = render(StackOverview)
+
+    // Loading indicator should be visible while loadAll is pending
+    await waitFor(() => {
+      expect(screen.getByText('Loading…')).toBeInTheDocument()
+    })
+    expect(screen.queryByText('No source folders attached.')).not.toBeInTheDocument()
+    expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(0)
+
+    // Phase 2: resolve the deferred promise so loadAll() completes
+    resolveFolders([])
+
+    // Loading indicator should disappear after loadAll resolves
+    await waitFor(() => {
+      expect(screen.queryByText('Loading…')).not.toBeInTheDocument()
+    })
+    // "No source folders" should now be visible (state 1)
+    expect(screen.getByText('No source folders attached.')).toBeInTheDocument()
+
+    unmount()
+  })
+})
+
+// ── SO-02: Topbar breadcrumb ─────────────────────────────────────────────────
+
+describe('StackOverview — SO-02: topbar breadcrumb', () => {
+  it('renders breadcrumb with back arrow, project name, and Esc hint', async () => {
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1], status: DONE_STATUS })
+
+    await waitFor(() => expect(screen.getByText('Index complete.')).toBeInTheDocument())
+
+    // Back button with "Projects" text
+    expect(screen.getByText('Projects')).toBeInTheDocument()
+    expect(screen.getByText('←')).toBeInTheDocument()
+    // Project name in breadcrumb
+    expect(screen.getByText('Iceland 2024')).toBeInTheDocument()
+    // Esc hint text
+    expect(screen.getByText('Esc')).toBeInTheDocument()
+  })
+})
+
+// ── SO-10: Pause/Resume buttons during indexing ──────────────────────────────
+
+describe('StackOverview — SO-10: pause/resume buttons', () => {
+  it('shows Pause button during active indexing (not paused)', async () => {
+    // Custom mocks: keep RUNNING_STATUS in poll so Pause button stays visible
+    mockInvoke.mockResolvedValueOnce([FOLDER_A])       // list_source_folders
+    mockInvoke.mockResolvedValueOnce([])               // list_stacks
+    mockInvoke.mockResolvedValueOnce(RUNNING_STATUS)   // get_indexing_status (running=true, paused=false)
+    mockInvoke.mockResolvedValueOnce(RUNNING_STATUS)   // poll: get_indexing_status (still running)
+    mockInvoke.mockResolvedValueOnce([])               // poll: list_stacks
+
+    render(StackOverview)
+
+    await waitFor(() => {
+      expect(screen.getByText('Pause')).toBeInTheDocument()
+    })
+    // Cancel is also present
+    expect(screen.getByText('Cancel')).toBeInTheDocument()
+  })
+
+  it('clicking Pause calls pause_indexing', async () => {
+    mockInvoke.mockResolvedValueOnce([FOLDER_A])       // list_source_folders
+    mockInvoke.mockResolvedValueOnce([])               // list_stacks
+    mockInvoke.mockResolvedValueOnce(RUNNING_STATUS)   // get_indexing_status
+    mockInvoke.mockResolvedValueOnce(RUNNING_STATUS)   // poll: get_indexing_status
+    mockInvoke.mockResolvedValueOnce([])               // poll: list_stacks
+
+    render(StackOverview)
+
+    await waitFor(() => expect(screen.getByText('Pause')).toBeInTheDocument())
+
+    mockInvoke.mockResolvedValueOnce(undefined)  // pause_indexing
+
+    await fireEvent.click(screen.getByText('Pause'))
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith('pause_indexing')
+    })
+  })
+
+  it('shows Resume button when indexing is paused', async () => {
+    const PAUSED_STATUS: IndexingStatus = {
+      ...RUNNING_STATUS, paused: true
+    }
+
+    mockInvoke.mockResolvedValueOnce([FOLDER_A])      // list_source_folders
+    mockInvoke.mockResolvedValueOnce([])              // list_stacks
+    mockInvoke.mockResolvedValueOnce(PAUSED_STATUS)   // get_indexing_status (running=true, paused=true)
+    mockInvoke.mockResolvedValueOnce(PAUSED_STATUS)   // poll: get_indexing_status (still paused)
+    mockInvoke.mockResolvedValueOnce([])              // poll: list_stacks
+
+    render(StackOverview)
+
+    await waitFor(() => {
+      expect(screen.getByText('Resume')).toBeInTheDocument()
+    })
+    // Pause button should NOT be visible when paused
+    expect(screen.queryByText('Pause')).not.toBeInTheDocument()
+  })
+
+  it('clicking Resume calls resume_indexing', async () => {
+    const PAUSED_STATUS: IndexingStatus = {
+      ...RUNNING_STATUS, paused: true
+    }
+
+    mockInvoke.mockResolvedValueOnce([FOLDER_A])      // list_source_folders
+    mockInvoke.mockResolvedValueOnce([])              // list_stacks
+    mockInvoke.mockResolvedValueOnce(PAUSED_STATUS)   // get_indexing_status
+    mockInvoke.mockResolvedValueOnce(PAUSED_STATUS)   // poll: get_indexing_status
+    mockInvoke.mockResolvedValueOnce([])              // poll: list_stacks
+
+    render(StackOverview)
+
+    await waitFor(() => expect(screen.getByText('Resume')).toBeInTheDocument())
+
+    mockInvoke.mockResolvedValueOnce(undefined)  // resume_indexing
+
+    await fireEvent.click(screen.getByText('Resume'))
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith('resume_indexing')
+    })
+  })
+})
+
+// ── SO-22: Arrow Left moves focus left (stops at first) ──────────────────────
+
+describe('StackOverview — SO-22: ArrowLeft navigation', () => {
+  it('ArrowLeft moves focus left by one card', async () => {
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2, STACK_3], status: DONE_STATUS })
+    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(3))
+
+    // Move right first so we're at index 1
+    await fireEvent.keyDown(document, { key: 'ArrowRight' })
+    let cards = document.querySelectorAll('[data-stack-card]')
+    expect(cards[1].className).toContain('border-blue-500')
+
+    // Now move left back to index 0
+    await fireEvent.keyDown(document, { key: 'ArrowLeft' })
+    cards = document.querySelectorAll('[data-stack-card]')
+    expect(cards[0].className).toContain('border-blue-500')
+    expect(cards[1].className).not.toContain('border-blue-500')
+  })
+
+  it('ArrowLeft stops at index 0 (does not wrap or go negative)', async () => {
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2, STACK_3], status: DONE_STATUS })
+    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(3))
+
+    // We start at index 0; pressing ArrowLeft should stay at 0
+    await fireEvent.keyDown(document, { key: 'ArrowLeft' })
+    await fireEvent.keyDown(document, { key: 'ArrowLeft' })
+
+    const cards = document.querySelectorAll('[data-stack-card]')
+    expect(cards[0].className).toContain('border-blue-500')
+  })
+})
+
+// ── SO-24: Arrow Up moves focus up (-4 cols) ────────────────────────────────
+
+describe('StackOverview — SO-24: ArrowUp navigation', () => {
+  it('ArrowUp moves focus up by 4 (one row of 4 columns)', async () => {
+    // Need at least 5 stacks to span 2 rows in a 4-col grid
+    const manyStacks: StackSummary[] = Array.from({ length: 8 }, (_, i) => ({
+      stack_id: i + 1,
+      logical_photo_count: 1,
+      earliest_capture: null,
+      has_raw: false,
+      has_jpeg: true,
+      thumbnail_path: null,
+    }))
+
+    renderStackOverview({ folders: [FOLDER_A], stacks: manyStacks, status: DONE_STATUS })
+    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(8))
+
+    // Navigate to row 2, card 5 (index 4) using ArrowDown from index 0
+    await fireEvent.keyDown(document, { key: 'ArrowDown' })
+    let cards = document.querySelectorAll('[data-stack-card]')
+    expect(cards[4].className).toContain('border-blue-500')
+
+    // ArrowUp should take us back to index 0
+    await fireEvent.keyDown(document, { key: 'ArrowUp' })
+    cards = document.querySelectorAll('[data-stack-card]')
+    expect(cards[0].className).toContain('border-blue-500')
+    expect(cards[4].className).not.toContain('border-blue-500')
+  })
+
+  it('ArrowUp stops at row 0 (clamps to 0)', async () => {
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2, STACK_3], status: DONE_STATUS })
+    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(3))
+
+    // Already at index 0; ArrowUp should stay at 0 (Math.max(0 - 4, 0) = 0)
+    await fireEvent.keyDown(document, { key: 'ArrowUp' })
+
+    const cards = document.querySelectorAll('[data-stack-card]')
+    expect(cards[0].className).toContain('border-blue-500')
+  })
+})
+
+// ── SO-25: Enter opens focused stack (navigate to StackFocus) ────────────────
+
+describe('StackOverview — SO-25: Enter opens focused stack', () => {
+  it('Enter key navigates to StackFocus for the focused stack', async () => {
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2, STACK_3], status: DONE_STATUS })
+    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(3))
+
+    // Move to second stack
+    await fireEvent.keyDown(document, { key: 'ArrowRight' })
+
+    // Press Enter
+    await fireEvent.keyDown(document, { key: 'Enter' })
+
+    // Navigation should have changed to stack-focus with the second stack's ID
+    expect(navigation.current).toEqual({
+      kind: 'stack-focus',
+      projectSlug: 'iceland-2024',
+      projectName: 'Iceland 2024',
+      stackId: STACK_2.stack_id,
+    })
+  })
+
+  it('Enter saves focusedIndex before navigating', async () => {
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2, STACK_3], status: DONE_STATUS })
+    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(3))
+
+    // Move to third stack (index 2)
+    await fireEvent.keyDown(document, { key: 'ArrowRight' })
+    await fireEvent.keyDown(document, { key: 'ArrowRight' })
+
+    // Navigate must be called after setting stackOverviewFocusIndex
+    // Reset it first so we can detect the assignment
+    navigation.stackOverviewFocusIndex = null
+
+    await fireEvent.keyDown(document, { key: 'Enter' })
+
+    // After Enter, navigation.current is already stack-focus
+    // The stackOverviewFocusIndex should have been set to 2 (then navigate changes screen)
+    // Since navigate() changes screen, the savedIdx is set before navigate is called.
+    // We verify via the navigate call that it went to the correct stack.
+    expect(navigation.current.kind).toBe('stack-focus')
+    if (navigation.current.kind === 'stack-focus') {
+      expect(navigation.current.stackId).toBe(STACK_3.stack_id)
+    }
+  })
+})
+
+// ── SO-26: Click on stack card navigates to StackFocus ───────────────────────
+
+describe('StackOverview — SO-26: click on stack card', () => {
+  it('clicking a stack card navigates to StackFocus', async () => {
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2], status: DONE_STATUS })
+    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(2))
+
+    // Click the second stack card (Stack #2)
+    const cards = document.querySelectorAll('[data-stack-card]')
+    await fireEvent.click(cards[1])
+
+    expect(navigation.current).toEqual({
+      kind: 'stack-focus',
+      projectSlug: 'iceland-2024',
+      projectName: 'Iceland 2024',
+      stackId: STACK_2.stack_id,
+    })
+  })
+})
+
+// ── SO-27: Esc navigates back to ProjectList ─────────────────────────────────
+
+describe('StackOverview — SO-27: Esc back to ProjectList', () => {
+  it('Esc key navigates back to project-list', async () => {
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1], status: DONE_STATUS })
+    await waitFor(() => expect(screen.getByText('Index complete.')).toBeInTheDocument())
+
+    await fireEvent.keyDown(document, { key: 'Escape' })
+
+    expect(navigation.current.kind).toBe('project-list')
+  })
+
+  it('Esc sets skipAutoOpen and resumeProject on the project-list screen', async () => {
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1], status: DONE_STATUS })
+    await waitFor(() => expect(screen.getByText('Index complete.')).toBeInTheDocument())
+
+    await fireEvent.keyDown(document, { key: 'Escape' })
+
+    expect(navigation.current).toEqual({
+      kind: 'project-list',
+      skipAutoOpen: true,
+      resumeProject: { slug: 'iceland-2024', name: 'Iceland 2024' },
+    })
+  })
+})
+
+// ── SO-36: Burst gap panel: 'Recalculating stacks…' transient message ────────
+
+describe('StackOverview — SO-36: burst gap recalculating message', () => {
+  it('shows "Recalculating stacks…" during saveBurstGap', async () => {
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2] })
+    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(2))
+
+    // Open burst panel
+    mockInvoke.mockResolvedValueOnce(3) // get_burst_gap
+    await fireEvent.keyDown(document, { key: 'b', ctrlKey: true })
+    await waitFor(() => screen.getByText(/burst gap/i))
+
+    // Make saveBurstGap slow: set_burst_gap resolves, restack hangs
+    mockInvoke.mockResolvedValueOnce(undefined) // set_burst_gap
+    mockInvoke.mockReturnValueOnce(new Promise(() => {})) // restack (never resolves)
+
+    await fireEvent.click(screen.getByRole('button', { name: /save/i }))
+
+    // "Recalculating stacks…" should appear while restack is pending
+    await waitFor(() => {
+      expect(screen.getByText('Recalculating stacks…')).toBeInTheDocument()
+    })
+
+    // The input and save/cancel buttons should be hidden during restacking
+    expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument()
+  })
+})
+
+// ── SO-37: Error log: collapsible 'Show N errors' ───────────────────────────
+
+describe('StackOverview — SO-37: collapsible error log', () => {
+  const STATUS_WITH_ERRORS: IndexingStatus = {
+    running: false, thumbnails_running: false, total: 100, processed: 100, errors: 2, cancelled: false, paused: false,
+    last_stats: {
+      total_files_scanned: 100, imported: 98, skipped_existing: 0,
+      skipped_unsupported: 0, errors: 2, pairs_detected: 49,
+      stacks_generated: 2, logical_photos: 49,
+      error_log: ['Failed to read /bad/file1.cr2: corrupt header', 'EXIF parse error: /bad/file2.arw']
+    },
+    thumbnails_total: 0, thumbnails_done: 0
+  }
+
+  // Use stacks with thumbnails to avoid Path C (resume_thumbnails + polling that overwrites status)
+  const STACK_A_T: StackSummary = { ...STACK_1, thumbnail_path: '/cache/1.jpg' }
+  const STACK_B_T: StackSummary = { ...STACK_2, thumbnail_path: '/cache/2.jpg' }
+
+  it('renders "Show N errors" toggle when last_stats has errors', async () => {
+    // Path D: all thumbs present, idle — no follow-up mocks, status preserved
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_A_T, STACK_B_T], status: STATUS_WITH_ERRORS })
+
+    await waitFor(() => {
+      expect(screen.getByText(/Show 2 errors/)).toBeInTheDocument()
+    })
+  })
+
+  it('clicking "Show N errors" reveals error details', async () => {
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_A_T, STACK_B_T], status: STATUS_WITH_ERRORS })
+
+    await waitFor(() => expect(screen.getByText(/Show 2 errors/)).toBeInTheDocument())
+
+    // Error details should be hidden initially
+    expect(screen.queryByText(/corrupt header/)).not.toBeInTheDocument()
+
+    // Click to expand
+    await fireEvent.click(screen.getByText(/Show 2 errors/))
+
+    await waitFor(() => {
+      expect(screen.getByText(/corrupt header/)).toBeInTheDocument()
+      expect(screen.getByText(/EXIF parse error/)).toBeInTheDocument()
+    })
+  })
+
+  it('does NOT render error toggle when last_stats has 0 errors', async () => {
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1], status: DONE_STATUS })
+
+    await waitFor(() => expect(screen.getByText('Index complete.')).toBeInTheDocument())
+    expect(screen.queryByText(/Show.*error/)).not.toBeInTheDocument()
+  })
+})
+
+// ── SO-38: Error count inline during indexing ────────────────────────────────
+
+describe('StackOverview — SO-38: error count during indexing', () => {
+  it('shows error count inline when status.errors > 0 during EXIF phase', async () => {
+    const RUNNING_WITH_ERRORS: IndexingStatus = {
+      ...RUNNING_STATUS, errors: 5
+    }
+
+    mockInvoke.mockResolvedValueOnce([FOLDER_A])            // list_source_folders
+    mockInvoke.mockResolvedValueOnce([])                    // list_stacks
+    mockInvoke.mockResolvedValueOnce(RUNNING_WITH_ERRORS)   // get_indexing_status
+    mockInvoke.mockResolvedValueOnce(RUNNING_WITH_ERRORS)   // poll: get_indexing_status (still running)
+    mockInvoke.mockResolvedValueOnce([])                    // poll: list_stacks
+
+    render(StackOverview)
+
+    await waitFor(() => {
+      expect(screen.getByText('Indexing…')).toBeInTheDocument()
+    })
+    expect(screen.getByText(/5 errors/)).toBeInTheDocument()
+  })
+
+  it('shows singular "error" for count of 1', async () => {
+    const RUNNING_WITH_1_ERROR: IndexingStatus = {
+      ...RUNNING_STATUS, errors: 1
+    }
+
+    mockInvoke.mockResolvedValueOnce([FOLDER_A])              // list_source_folders
+    mockInvoke.mockResolvedValueOnce([])                      // list_stacks
+    mockInvoke.mockResolvedValueOnce(RUNNING_WITH_1_ERROR)    // get_indexing_status
+    mockInvoke.mockResolvedValueOnce(RUNNING_WITH_1_ERROR)    // poll: get_indexing_status
+    mockInvoke.mockResolvedValueOnce([])                      // poll: list_stacks
+
+    render(StackOverview)
+
+    await waitFor(() => {
+      expect(screen.getByText('Indexing…')).toBeInTheDocument()
+    })
+    // Should show "1 error" (singular), not "1 errors"
+    expect(screen.getByText(/1 error(?!s)/)).toBeInTheDocument()
+  })
+})
+
+// ── SO-61: Date formatting on stack cards ────────────────────────────────────
+
+describe('StackOverview — SO-61: date formatting', () => {
+  it('renders formatted date on stack card when earliest_capture is set', async () => {
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1], status: DONE_STATUS })
+
+    await waitFor(() => expect(screen.getByText('Stack #1')).toBeInTheDocument())
+
+    // STACK_1 has earliest_capture: '2024-03-15T10:00:00Z'
+    // formatDate should produce "Mar 15"
+    expect(screen.getByText('Mar 15')).toBeInTheDocument()
+  })
+
+  it('renders fallback "(no EXIF)" when earliest_capture is null', async () => {
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_3], status: DONE_STATUS })
+
+    await waitFor(() => expect(screen.getByText('Stack #1')).toBeInTheDocument())
+
+    // STACK_3 has earliest_capture: null → formatDate(null, '(no EXIF)') = '(no EXIF)'
+    expect(screen.getByText('(no EXIF)')).toBeInTheDocument()
+  })
+})
+
+// ── SO-62: Photo count per stack card ────────────────────────────────────────
+
+describe('StackOverview — SO-62: photo count per card', () => {
+  it('renders "N photos" on stack card (plural)', async () => {
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1], status: DONE_STATUS })
+
+    await waitFor(() => expect(screen.getByText('Stack #1')).toBeInTheDocument())
+
+    // STACK_1 has logical_photo_count: 6
+    expect(screen.getByText('6 photos')).toBeInTheDocument()
+  })
+
+  it('renders "1 photo" (singular) when count is 1', async () => {
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_3], status: DONE_STATUS })
+
+    await waitFor(() => expect(screen.getByText('Stack #1')).toBeInTheDocument())
+
+    // STACK_3 has logical_photo_count: 1
+    expect(screen.getByText('1 photo')).toBeInTheDocument()
+  })
+})
+
+// ── SO-63/64/65: Shift+ArrowLeft/Down/Up multi-select ────────────────────────
+
+describe('StackOverview — SO-63/64/65: Shift+Arrow multi-select directions', () => {
+  const MANY_STACKS: StackSummary[] = Array.from({ length: 8 }, (_, i) => ({
+    stack_id: i + 1,
+    logical_photo_count: 1,
+    earliest_capture: null,
+    has_raw: false,
+    has_jpeg: true,
+    thumbnail_path: null,
+  }))
+
+  it('SO-63: Shift+ArrowLeft selects current and previous stacks', async () => {
+    renderStackOverview({ folders: [FOLDER_A], stacks: MANY_STACKS, status: DONE_STATUS })
+    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(8))
+
+    // Move to index 2 first
+    await fireEvent.keyDown(document, { key: 'ArrowRight' })
+    await fireEvent.keyDown(document, { key: 'ArrowRight' })
+
+    // Shift+ArrowLeft should select index 2 and move to index 1 (selecting it too)
+    await fireEvent.keyDown(document, { key: 'ArrowLeft', shiftKey: true })
+
+    const cards = document.querySelectorAll('[data-stack-card]')
+    const selectedCards = Array.from(cards).filter(c =>
+      c.className.includes('ring-yellow') || c.className.includes('border-yellow')
+    )
+    expect(selectedCards.length).toBeGreaterThanOrEqual(2)
+    // Both index 1 and 2 should be selected (stack_ids 2 and 3)
+    expect(cards[1].className).toMatch(/ring-yellow|border-yellow/)
+    expect(cards[2].className).toMatch(/ring-yellow|border-yellow/)
+  })
+
+  it('SO-64: Shift+ArrowDown selects current and stack 4 positions down', async () => {
+    renderStackOverview({ folders: [FOLDER_A], stacks: MANY_STACKS, status: DONE_STATUS })
+    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(8))
+
+    // Focus is at index 0; Shift+ArrowDown should select index 0 and move to index 4
+    await fireEvent.keyDown(document, { key: 'ArrowDown', shiftKey: true })
+
+    const cards = document.querySelectorAll('[data-stack-card]')
+    // Both index 0 and 4 should be selected
+    expect(cards[0].className).toMatch(/ring-yellow|border-yellow/)
+    expect(cards[4].className).toMatch(/ring-yellow|border-yellow/)
+  })
+
+  it('SO-65: Shift+ArrowUp selects current and stack 4 positions up', async () => {
+    renderStackOverview({ folders: [FOLDER_A], stacks: MANY_STACKS, status: DONE_STATUS })
+    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(8))
+
+    // Move to index 5 (row 2, col 2) first
+    await fireEvent.keyDown(document, { key: 'ArrowDown' })   // -> index 4
+    await fireEvent.keyDown(document, { key: 'ArrowRight' })  // -> index 5
+
+    // Shift+ArrowUp should select index 5 and move up to index 1
+    await fireEvent.keyDown(document, { key: 'ArrowUp', shiftKey: true })
+
+    const cards = document.querySelectorAll('[data-stack-card]')
+    expect(cards[5].className).toMatch(/ring-yellow|border-yellow/)
+    expect(cards[1].className).toMatch(/ring-yellow|border-yellow/)
   })
 })

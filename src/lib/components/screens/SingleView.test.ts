@@ -463,3 +463,114 @@ describe('SingleView — status bar extended format', () => {
     })
   })
 })
+
+describe('SingleView — arrow boundary behavior', () => {
+  it('ArrowRight at last photo does NOT call get_photo_detail (SV-31)', async () => {
+    // Start at the last photo (id=3, index 2 in a 3-photo list)
+    setupNav(3)
+    mockMountSequence({
+      detail: { ...PHOTO_DETAIL, logical_photo_id: 3 },
+      photos: PHOTO_LIST,
+    })
+    render(SingleView)
+    await waitFor(() => screen.getByRole('img'))
+
+    const callCountBefore = mockInvoke.mock.calls.length
+
+    await fireEvent.keyDown(document, { key: 'ArrowRight' })
+
+    // Small delay to flush any async effects
+    await new Promise(r => setTimeout(r, 50))
+
+    // No additional get_photo_detail call should have been made
+    const callCountAfter = mockInvoke.mock.calls.length
+    expect(callCountAfter).toBe(callCountBefore)
+  })
+
+  it('ArrowLeft at first photo does NOT call get_photo_detail (SV-32)', async () => {
+    // Start at first photo (id=1, index 0)
+    setupNav(1)
+    mockMountSequence()
+    render(SingleView)
+    await waitFor(() => screen.getByRole('img'))
+
+    const callCountBefore = mockInvoke.mock.calls.length
+
+    await fireEvent.keyDown(document, { key: 'ArrowLeft' })
+
+    await new Promise(r => setTimeout(r, 50))
+
+    const callCountAfter = mockInvoke.mock.calls.length
+    expect(callCountAfter).toBe(callCountBefore)
+  })
+})
+
+describe('SingleView — vim-style navigation', () => {
+  it('l key navigates to next photo like ArrowRight (SV-33)', async () => {
+    setupNav(1)
+    mockMountSequence()
+    render(SingleView)
+    await waitFor(() => screen.getByRole('img'))
+
+    // Mock get_photo_detail for next photo
+    mockInvoke.mockResolvedValueOnce({ ...PHOTO_DETAIL, logical_photo_id: 2 })
+
+    await fireEvent.keyDown(document, { key: 'l' })
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith('get_photo_detail', {
+        slug: 'test-project', logicalPhotoId: 2,
+      })
+    })
+  })
+
+  it('h key navigates to previous photo like ArrowLeft (SV-33)', async () => {
+    // Start at photo 2 so we can go back
+    setupNav(2)
+    mockMountSequence({
+      detail: { ...PHOTO_DETAIL, logical_photo_id: 2 },
+      photos: PHOTO_LIST,
+    })
+    render(SingleView)
+    await waitFor(() => screen.getByRole('img'))
+
+    // Mock get_photo_detail for previous photo
+    mockInvoke.mockResolvedValueOnce({ ...PHOTO_DETAIL, logical_photo_id: 1 })
+
+    await fireEvent.keyDown(document, { key: 'h' })
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith('get_photo_detail', {
+        slug: 'test-project', logicalPhotoId: 1,
+      })
+    })
+  })
+})
+
+describe('SingleView — X key blocked when committed (SV-35)', () => {
+  it('X key does NOT call makeDecision when round is committed', async () => {
+    mockMountSequence({ roundStatus: COMMITTED_ROUND })
+    render(SingleView)
+    await waitFor(() => screen.getByRole('img'))
+
+    await fireEvent.keyDown(document, { key: 'x' })
+
+    await new Promise(r => setTimeout(r, 50))
+    expect(mockInvoke).not.toHaveBeenCalledWith('make_decision', expect.anything())
+  })
+})
+
+describe('SingleView — thumbnail_path fallback (SV-40)', () => {
+  it('renders thumbnail_path when jpeg_path is null', async () => {
+    vi.mocked(convertFileSrc).mockImplementation((p: string) => `asset://localhost${p}`)
+    mockMountSequence({
+      detail: { ...PHOTO_DETAIL, jpeg_path: null, thumbnail_path: '/cache/thumbnails/1.jpg' },
+    })
+    render(SingleView)
+
+    await waitFor(() => {
+      const img = screen.getByRole('img')
+      expect(img).toHaveAttribute('src', 'asset://localhost/cache/thumbnails/1.jpg')
+    })
+  })
+})

@@ -1,7 +1,7 @@
 // src/lib/components/HelpOverlay.test.ts
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/svelte'
-import { navigate } from '$lib/stores/navigation.svelte.js'
+import { render, screen, fireEvent, waitFor } from '@testing-library/svelte'
+import { navigate, navigation } from '$lib/stores/navigation.svelte.js'
 import HelpOverlay from './HelpOverlay.svelte'
 
 beforeEach(() => {
@@ -100,5 +100,86 @@ describe('HelpOverlay — Sprint 7 updated shortcuts', () => {
     const allText = document.body.textContent ?? ''
     expect(allText).toContain('Home')
     expect(allText).toContain('End')
+  })
+})
+
+describe('HelpOverlay — header hint', () => {
+  it('HO-06: shows "? to close" hint text', () => {
+    render(HelpOverlay, { props: { visible: true } })
+    expect(screen.getByText('? to close')).toBeInTheDocument()
+  })
+})
+
+describe('HelpOverlay — ARIA attributes', () => {
+  it('HO-16: has role=dialog, aria-modal=true, aria-label="Keyboard shortcuts"', () => {
+    render(HelpOverlay, { props: { visible: true } })
+    const overlay = screen.getByTestId('help-overlay')
+    expect(overlay).toHaveAttribute('role', 'dialog')
+    expect(overlay).toHaveAttribute('aria-modal', 'true')
+    expect(overlay).toHaveAttribute('aria-label', 'Keyboard shortcuts')
+  })
+})
+
+describe('HelpOverlay — dismiss behaviors', () => {
+  it('HO-10: clicking backdrop dismisses overlay', async () => {
+    render(HelpOverlay, { props: { visible: true } })
+    const overlay = screen.getByTestId('help-overlay')
+    await fireEvent.click(overlay)
+    await waitFor(() => {
+      expect(screen.queryByTestId('help-overlay')).not.toBeInTheDocument()
+    })
+  })
+
+  it('HO-11: clicking inside panel does NOT dismiss overlay', async () => {
+    render(HelpOverlay, { props: { visible: true } })
+    const panel = screen.getByRole('document')
+    await fireEvent.click(panel)
+    expect(screen.getByTestId('help-overlay')).toBeInTheDocument()
+  })
+
+  it('HO-12: Escape key dismisses overlay', async () => {
+    render(HelpOverlay, { props: { visible: true } })
+    const overlay = screen.getByTestId('help-overlay')
+    await fireEvent.keyDown(overlay, { key: 'Escape' })
+    await waitFor(() => {
+      expect(screen.queryByTestId('help-overlay')).not.toBeInTheDocument()
+    })
+  })
+
+  it('HO-13: ? key dismisses overlay', async () => {
+    render(HelpOverlay, { props: { visible: true } })
+    const overlay = screen.getByTestId('help-overlay')
+    await fireEvent.keyDown(overlay, { key: '?' })
+    await waitFor(() => {
+      expect(screen.queryByTestId('help-overlay')).not.toBeInTheDocument()
+    })
+  })
+
+  it('HO-37: Escape stopPropagation prevents bubbling to outer listeners', async () => {
+    const outerHandler = vi.fn()
+    document.addEventListener('keydown', outerHandler)
+
+    render(HelpOverlay, { props: { visible: true } })
+    const overlay = screen.getByTestId('help-overlay')
+    await fireEvent.keyDown(overlay, { key: 'Escape' })
+
+    expect(outerHandler).not.toHaveBeenCalled()
+    document.removeEventListener('keydown', outerHandler)
+  })
+})
+
+describe('HelpOverlay — unknown screen fallback', () => {
+  it('HO-35: falls back to PROJECT_LIST shortcuts for unknown screen kind', () => {
+    // Force navigation to an unknown screen kind
+    ;(navigation as any).current = { kind: 'unknown-screen' }
+    render(HelpOverlay, { props: { visible: true } })
+    // PROJECT_LIST has "Open project" shortcut
+    expect(screen.getByText('Open project')).toBeInTheDocument()
+  })
+
+  it('HO-36: falls back to "GemKeep" title for unknown screen kind', () => {
+    ;(navigation as any).current = { kind: 'unknown-screen' }
+    render(HelpOverlay, { props: { visible: true } })
+    expect(screen.getByText(/GemKeep/)).toBeInTheDocument()
   })
 })

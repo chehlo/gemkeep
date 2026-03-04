@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte'
+  import { onMount, onDestroy, tick } from 'svelte'
   import { navigation, navigate } from '$lib/stores/navigation.svelte.js'
   import {
     listLogicalPhotos, getThumbnailUrl, getStackDecisions, getRoundStatus,
@@ -87,7 +87,7 @@
       return
     }
 
-    if (e.key === 'Enter' && photos.length > 0) {
+    if ((e.key === 'Enter' || e.key === 'e' || e.key === 'E') && photos.length > 0) {
       navigate({
         kind: 'single-view',
         projectSlug,
@@ -171,10 +171,30 @@
 
     if (photos.length > 0) {
       const cols = 4
-      if (e.key === 'ArrowRight') { focusedIndex = Math.min(focusedIndex + 1, photos.length - 1); e.preventDefault() }
-      if (e.key === 'ArrowLeft')  { focusedIndex = Math.max(focusedIndex - 1, 0); e.preventDefault() }
-      if (e.key === 'ArrowDown')  { focusedIndex = Math.min(focusedIndex + cols, photos.length - 1); e.preventDefault() }
-      if (e.key === 'ArrowUp')    { focusedIndex = Math.max(focusedIndex - cols, 0); e.preventDefault() }
+
+      // Map hjkl to arrow equivalents (only when no Ctrl/Shift/Alt modifier)
+      let mappedKey = e.key
+      if (!e.ctrlKey && !e.shiftKey && !e.altKey) {
+        if (e.key === 'l') mappedKey = 'ArrowRight'
+        if (e.key === 'h') mappedKey = 'ArrowLeft'
+        if (e.key === 'j') mappedKey = 'ArrowDown'
+        if (e.key === 'k') mappedKey = 'ArrowUp'
+      }
+
+      let moved = false
+      if (mappedKey === 'ArrowRight') { focusedIndex = Math.min(focusedIndex + 1, photos.length - 1); e.preventDefault(); moved = true }
+      if (mappedKey === 'ArrowLeft')  { focusedIndex = Math.max(focusedIndex - 1, 0); e.preventDefault(); moved = true }
+      if (mappedKey === 'ArrowDown')  { focusedIndex = Math.min(focusedIndex + cols, photos.length - 1); e.preventDefault(); moved = true }
+      if (mappedKey === 'ArrowUp')    { focusedIndex = Math.max(focusedIndex - cols, 0); e.preventDefault(); moved = true }
+      if (mappedKey === 'Home') { focusedIndex = 0; e.preventDefault(); moved = true }
+      if (mappedKey === 'End') { focusedIndex = photos.length - 1; e.preventDefault(); moved = true }
+
+      if (moved) {
+        tick().then(() => {
+          const cards = document.querySelectorAll('[data-testid="photo-card"]')
+          cards[focusedIndex]?.scrollIntoView({ block: 'nearest', behavior: 'instant' })
+        })
+      }
     }
   }
 
@@ -250,17 +270,18 @@
               {i === focusedIndex
                 ? 'border-blue-500 ring-2 ring-blue-500/30 bg-gray-800'
                 : 'border-gray-800 bg-gray-900 hover:border-gray-600'}
-              {status === 'eliminate' ? 'opacity-50' : ''}"
+              "
             role="button"
             tabindex="0"
             onclick={() => { focusedIndex = i }}
             onkeydown={(e) => { if (e.key === 'Enter') focusedIndex = i }}
           >
-            <!-- Decision badge -->
+            <!-- Decision border overlay -->
             {#if status === 'keep'}
-              <div class="badge-keep absolute top-1 right-1 w-3 h-3 rounded-full bg-green-500"></div>
+              <div class="decision-keep absolute inset-0 border-4 border-green-500 rounded-lg pointer-events-none"></div>
             {:else if status === 'eliminate'}
-              <div class="badge-eliminate absolute top-1 right-1 w-3 h-3 rounded-full bg-red-500"></div>
+              <div class="decision-eliminate absolute inset-0 border-4 border-red-500 rounded-lg pointer-events-none"></div>
+              <div class="absolute inset-0 bg-black/50 rounded-lg pointer-events-none"></div>
             {/if}
 
             <!-- Thumbnail -->

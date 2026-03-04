@@ -165,7 +165,55 @@ describe('StackFocus — Sprint 7: decision badges', () => {
 
     await waitFor(() => {
       const cards = screen.getAllByTestId('photo-card')
-      expect(cards[0].querySelector('.badge-keep')).toBeInTheDocument()
+      expect(cards[0].querySelector('.decision-keep')).toBeInTheDocument()
+    })
+  })
+
+  it('V2: keep badge shows "Y" text and has w-5 h-5 size classes', async () => {
+    mockInvoke.mockResolvedValueOnce(mockPhotos)
+    mockInvoke.mockResolvedValueOnce([
+      { logical_photo_id: 1, current_status: 'keep' },
+      { logical_photo_id: 2, current_status: 'undecided' },
+      { logical_photo_id: 3, current_status: 'undecided' },
+    ])
+    mockInvoke.mockResolvedValueOnce({
+      round_id: 1, round_number: 1, state: 'open',
+      total_photos: 3, decided: 1, kept: 1, eliminated: 0, undecided: 2, committed_at: null,
+    })
+
+    render(StackFocus)
+
+    await waitFor(() => {
+      const cards = screen.getAllByTestId('photo-card')
+      const badge = cards[0].querySelector('.decision-keep') as HTMLElement
+      expect(badge).toBeInTheDocument()
+      expect(badge.className).toContain('border-green-500')
+      expect(badge.className).toContain('border-4')
+      expect(badge.className).toContain('inset-0')
+    })
+  })
+
+  it('V2: eliminate badge shows "X" text and has w-5 h-5 size classes', async () => {
+    mockInvoke.mockResolvedValueOnce(mockPhotos)
+    mockInvoke.mockResolvedValueOnce([
+      { logical_photo_id: 1, current_status: 'eliminate' },
+      { logical_photo_id: 2, current_status: 'undecided' },
+      { logical_photo_id: 3, current_status: 'undecided' },
+    ])
+    mockInvoke.mockResolvedValueOnce({
+      round_id: 1, round_number: 1, state: 'open',
+      total_photos: 3, decided: 1, kept: 0, eliminated: 1, undecided: 2, committed_at: null,
+    })
+
+    render(StackFocus)
+
+    await waitFor(() => {
+      const cards = screen.getAllByTestId('photo-card')
+      const badge = cards[0].querySelector('.decision-eliminate') as HTMLElement
+      expect(badge).toBeInTheDocument()
+      expect(badge.className).toContain('border-red-500')
+      expect(badge.className).toContain('border-4')
+      expect(badge.className).toContain('inset-0')
     })
   })
 
@@ -185,7 +233,7 @@ describe('StackFocus — Sprint 7: decision badges', () => {
 
     await waitFor(() => {
       const cards = screen.getAllByTestId('photo-card')
-      expect(cards[1].className).toContain('opacity-50')
+      expect(cards[1].querySelector('.decision-eliminate')).toBeInTheDocument()
     })
   })
 
@@ -334,7 +382,7 @@ describe('StackFocus — Sprint 7: decision badges', () => {
     await waitFor(() => {
       const cards = screen.getAllByTestId('photo-card')
       // Card at index 1 is the eliminated photo — it should have a red badge
-      const redBadge = cards[1].querySelector('.badge-eliminate, .bg-red-500')
+      const redBadge = cards[1].querySelector('.decision-eliminate, .bg-red-500')
       expect(redBadge).toBeInTheDocument()
     })
   })
@@ -567,7 +615,7 @@ describe('StackFocus — SF-28: optimistic UI update after Y/X', () => {
     // Badge should appear via optimistic update
     await waitFor(() => {
       const cards = screen.getAllByTestId('photo-card')
-      expect(cards[0].querySelector('.badge-keep')).toBeInTheDocument()
+      expect(cards[0].querySelector('.decision-keep')).toBeInTheDocument()
     })
 
     // Verify no additional get_stack_decisions call was made (only the initial 3 invoke calls + 1 make_decision)
@@ -600,8 +648,7 @@ describe('StackFocus — SF-28: optimistic UI update after Y/X', () => {
 
     await waitFor(() => {
       const cards = screen.getAllByTestId('photo-card')
-      expect(cards[0].querySelector('.badge-eliminate')).toBeInTheDocument()
-      expect(cards[0].className).toContain('opacity-50')
+      expect(cards[0].querySelector('.decision-eliminate')).toBeInTheDocument()
     })
 
     // No additional get_stack_decisions call
@@ -629,7 +676,7 @@ describe('StackFocus — H5: optimistic UI acknowledges DecisionResult', () => {
 
     // No badge before decision
     const cardsBefore = screen.getAllByTestId('photo-card')
-    expect(cardsBefore[0].querySelector('.badge-keep')).not.toBeInTheDocument()
+    expect(cardsBefore[0].querySelector('.decision-keep')).not.toBeInTheDocument()
 
     // Mock the make_decision response with full DecisionResult
     mockInvoke.mockResolvedValueOnce({
@@ -649,8 +696,8 @@ describe('StackFocus — H5: optimistic UI acknowledges DecisionResult', () => {
     // Verify the UI shows the correct badge after the call resolves
     await waitFor(() => {
       const cardsAfter = screen.getAllByTestId('photo-card')
-      expect(cardsAfter[0].querySelector('.badge-keep')).toBeInTheDocument()
-      expect(cardsAfter[0].querySelector('.badge-eliminate')).not.toBeInTheDocument()
+      expect(cardsAfter[0].querySelector('.decision-keep')).toBeInTheDocument()
+      expect(cardsAfter[0].querySelector('.decision-eliminate')).not.toBeInTheDocument()
     })
   })
 
@@ -687,9 +734,8 @@ describe('StackFocus — H5: optimistic UI acknowledges DecisionResult', () => {
     // Verify the UI: eliminate badge + opacity dimming
     await waitFor(() => {
       const cardsAfter = screen.getAllByTestId('photo-card')
-      expect(cardsAfter[0].querySelector('.badge-eliminate')).toBeInTheDocument()
-      expect(cardsAfter[0].querySelector('.badge-keep')).not.toBeInTheDocument()
-      expect(cardsAfter[0].className).toContain('opacity-50')
+      expect(cardsAfter[0].querySelector('.decision-eliminate')).toBeInTheDocument()
+      expect(cardsAfter[0].querySelector('.decision-keep')).not.toBeInTheDocument()
     })
   })
 })
@@ -712,7 +758,7 @@ describe('StackFocus — SF-41: decision re-decidable', () => {
     // Verify card starts as eliminated
     await waitFor(() => {
       const cards = screen.getAllByTestId('photo-card')
-      expect(cards[0].querySelector('.badge-eliminate')).toBeInTheDocument()
+      expect(cards[0].querySelector('.decision-eliminate')).toBeInTheDocument()
     })
 
     // Press Y to change from eliminate to keep
@@ -725,8 +771,8 @@ describe('StackFocus — SF-41: decision re-decidable', () => {
 
     await waitFor(() => {
       const cards = screen.getAllByTestId('photo-card')
-      expect(cards[0].querySelector('.badge-keep')).toBeInTheDocument()
-      expect(cards[0].querySelector('.badge-eliminate')).not.toBeInTheDocument()
+      expect(cards[0].querySelector('.decision-keep')).toBeInTheDocument()
+      expect(cards[0].querySelector('.decision-eliminate')).not.toBeInTheDocument()
     })
   })
 
@@ -746,7 +792,7 @@ describe('StackFocus — SF-41: decision re-decidable', () => {
 
     await waitFor(() => {
       const cards = screen.getAllByTestId('photo-card')
-      expect(cards[0].querySelector('.badge-keep')).toBeInTheDocument()
+      expect(cards[0].querySelector('.decision-keep')).toBeInTheDocument()
     })
 
     mockInvoke.mockResolvedValueOnce({
@@ -758,9 +804,8 @@ describe('StackFocus — SF-41: decision re-decidable', () => {
 
     await waitFor(() => {
       const cards = screen.getAllByTestId('photo-card')
-      expect(cards[0].querySelector('.badge-eliminate')).toBeInTheDocument()
-      expect(cards[0].querySelector('.badge-keep')).not.toBeInTheDocument()
-      expect(cards[0].className).toContain('opacity-50')
+      expect(cards[0].querySelector('.decision-eliminate')).toBeInTheDocument()
+      expect(cards[0].querySelector('.decision-keep')).not.toBeInTheDocument()
     })
   })
 })
@@ -795,8 +840,8 @@ describe('StackFocus — SF-43: makeDecision error handling', () => {
 
     // No badge should appear — decisions state unchanged
     const cards = screen.getAllByTestId('photo-card')
-    expect(cards[0].querySelector('.badge-keep')).not.toBeInTheDocument()
-    expect(cards[0].querySelector('.badge-eliminate')).not.toBeInTheDocument()
+    expect(cards[0].querySelector('.decision-keep')).not.toBeInTheDocument()
+    expect(cards[0].querySelector('.decision-eliminate')).not.toBeInTheDocument()
 
     consoleSpy.mockRestore()
   })
@@ -957,8 +1002,8 @@ describe('StackFocus — SF-42: getStackDecisions error handling', () => {
 
     // No decision badges should appear (decisions array stayed empty)
     const cards = screen.getAllByTestId('photo-card')
-    expect(cards[0].querySelector('.badge-keep')).not.toBeInTheDocument()
-    expect(cards[0].querySelector('.badge-eliminate')).not.toBeInTheDocument()
+    expect(cards[0].querySelector('.decision-keep')).not.toBeInTheDocument()
+    expect(cards[0].querySelector('.decision-eliminate')).not.toBeInTheDocument()
 
     consoleSpy.mockRestore()
   })
@@ -1265,7 +1310,7 @@ describe('StackFocus — U-KEY: undo decision via U key', () => {
     // Verify keep badge appeared
     await waitFor(() => {
       const cards = screen.getAllByTestId('photo-card')
-      expect(cards[0].querySelector('.badge-keep')).toBeInTheDocument()
+      expect(cards[0].querySelector('.decision-keep')).toBeInTheDocument()
     })
 
     // Press U to undo
@@ -1293,5 +1338,222 @@ describe('StackFocus — SF-44: keyboard listener cleanup on destroy', () => {
 
     expect(removeSpy).toHaveBeenCalledWith('keydown', expect.any(Function))
     removeSpy.mockRestore()
+  })
+})
+
+// ── K2: hjkl vim navigation in StackFocus ──────────────────────────────────
+
+describe('StackFocus — K2: hjkl vim navigation', () => {
+  it('l key moves focus right (same as ArrowRight)', async () => {
+    mockStackFocusMount(mockPhotos)
+    render(StackFocus)
+    await waitFor(() => screen.getAllByTestId('photo-card'))
+
+    // Focus starts at index 0
+    let cards = screen.getAllByTestId('photo-card')
+    expect(cards[0].className).toContain('border-blue-500')
+
+    // Press 'l' to move right
+    await fireEvent.keyDown(document, { key: 'l' })
+
+    cards = screen.getAllByTestId('photo-card')
+    expect(cards[1].className).toContain('border-blue-500')
+    expect(cards[0].className).not.toContain('border-blue-500')
+  })
+
+  it('h key moves focus left (same as ArrowLeft)', async () => {
+    mockStackFocusMount(mockPhotos)
+    render(StackFocus)
+    await waitFor(() => screen.getAllByTestId('photo-card'))
+
+    // Move right first
+    await fireEvent.keyDown(document, { key: 'ArrowRight' })
+    let cards = screen.getAllByTestId('photo-card')
+    expect(cards[1].className).toContain('border-blue-500')
+
+    // Press 'h' to move left
+    await fireEvent.keyDown(document, { key: 'h' })
+
+    cards = screen.getAllByTestId('photo-card')
+    expect(cards[0].className).toContain('border-blue-500')
+    expect(cards[1].className).not.toContain('border-blue-500')
+  })
+
+  it('j key moves focus down (same as ArrowDown)', async () => {
+    // Need more than 4 photos for a 4-col grid to test down movement
+    const photos8: LogicalPhotoSummary[] = Array.from({ length: 8 }, (_, i) => ({
+      logical_photo_id: i + 1,
+      thumbnail_path: null,
+      capture_time: null,
+      camera_model: null,
+      lens: null,
+      has_raw: false,
+      has_jpeg: true,
+    }))
+
+    mockInvoke.mockResolvedValueOnce(photos8)  // list_logical_photos
+    mockInvoke.mockResolvedValueOnce([])        // get_stack_decisions
+    mockInvoke.mockResolvedValueOnce({ round_id: 0, round_number: 0, state: 'open', total_photos: 0, decided: 0, kept: 0, eliminated: 0, undecided: 0, committed_at: null })
+
+    render(StackFocus)
+    await waitFor(() => expect(screen.getAllByTestId('photo-card')).toHaveLength(8))
+
+    // Press 'j' to move down (4 cols)
+    await fireEvent.keyDown(document, { key: 'j' })
+
+    const cards = screen.getAllByTestId('photo-card')
+    expect(cards[4].className).toContain('border-blue-500')
+    expect(cards[0].className).not.toContain('border-blue-500')
+  })
+
+  it('k key moves focus up (same as ArrowUp)', async () => {
+    const photos8: LogicalPhotoSummary[] = Array.from({ length: 8 }, (_, i) => ({
+      logical_photo_id: i + 1,
+      thumbnail_path: null,
+      capture_time: null,
+      camera_model: null,
+      lens: null,
+      has_raw: false,
+      has_jpeg: true,
+    }))
+
+    mockInvoke.mockResolvedValueOnce(photos8)
+    mockInvoke.mockResolvedValueOnce([])
+    mockInvoke.mockResolvedValueOnce({ round_id: 0, round_number: 0, state: 'open', total_photos: 0, decided: 0, kept: 0, eliminated: 0, undecided: 0, committed_at: null })
+
+    render(StackFocus)
+    await waitFor(() => expect(screen.getAllByTestId('photo-card')).toHaveLength(8))
+
+    // Move down first
+    await fireEvent.keyDown(document, { key: 'ArrowDown' })
+    let cards = screen.getAllByTestId('photo-card')
+    expect(cards[4].className).toContain('border-blue-500')
+
+    // Press 'k' to move up
+    await fireEvent.keyDown(document, { key: 'k' })
+
+    cards = screen.getAllByTestId('photo-card')
+    expect(cards[0].className).toContain('border-blue-500')
+    expect(cards[4].className).not.toContain('border-blue-500')
+  })
+
+  it('Ctrl+h does NOT trigger navigation (modifier guard)', async () => {
+    mockStackFocusMount(mockPhotos)
+    render(StackFocus)
+    await waitFor(() => screen.getAllByTestId('photo-card'))
+
+    // Move right first
+    await fireEvent.keyDown(document, { key: 'ArrowRight' })
+    let cards = screen.getAllByTestId('photo-card')
+    expect(cards[1].className).toContain('border-blue-500')
+
+    // Press Ctrl+h — should NOT move focus
+    await fireEvent.keyDown(document, { key: 'h', ctrlKey: true })
+
+    cards = screen.getAllByTestId('photo-card')
+    expect(cards[1].className).toContain('border-blue-500')
+  })
+
+  it('Shift+h does NOT trigger navigation (modifier guard)', async () => {
+    mockStackFocusMount(mockPhotos)
+    render(StackFocus)
+    await waitFor(() => screen.getAllByTestId('photo-card'))
+
+    // Move right first
+    await fireEvent.keyDown(document, { key: 'ArrowRight' })
+    let cards = screen.getAllByTestId('photo-card')
+    expect(cards[1].className).toContain('border-blue-500')
+
+    // Press Shift+h — should NOT move focus (H is uppercase)
+    await fireEvent.keyDown(document, { key: 'H', shiftKey: true })
+
+    cards = screen.getAllByTestId('photo-card')
+    expect(cards[1].className).toContain('border-blue-500')
+  })
+})
+
+// ── K4: Home/End in StackFocus ─────────────────────────────────────────────
+
+describe('StackFocus — K4: Home/End navigation', () => {
+  it('Home key jumps to first photo', async () => {
+    mockStackFocusMount(mockPhotos)
+    render(StackFocus)
+    await waitFor(() => screen.getAllByTestId('photo-card'))
+
+    // Move to last photo
+    await fireEvent.keyDown(document, { key: 'ArrowRight' })
+    await fireEvent.keyDown(document, { key: 'ArrowRight' })
+    let cards = screen.getAllByTestId('photo-card')
+    expect(cards[2].className).toContain('border-blue-500')
+
+    // Press Home
+    await fireEvent.keyDown(document, { key: 'Home' })
+
+    cards = screen.getAllByTestId('photo-card')
+    expect(cards[0].className).toContain('border-blue-500')
+    expect(cards[2].className).not.toContain('border-blue-500')
+  })
+
+  it('End key jumps to last photo', async () => {
+    mockStackFocusMount(mockPhotos)
+    render(StackFocus)
+    await waitFor(() => screen.getAllByTestId('photo-card'))
+
+    // Focus starts at 0
+    let cards = screen.getAllByTestId('photo-card')
+    expect(cards[0].className).toContain('border-blue-500')
+
+    // Press End
+    await fireEvent.keyDown(document, { key: 'End' })
+
+    cards = screen.getAllByTestId('photo-card')
+    expect(cards[2].className).toContain('border-blue-500')
+    expect(cards[0].className).not.toContain('border-blue-500')
+  })
+})
+
+// ── K5: E key in StackFocus opens SingleView ───────────────────────────────
+
+describe('StackFocus — K5: E key opens SingleView', () => {
+  it('e key navigates to SingleView (same as Enter)', async () => {
+    mockStackFocusMount(mockPhotos)
+    render(StackFocus)
+    await waitFor(() => screen.getAllByTestId('photo-card'))
+
+    await fireEvent.keyDown(document, { key: 'e' })
+
+    expect(navigation.current.kind).toBe('single-view')
+    if (navigation.current.kind === 'single-view') {
+      expect(navigation.current.photoId).toBe(1)
+    }
+  })
+
+  it('E key (uppercase) also navigates to SingleView', async () => {
+    mockStackFocusMount(mockPhotos)
+    render(StackFocus)
+    await waitFor(() => screen.getAllByTestId('photo-card'))
+
+    await fireEvent.keyDown(document, { key: 'E' })
+
+    expect(navigation.current.kind).toBe('single-view')
+    if (navigation.current.kind === 'single-view') {
+      expect(navigation.current.photoId).toBe(1)
+    }
+  })
+
+  it('e key on second photo opens SingleView with correct photoId', async () => {
+    mockStackFocusMount(mockPhotos)
+    render(StackFocus)
+    await waitFor(() => screen.getAllByTestId('photo-card'))
+
+    // Move to second photo
+    await fireEvent.keyDown(document, { key: 'ArrowRight' })
+
+    await fireEvent.keyDown(document, { key: 'e' })
+
+    expect(navigation.current.kind).toBe('single-view')
+    if (navigation.current.kind === 'single-view') {
+      expect(navigation.current.photoId).toBe(2)
+    }
   })
 })

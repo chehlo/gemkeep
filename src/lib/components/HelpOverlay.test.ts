@@ -183,3 +183,79 @@ describe('HelpOverlay — unknown screen fallback', () => {
     expect(screen.getByText(/GemKeep/)).toBeInTheDocument()
   })
 })
+
+// ── U5: HelpOverlay updated shortcuts ──────────────────────────────────────
+
+describe('HelpOverlay — U5: updated shortcut entries', () => {
+  it('StackOverview shows hjkl entry for vim navigation', () => {
+    navigate({ kind: 'stack-overview', projectSlug: 'test', projectName: 'Test' })
+    render(HelpOverlay, { props: { visible: true } })
+    const allText = document.body.textContent ?? ''
+    // Should contain hjkl or h/j/k/l as a shortcut key
+    expect(allText).toMatch(/hjkl|h\s*\/\s*j\s*\/\s*k\s*\/\s*l/)
+  })
+
+  it('StackOverview shows Home/End entries', () => {
+    navigate({ kind: 'stack-overview', projectSlug: 'test', projectName: 'Test' })
+    render(HelpOverlay, { props: { visible: true } })
+    const allText = document.body.textContent ?? ''
+    expect(allText).toContain('Home')
+    expect(allText).toContain('End')
+  })
+
+  it('StackFocus shows hjkl entry for vim navigation', () => {
+    navigate({ kind: 'stack-focus', projectSlug: 'test', projectName: 'Test', stackId: 1 })
+    render(HelpOverlay, { props: { visible: true } })
+    const allText = document.body.textContent ?? ''
+    expect(allText).toMatch(/hjkl|h\s*\/\s*j\s*\/\s*k\s*\/\s*l/)
+  })
+
+  it('StackFocus shows Home/End entries', () => {
+    navigate({ kind: 'stack-focus', projectSlug: 'test', projectName: 'Test', stackId: 1 })
+    render(HelpOverlay, { props: { visible: true } })
+    const allText = document.body.textContent ?? ''
+    expect(allText).toContain('Home')
+    expect(allText).toContain('End')
+  })
+
+  it('StackFocus shows E key entry for opening single view', () => {
+    navigate({ kind: 'stack-focus', projectSlug: 'test', projectName: 'Test', stackId: 1 })
+    render(HelpOverlay, { props: { visible: true } })
+    // The E key should be listed as an alternative to Enter for opening single view
+    // The kbd element should contain both 'Enter' AND 'E' (e.g. "Enter / E" or "Enter or E")
+    const kbdElements = document.querySelectorAll('kbd')
+    const kbdTexts = Array.from(kbdElements).map(el => el.textContent ?? '')
+    // Find a kbd that mentions both Enter and E as separate keys (not just "Enter" alone)
+    const hasEnterAndE = kbdTexts.some(t => t.includes('Enter') && /\bE\b/.test(t) && t.length > 5)
+    expect(hasEnterAndE).toBe(true)
+  })
+
+  it('StackFocus shows U key entry for undo', () => {
+    navigate({ kind: 'stack-focus', projectSlug: 'test', projectName: 'Test', stackId: 1 })
+    render(HelpOverlay, { props: { visible: true } })
+    const allText = document.body.textContent ?? ''
+    // U key should be listed for undoing decisions
+    expect(allText).toMatch(/[Uu]ndo/)
+    const kbdElements = document.querySelectorAll('kbd')
+    const kbdTexts = Array.from(kbdElements).map(el => el.textContent)
+    const hasUKey = kbdTexts.some(t => t !== null && t === 'U')
+    expect(hasUKey).toBe(true)
+  })
+
+  it('SingleView shows U key entry for undo', () => {
+    navigate({ kind: 'single-view', projectSlug: 'test', projectName: 'Test', stackId: 1, photoId: 1 })
+    render(HelpOverlay, { props: { visible: true } })
+    const kbdElements = document.querySelectorAll('kbd')
+    const kbdTexts = Array.from(kbdElements).map(el => el.textContent)
+    const hasUKey = kbdTexts.some(t => t !== null && t === 'U')
+    expect(hasUKey).toBe(true)
+  })
+
+  it('SingleView shows h/l entry for vim navigation', () => {
+    navigate({ kind: 'single-view', projectSlug: 'test', projectName: 'Test', stackId: 1, photoId: 1 })
+    render(HelpOverlay, { props: { visible: true } })
+    const allText = document.body.textContent ?? ''
+    // Should show h/l as vim navigation alternatives
+    expect(allText).toMatch(/h\s*\/\s*l/)
+  })
+})

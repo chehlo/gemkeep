@@ -1693,7 +1693,7 @@ describe('StackOverview — Bug 4: thumbnail-ready debounce', () => {
     // Clear mock call history so we only count calls from thumbnail-ready events
     mockInvoke.mockClear()
     // Reset the throwing default, then mock unlimited list_stacks responses
-    mockInvoke.mockImplementation((cmd: string, args?: any) => {
+    mockInvoke.mockImplementation((cmd: string, _args?: any) => {
       if (cmd === 'list_stacks') {
         return Promise.resolve([STACK_WITH_THUMB])
       }
@@ -1715,5 +1715,151 @@ describe('StackOverview — Bug 4: thumbnail-ready debounce', () => {
     // With proper debouncing, 10 rapid events should be collapsed into <= 3 calls.
     // Current code calls listStacks for EVERY event, so this will be 10.
     expect(listStacksCalls.length).toBeLessThanOrEqual(3)
+  })
+})
+
+// ── K1: hjkl vim navigation in StackOverview ─────────────────────────────
+
+describe('StackOverview — K1: hjkl vim navigation', () => {
+  it('l key moves focus right (same as ArrowRight)', async () => {
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2, STACK_3], status: DONE_STATUS })
+    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(3))
+
+    // Focus starts at index 0
+    let cards = document.querySelectorAll('[data-stack-card]')
+    expect(cards[0].className).toContain('border-blue-500')
+
+    // Press 'l' to move right
+    await fireEvent.keyDown(document, { key: 'l' })
+
+    cards = document.querySelectorAll('[data-stack-card]')
+    expect(cards[1].className).toContain('border-blue-500')
+    expect(cards[0].className).not.toContain('border-blue-500')
+  })
+
+  it('h key moves focus left (same as ArrowLeft)', async () => {
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2, STACK_3], status: DONE_STATUS })
+    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(3))
+
+    // Move right first
+    await fireEvent.keyDown(document, { key: 'ArrowRight' })
+    let cards = document.querySelectorAll('[data-stack-card]')
+    expect(cards[1].className).toContain('border-blue-500')
+
+    // Press 'h' to move left
+    await fireEvent.keyDown(document, { key: 'h' })
+
+    cards = document.querySelectorAll('[data-stack-card]')
+    expect(cards[0].className).toContain('border-blue-500')
+    expect(cards[1].className).not.toContain('border-blue-500')
+  })
+
+  it('j key moves focus down (same as ArrowDown)', async () => {
+    const manyStacks: StackSummary[] = Array.from({ length: 8 }, (_, i) => ({
+      stack_id: i + 1, logical_photo_count: 1, earliest_capture: null,
+      has_raw: false, has_jpeg: true, thumbnail_path: null,
+    }))
+
+    renderStackOverview({ folders: [FOLDER_A], stacks: manyStacks, status: DONE_STATUS })
+    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(8))
+
+    // Press 'j' to move down (4 cols)
+    await fireEvent.keyDown(document, { key: 'j' })
+
+    const cards = document.querySelectorAll('[data-stack-card]')
+    expect(cards[4].className).toContain('border-blue-500')
+    expect(cards[0].className).not.toContain('border-blue-500')
+  })
+
+  it('k key moves focus up (same as ArrowUp)', async () => {
+    const manyStacks: StackSummary[] = Array.from({ length: 8 }, (_, i) => ({
+      stack_id: i + 1, logical_photo_count: 1, earliest_capture: null,
+      has_raw: false, has_jpeg: true, thumbnail_path: null,
+    }))
+
+    renderStackOverview({ folders: [FOLDER_A], stacks: manyStacks, status: DONE_STATUS })
+    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(8))
+
+    // Move down first to index 4
+    await fireEvent.keyDown(document, { key: 'ArrowDown' })
+    let cards = document.querySelectorAll('[data-stack-card]')
+    expect(cards[4].className).toContain('border-blue-500')
+
+    // Press 'k' to move up
+    await fireEvent.keyDown(document, { key: 'k' })
+
+    cards = document.querySelectorAll('[data-stack-card]')
+    expect(cards[0].className).toContain('border-blue-500')
+    expect(cards[4].className).not.toContain('border-blue-500')
+  })
+
+  it('Ctrl+h does NOT trigger navigation (modifier guard)', async () => {
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2, STACK_3], status: DONE_STATUS })
+    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(3))
+
+    // Move right first so we can detect unwanted left movement
+    await fireEvent.keyDown(document, { key: 'ArrowRight' })
+    let cards = document.querySelectorAll('[data-stack-card]')
+    expect(cards[1].className).toContain('border-blue-500')
+
+    // Press Ctrl+h — should NOT move focus
+    await fireEvent.keyDown(document, { key: 'h', ctrlKey: true })
+
+    cards = document.querySelectorAll('[data-stack-card]')
+    expect(cards[1].className).toContain('border-blue-500')
+  })
+
+  it('Shift+h does NOT trigger navigation (modifier guard)', async () => {
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2, STACK_3], status: DONE_STATUS })
+    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(3))
+
+    // Move right first
+    await fireEvent.keyDown(document, { key: 'ArrowRight' })
+    let cards = document.querySelectorAll('[data-stack-card]')
+    expect(cards[1].className).toContain('border-blue-500')
+
+    // Press Shift+h — should NOT move focus
+    await fireEvent.keyDown(document, { key: 'H', shiftKey: true })
+
+    cards = document.querySelectorAll('[data-stack-card]')
+    expect(cards[1].className).toContain('border-blue-500')
+  })
+})
+
+// ── K3: Home/End in StackOverview ────────────────────────────────────────
+
+describe('StackOverview — K3: Home/End navigation', () => {
+  it('Home key jumps to first stack', async () => {
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2, STACK_3], status: DONE_STATUS })
+    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(3))
+
+    // Move to last stack
+    await fireEvent.keyDown(document, { key: 'ArrowRight' })
+    await fireEvent.keyDown(document, { key: 'ArrowRight' })
+    let cards = document.querySelectorAll('[data-stack-card]')
+    expect(cards[2].className).toContain('border-blue-500')
+
+    // Press Home
+    await fireEvent.keyDown(document, { key: 'Home' })
+
+    cards = document.querySelectorAll('[data-stack-card]')
+    expect(cards[0].className).toContain('border-blue-500')
+    expect(cards[2].className).not.toContain('border-blue-500')
+  })
+
+  it('End key jumps to last stack', async () => {
+    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2, STACK_3], status: DONE_STATUS })
+    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(3))
+
+    // Focus starts at index 0
+    let cards = document.querySelectorAll('[data-stack-card]')
+    expect(cards[0].className).toContain('border-blue-500')
+
+    // Press End
+    await fireEvent.keyDown(document, { key: 'End' })
+
+    cards = document.querySelectorAll('[data-stack-card]')
+    expect(cards[2].className).toContain('border-blue-500')
+    expect(cards[0].className).not.toContain('border-blue-500')
   })
 })

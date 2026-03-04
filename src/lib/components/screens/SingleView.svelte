@@ -3,7 +3,7 @@
   import { navigation, navigate, back } from '$lib/stores/navigation.svelte.js'
   import {
     getPhotoDetail, listLogicalPhotos, getStackDecisions, getRoundStatus,
-    makeDecision, commitRound, getThumbnailUrl,
+    makeDecision, commitRound, undoDecision, getThumbnailUrl,
     type PhotoDetail, type LogicalPhotoSummary, type PhotoDecisionStatus, type RoundStatus
   } from '$lib/api/index.js'
 
@@ -167,6 +167,17 @@
       return
     }
 
+    if ((e.key === 'u' || e.key === 'U') && currentPhoto) {
+      if (roundStatus && roundStatus.state === 'committed') return
+      try {
+        await undoDecision(projectSlug, currentPhoto.logical_photo_id)
+        currentPhoto = { ...currentPhoto, current_status: 'undecided' }
+        updateDecisionState(currentPhoto.logical_photo_id, 'undecided')
+        roundStatus = await getRoundStatus(projectSlug, stackId)
+      } catch (err) { console.error('undoDecision failed:', err) }
+      return
+    }
+
     if (e.key === 'ArrowRight' || e.key === 'l') {
       if (photoList.length > 0 && currentIndex < photoList.length - 1) {
         currentIndex++
@@ -215,6 +226,12 @@
     if (status === 'eliminate') return 'ELIMINATED'
     return 'UNDECIDED'
   }
+
+  function statusClass(status: string): string {
+    if (status === 'keep') return 'text-green-400'
+    if (status === 'eliminate') return 'text-red-400'
+    return 'text-gray-400'
+  }
 </script>
 
 <div class="min-h-screen bg-black text-gray-100 flex flex-col">
@@ -231,12 +248,12 @@
         <div class="text-gray-500 text-sm" data-testid="no-preview">No preview available</div>
       {/if}
 
-      <!-- Decision borders -->
+      <!-- Decision border overlay -->
       {#if currentPhoto.current_status === 'keep'}
-        <div class="absolute inset-0 border-4 border-green-500 pointer-events-none"></div>
+        <div class="decision-keep absolute inset-0 border-4 border-green-500 pointer-events-none"></div>
       {/if}
       {#if currentPhoto.current_status === 'eliminate'}
-        <div class="absolute inset-0 border-4 border-red-500 pointer-events-none"></div>
+        <div class="decision-eliminate absolute inset-0 border-4 border-red-500 pointer-events-none"></div>
         <div class="absolute inset-0 bg-black/50 pointer-events-none"></div>
       {/if}
     </div>
@@ -247,20 +264,18 @@
         <div class="flex gap-4">
           {#if currentPhoto.aperture != null}
             <div>f/{currentPhoto.aperture}</div>
-          {:else}
-            <div>--</div>
           {/if}
-          <div>{currentPhoto.shutter_speed ?? '--'}</div>
+          {#if currentPhoto.shutter_speed != null}
+            <div>{currentPhoto.shutter_speed}</div>
+          {/if}
           {#if currentPhoto.iso != null}
             <div>ISO {currentPhoto.iso}</div>
-          {:else}
-            <div>--</div>
           {/if}
-          <div>{currentPhoto.focal_length ? `${Math.round(currentPhoto.focal_length)}mm` : '--'}{#if currentPhoto.lens} {currentPhoto.lens}{/if}</div>
+          {#if currentPhoto.focal_length != null || currentPhoto.lens}
+            <div>{currentPhoto.focal_length ? `${Math.round(currentPhoto.focal_length)}mm` : ''}{#if currentPhoto.lens}{currentPhoto.focal_length ? ' ' : ''}{currentPhoto.lens}{/if}</div>
+          {/if}
           {#if currentPhoto.exposure_comp != null}
             <div>{currentPhoto.exposure_comp >= 0 ? '+' : ''}{currentPhoto.exposure_comp.toFixed(1)} EV</div>
-          {:else}
-            <div>--</div>
           {/if}
         </div>
         <div class="flex gap-4 items-center">
@@ -289,7 +304,7 @@
 
     <!-- Status bar -->
     <div class="px-4 py-2 bg-gray-900 border-t border-gray-800 text-sm text-gray-400">
-      Photo {currentIndex + 1}/{photoList.length} — {statusText(currentPhoto.current_status)}{#if roundStatus} — Round {roundStatus.round_number}{/if}
+      Photo {currentIndex + 1}/{photoList.length} — <span class={statusClass(currentPhoto.current_status)}>{statusText(currentPhoto.current_status)}{#if roundStatus?.state === 'committed'} (read-only){/if}</span>{#if roundStatus} — Round {roundStatus.round_number}{/if}
     </div>
   {/if}
 </div>

@@ -30,6 +30,8 @@
   const STACK_OVERVIEW: ShortcutGroup[] = [
     { title: 'NAVIGATION', shortcuts: [
       { key: 'Arrow keys', description: 'Move focus' },
+      { key: 'hjkl', description: 'Vim-style navigation' },
+      { key: 'Home / End', description: 'Jump to first / last stack' },
       { key: 'Enter', description: 'Open stack' },
       ...GLOBAL,
     ]},
@@ -49,7 +51,9 @@
   const STACK_FOCUS: ShortcutGroup[] = [
     { title: 'NAVIGATION', shortcuts: [
       { key: 'Arrow keys', description: 'Move focus in grid' },
-      { key: 'Enter', description: 'Open in single view' },
+      { key: 'hjkl', description: 'Vim-style navigation' },
+      { key: 'Home / End', description: 'Jump to first / last photo' },
+      { key: 'Enter / E', description: 'Open in single view' },
       { key: 'Tab', description: 'Jump to next undecided' },
       { key: 'Shift+Tab', description: 'Jump to previous undecided' },
       ...GLOBAL,
@@ -57,13 +61,14 @@
     { title: 'DECISIONS', shortcuts: [
       { key: 'Y', description: 'Keep photo' },
       { key: 'X', description: 'Eliminate photo' },
+      { key: 'U', description: 'Undo decision' },
       { key: 'Ctrl+Enter', description: 'Commit round' },
     ]},
   ]
 
   const SINGLE_VIEW: ShortcutGroup[] = [
     { title: 'NAVIGATION', shortcuts: [
-      { key: 'Left / Right', description: 'Previous / next photo' },
+      { key: 'Left / Right or h / l', description: 'Previous / next photo' },
       { key: 'Home', description: 'Jump to first photo' },
       { key: 'End', description: 'Jump to last photo' },
       { key: 'Tab', description: 'Jump to next undecided' },
@@ -73,6 +78,7 @@
     { title: 'DECISIONS', shortcuts: [
       { key: 'Y', description: 'Keep photo' },
       { key: 'X', description: 'Eliminate photo' },
+      { key: 'U', description: 'Undo decision' },
       { key: 'Ctrl+Enter', description: 'Commit round' },
     ]},
     { title: 'DISPLAY', shortcuts: [

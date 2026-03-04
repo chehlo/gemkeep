@@ -34,6 +34,8 @@ const PHOTO_DETAIL_NO_PARAMS: PhotoDetail = {
   iso: null,
   focal_length: null,
   exposure_comp: null,
+  camera_model: null,
+  lens: null,
 }
 
 const PHOTO_LIST: LogicalPhotoSummary[] = [
@@ -135,13 +137,19 @@ describe('SingleView — loading and rendering', () => {
     })
   })
 
-  it('renders "--" placeholders when camera params are null', async () => {
+  it('hides camera param fields entirely when values are null (FIX-4.1.2)', async () => {
     mockMountSequence({ detail: PHOTO_DETAIL_NO_PARAMS })
     render(SingleView)
+    // Wait for component to finish loading (photo renders)
     await waitFor(() => {
-      const dashes = screen.getAllByText('--')
-      expect(dashes.length).toBeGreaterThanOrEqual(4)
+      expect(screen.getByRole('img')).toBeInTheDocument()
     })
+    // Now verify that null-valued camera params do NOT render "--" placeholders
+    expect(screen.queryByText('--')).not.toBeInTheDocument()
+    // Null params: aperture, shutter_speed, iso, focal_length, exposure_comp
+    expect(screen.queryByText(/f\//)).not.toBeInTheDocument()
+    expect(screen.queryByText(/ISO/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/EV/)).not.toBeInTheDocument()
   })
 })
 
@@ -269,6 +277,66 @@ describe('SingleView — status bar', () => {
     await waitFor(() => {
       expect(screen.getByText(/Photo 1\/3/)).toBeInTheDocument()
       expect(screen.getByText(/KEPT/i)).toBeInTheDocument()
+    })
+  })
+
+  it('V4: KEPT status text has green color class (text-green-400)', async () => {
+    mockMountSequence({
+      detail: { ...PHOTO_DETAIL, current_status: 'keep' },
+    })
+    render(SingleView)
+    await waitFor(() => {
+      const keptSpan = screen.getByText(/KEPT/)
+      expect(keptSpan.className).toContain('text-green-400')
+    })
+  })
+
+  it('V4: ELIMINATED status text has red color class (text-red-400)', async () => {
+    mockMountSequence({
+      detail: { ...PHOTO_DETAIL, current_status: 'eliminate' },
+    })
+    render(SingleView)
+    await waitFor(() => {
+      const elimSpan = screen.getByText(/ELIMINATED/)
+      expect(elimSpan.className).toContain('text-red-400')
+    })
+  })
+
+  it('V4: UNDECIDED status text has gray color class (text-gray-400)', async () => {
+    mockMountSequence({
+      detail: { ...PHOTO_DETAIL, current_status: 'undecided' },
+    })
+    render(SingleView)
+    await waitFor(() => {
+      const undecidedSpan = screen.getByText(/UNDECIDED/)
+      expect(undecidedSpan.className).toContain('text-gray-400')
+    })
+  })
+
+  it('V5: shows "(read-only)" suffix when round is committed', async () => {
+    mockMountSequence({
+      detail: { ...PHOTO_DETAIL, current_status: 'keep' },
+      roundStatus: COMMITTED_ROUND,
+    })
+    render(SingleView)
+    await waitFor(() => {
+      // Svelte's {#if} block creates separate text nodes for "KEPT" and "(read-only)"
+      // so getByText with regex across them won't match. Check each part separately.
+      const keptEl = screen.getByText(/KEPT/)
+      expect(keptEl).toBeInTheDocument()
+      expect(keptEl.textContent).toContain('(read-only)')
+    })
+  })
+
+  it('V5: does NOT show "(read-only)" when round is open', async () => {
+    mockMountSequence({
+      detail: { ...PHOTO_DETAIL, current_status: 'keep' },
+      roundStatus: OPEN_ROUND,
+    })
+    render(SingleView)
+    await waitFor(() => {
+      expect(screen.getByText(/KEPT/)).toBeInTheDocument()
+      expect(screen.queryByText(/read-only/)).not.toBeInTheDocument()
     })
   })
 })

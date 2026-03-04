@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
+  import { onMount, onDestroy } from 'svelte'
   import { navigate, navigation } from '$lib/stores/navigation.svelte.js'
   import {
     listProjects,
@@ -21,7 +21,7 @@
   let deleteConfirm = $state<string | null>(null)
   let error = $state<string | null>(null)
 
-  // Debounce slug preview — update 200ms after user stops typing
+  // Debounce slug fetch — used internally for createProject, not displayed
   $effect(() => {
     if (!newName) {
       suggestedSlug = ''
@@ -37,7 +37,21 @@
     return () => clearTimeout(t)
   })
 
+  function cancelNewForm() {
+    showNewForm = false
+    newName = ''
+    error = null
+  }
+
+  function handleKeydown(e: KeyboardEvent) {
+    if (e.key === 'Escape' && showNewForm) {
+      e.preventDefault()
+      cancelNewForm()
+    }
+  }
+
   onMount(async () => {
+    window.addEventListener('keydown', handleKeydown)
     const screen = navigation.current
     try {
       if (screen.kind === 'project-list' && screen.skipAutoOpen === true) {
@@ -64,12 +78,23 @@
     }
   })
 
+  onDestroy(() => {
+    window.removeEventListener('keydown', handleKeydown)
+  })
+
   async function handleCreate() {
     if (!newName.trim() || isCreating) return
+    // Check for duplicate project name
+    const trimmed = newName.trim()
+    const duplicate = projects.find(p => p.name.toLowerCase() === trimmed.toLowerCase())
+    if (duplicate) {
+      error = `A project named "${duplicate.name}" already exists.`
+      return
+    }
     isCreating = true
     error = null
     try {
-      const p = await createProject(newName.trim())
+      const p = await createProject(trimmed)
       navigate({ kind: 'stack-overview', projectSlug: p.slug, projectName: p.name })
     } catch (e) {
       error = String(e)
@@ -145,18 +170,21 @@
             onkeydown={(e) => { if (e.key === 'Enter') handleCreate() }}
           />
         </div>
-        {#if suggestedSlug}
-          <div class="mb-4 text-sm text-gray-400">
-            Slug: <span class="text-gray-300 font-mono">{suggestedSlug}</span>
-          </div>
-        {/if}
-        <button
-          class="bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-white px-4 py-2 rounded font-medium"
-          onclick={handleCreate}
-          disabled={!newName.trim() || isCreating}
-        >
-          {isCreating ? 'Creating…' : 'Create'}
-        </button>
+        <div class="flex gap-3">
+          <button
+            class="bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-white px-4 py-2 rounded font-medium"
+            onclick={handleCreate}
+            disabled={!newName.trim() || isCreating}
+          >
+            {isCreating ? 'Creating…' : 'Create'}
+          </button>
+          <button
+            class="text-gray-400 hover:text-gray-200 px-4 py-2 text-sm"
+            onclick={cancelNewForm}
+          >
+            Cancel
+          </button>
+        </div>
       </div>
     {/if}
   </div>

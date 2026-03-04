@@ -220,6 +220,16 @@
     if ((e.key === 'm' || e.key === 'M') && stacks.length > 0 && !status.running) { handleMerge(); return }
     if (stacks.length > 0 && !status.running) {
       const cols = 4
+
+      // Map hjkl to arrow equivalents (only when no Ctrl/Shift/Alt modifier)
+      let mappedKey = e.key
+      if (!e.ctrlKey && !e.shiftKey && !e.altKey) {
+        if (e.key === 'l') mappedKey = 'ArrowRight'
+        if (e.key === 'h') mappedKey = 'ArrowLeft'
+        if (e.key === 'j') mappedKey = 'ArrowDown'
+        if (e.key === 'k') mappedKey = 'ArrowUp'
+      }
+
       // Shift+Arrow: multi-select stacks in all 4 directions
       if (e.shiftKey && ['ArrowRight', 'ArrowLeft', 'ArrowDown', 'ArrowUp'].includes(e.key)) {
         selectedStacks.add(stacks[focusedIndex].stack_id)
@@ -233,10 +243,12 @@
         scrollFocusedCardIntoView()
         return
       }
-      if (e.key === 'ArrowRight') { selectedStacks = new Set(); focusedIndex = Math.min(focusedIndex + 1, stacks.length - 1); e.preventDefault(); scrollFocusedCardIntoView() }
-      if (e.key === 'ArrowLeft') { selectedStacks = new Set(); focusedIndex = Math.max(focusedIndex - 1, 0); e.preventDefault(); scrollFocusedCardIntoView() }
-      if (e.key === 'ArrowDown') { selectedStacks = new Set(); focusedIndex = Math.min(focusedIndex + cols, stacks.length - 1); e.preventDefault(); scrollFocusedCardIntoView() }
-      if (e.key === 'ArrowUp') { selectedStacks = new Set(); focusedIndex = Math.max(focusedIndex - cols, 0); e.preventDefault(); scrollFocusedCardIntoView() }
+      if (mappedKey === 'ArrowRight') { selectedStacks = new Set(); focusedIndex = Math.min(focusedIndex + 1, stacks.length - 1); e.preventDefault(); scrollFocusedCardIntoView() }
+      if (mappedKey === 'ArrowLeft') { selectedStacks = new Set(); focusedIndex = Math.max(focusedIndex - 1, 0); e.preventDefault(); scrollFocusedCardIntoView() }
+      if (mappedKey === 'ArrowDown') { selectedStacks = new Set(); focusedIndex = Math.min(focusedIndex + cols, stacks.length - 1); e.preventDefault(); scrollFocusedCardIntoView() }
+      if (mappedKey === 'ArrowUp') { selectedStacks = new Set(); focusedIndex = Math.max(focusedIndex - cols, 0); e.preventDefault(); scrollFocusedCardIntoView() }
+      if (mappedKey === 'Home') { selectedStacks = new Set(); focusedIndex = 0; e.preventDefault(); scrollFocusedCardIntoView() }
+      if (mappedKey === 'End') { selectedStacks = new Set(); focusedIndex = stacks.length - 1; e.preventDefault(); scrollFocusedCardIntoView() }
       if (e.key === 'Enter' && !(e.target instanceof HTMLInputElement)) {
         const stack = stacks[focusedIndex]
         navigation.stackOverviewFocusIndex = focusedIndex

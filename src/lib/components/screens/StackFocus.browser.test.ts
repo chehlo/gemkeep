@@ -98,7 +98,7 @@ describe('StackFocus — SF-07: green badge on kept photos (visual)', () => {
     const cards = await waitForCards(3)
 
     // Card 0 (kept) should have a green badge
-    const badge = cards[0].querySelector('.badge-keep') as HTMLElement
+    const badge = cards[0].querySelector('.decision-keep') as HTMLElement
     expect(badge).not.toBeNull()
 
     // Verify the badge is visible (has non-zero dimensions)
@@ -131,8 +131,8 @@ describe('StackFocus — SF-07: green badge on kept photos (visual)', () => {
 
     // No badge on any card
     for (const card of cards) {
-      expect(card.querySelector('.badge-keep')).toBeNull()
-      expect(card.querySelector('.badge-eliminate')).toBeNull()
+      expect(card.querySelector('.decision-keep')).toBeNull()
+      expect(card.querySelector('.decision-eliminate')).toBeNull()
     }
   })
 })
@@ -149,7 +149,7 @@ describe('StackFocus — SF-08: red badge on eliminated photos (visual)', () => 
     const cards = await waitForCards(3)
 
     // Card 1 (eliminated) should have a red badge
-    const badge = cards[1].querySelector('.badge-eliminate') as HTMLElement
+    const badge = cards[1].querySelector('.decision-eliminate') as HTMLElement
     expect(badge).not.toBeNull()
 
     // Verify the badge is visible

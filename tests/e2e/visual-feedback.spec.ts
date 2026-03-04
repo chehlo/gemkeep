@@ -56,7 +56,7 @@ test('Y key — green badge must be positioned inside its StackFocus card', asyn
 
   // The badge should exist and be visible
   const firstCard = page.locator('[data-testid="photo-card"]').first()
-  const badge = firstCard.locator('.badge-keep')
+  const badge = firstCard.locator('.decision-keep')
   await expect(badge).toBeVisible({ timeout: 3_000 })
 
   // KEY ASSERTION: badge bounding box must be inside the card bounding box.

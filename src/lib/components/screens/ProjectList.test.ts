@@ -24,6 +24,12 @@ const WEDDING: Project = {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  // Reset mock queue (unconsumed mockResolvedValueOnce values from previous tests) and
+  // reinstall the Rule 9 throwing default so under-mocked commands fail loudly.
+  mockInvoke.mockReset()
+  mockInvoke.mockImplementation((cmd: string) => {
+    throw new Error(`Unmocked invoke("${cmd}"). Add mockInvoke.mockResolvedValueOnce(...) before this call.`)
+  })
   navigate({ kind: 'project-list' })
 })
 
@@ -177,11 +183,11 @@ describe('ProjectList — create form fields (PL-10, PL-11, PL-12, PL-13)', () =
     expect(input.tagName).toBe('INPUT')
   })
 
-  it('slug preview appears after 200ms debounce (PL-11)', async () => {
+  it('slug preview is NOT shown to user (PL-11 — slug is internal only)', async () => {
     vi.useFakeTimers()
     await renderWithProjects()
 
-    // Open form — need real timers briefly to let the toggle work
+    // Open form
     const toggleBtn = screen.getByText('New Project')
     toggleBtn.click()
 
@@ -194,18 +200,15 @@ describe('ProjectList — create form fields (PL-10, PL-11, PL-12, PL-13)', () =
 
     // Type into the input
     const input = screen.getByPlaceholderText('Iceland 2024') as HTMLInputElement
-    // Simulate typing by setting value and firing input event
     input.value = 'My Cool Project'
     input.dispatchEvent(new Event('input', { bubbles: true }))
-
-    // Before debounce — no slug visible
-    expect(screen.queryByText('my-cool-project')).not.toBeInTheDocument()
 
     // Advance past debounce
     await vi.advanceTimersByTimeAsync(250)
 
+    // Slug must NOT be visible to the user (it's used internally only)
     await waitFor(() => {
-      expect(screen.getByText('my-cool-project')).toBeInTheDocument()
+      expect(screen.queryByText('my-cool-project')).not.toBeInTheDocument()
     })
 
     vi.useRealTimers()
@@ -220,20 +223,20 @@ describe('ProjectList — create form fields (PL-10, PL-11, PL-12, PL-13)', () =
   it('Create button shows "Creating…" while submitting (PL-13)', async () => {
     const user = await openCreateForm()
 
-    // Mock suggest_slug for debounce effect, then create_project that hangs
-    mockInvoke.mockResolvedValueOnce('new-project') // suggest_slug
+    // Use command-based mock to handle non-deterministic ordering
+    // of suggest_slug (debounce) vs create_project (user click)
     let resolveCreate!: (value: Project) => void
-    mockInvoke.mockReturnValueOnce(new Promise<Project>(r => { resolveCreate = r }) as any) // create_project — hangs
+    const createPromise = new Promise<Project>(r => { resolveCreate = r })
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === 'suggest_slug') return Promise.resolve('new-project')
+      if (cmd === 'create_project') return createPromise
+      throw new Error(`Unmocked invoke("${cmd}")`)
+    })
 
     const input = screen.getByPlaceholderText('Iceland 2024')
     await user.type(input, 'New Project')
 
-    // Wait for slug suggestion to resolve
-    await waitFor(() => {
-      expect(screen.getByText('new-project')).toBeInTheDocument()
-    })
-
-    // Click Create
+    // Click Create (slug is not displayed, so just click after typing)
     const createBtn = screen.getByRole('button', { name: 'Create' })
     await user.click(createBtn)
 
@@ -256,22 +259,21 @@ describe('ProjectList — create form submission (PL-14, PL-16)', () => {
     const user = userEvent.setup()
     await user.click(screen.getByText('New Project'))
 
-    // Mock suggest_slug + create_project
-    mockInvoke.mockResolvedValueOnce('enter-project')  // suggest_slug
-    mockInvoke.mockResolvedValueOnce({                 // create_project
-      id: 3, name: 'Enter Project', slug: 'enter-project',
-      created_at: '2026-03-01T00:00:00Z', last_opened_at: null,
+    // Use command-based mock to handle non-deterministic ordering
+    // of suggest_slug (debounce) vs create_project (Enter key)
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === 'suggest_slug') return Promise.resolve('enter-project')
+      if (cmd === 'create_project') return Promise.resolve({
+        id: 3, name: 'Enter Project', slug: 'enter-project',
+        created_at: '2026-03-01T00:00:00Z', last_opened_at: null,
+      })
+      throw new Error(`Unmocked invoke("${cmd}")`)
     })
 
     const input = screen.getByPlaceholderText('Iceland 2024')
     await user.type(input, 'Enter Project')
 
-    // Wait for slug to appear
-    await waitFor(() => {
-      expect(screen.getByText('enter-project')).toBeInTheDocument()
-    })
-
-    // Press Enter
+    // Press Enter to submit
     await user.keyboard('{Enter}')
 
     // Should navigate to stack-overview
@@ -288,16 +290,15 @@ describe('ProjectList — create form submission (PL-14, PL-16)', () => {
     const user = userEvent.setup()
     await user.click(screen.getByText('New Project'))
 
-    // Mock suggest_slug + failing create_project
-    mockInvoke.mockResolvedValueOnce('fail-project')            // suggest_slug
-    mockInvoke.mockRejectedValueOnce(new Error('Name taken'))   // create_project fails
+    // Use command-based mock to handle non-deterministic ordering
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === 'suggest_slug') return Promise.resolve('fail-project')
+      if (cmd === 'create_project') return Promise.reject(new Error('Name taken'))
+      throw new Error(`Unmocked invoke("${cmd}")`)
+    })
 
     const input = screen.getByPlaceholderText('Iceland 2024')
     await user.type(input, 'Fail Project')
-
-    await waitFor(() => {
-      expect(screen.getByText('fail-project')).toBeInTheDocument()
-    })
 
     await user.click(screen.getByRole('button', { name: 'Create' }))
 
@@ -307,6 +308,115 @@ describe('ProjectList — create form submission (PL-14, PL-16)', () => {
     })
     // Should stay on project-list
     expect(navigation.current.kind).toBe('project-list')
+  })
+})
+
+describe('ProjectList — Cancel button and Esc key (FIX-1.2.1)', () => {
+  it('Cancel button closes the create form and clears the name input', async () => {
+    await renderWithProjects()
+    const user = userEvent.setup()
+
+    // Open the form
+    await user.click(screen.getByText('New Project'))
+    expect(screen.getByPlaceholderText('Iceland 2024')).toBeInTheDocument()
+
+    // Type a name
+    const input = screen.getByPlaceholderText('Iceland 2024')
+    await user.type(input, 'Some Name')
+    expect((input as HTMLInputElement).value).toBe('Some Name')
+
+    // Click Cancel
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+
+    // Form should be hidden
+    expect(screen.queryByPlaceholderText('Iceland 2024')).not.toBeInTheDocument()
+  })
+
+  it('Cancel button is visible when the form is open', async () => {
+    await renderWithProjects()
+    const user = userEvent.setup()
+
+    // Cancel not visible before form opens
+    expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument()
+
+    await user.click(screen.getByText('New Project'))
+
+    // Cancel is visible after form opens
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument()
+  })
+
+  it('Escape key closes the create form', async () => {
+    await renderWithProjects()
+    const user = userEvent.setup()
+
+    // Open the form
+    await user.click(screen.getByText('New Project'))
+    expect(screen.getByPlaceholderText('Iceland 2024')).toBeInTheDocument()
+
+    // Press Escape
+    await user.keyboard('{Escape}')
+
+    // Form should be hidden
+    await waitFor(() => {
+      expect(screen.queryByPlaceholderText('Iceland 2024')).not.toBeInTheDocument()
+    })
+  })
+})
+
+describe('ProjectList — Duplicate project name prevention (FIX-1.5.1)', () => {
+  it('shows an error instead of creating when name already exists (case-insensitive)', async () => {
+    await renderWithProjects([ICELAND, WEDDING])
+    const user = userEvent.setup()
+
+    await user.click(screen.getByText('New Project'))
+
+    // Mock suggest_slug (will be called internally)
+    mockInvoke.mockResolvedValueOnce('iceland-2024') // suggest_slug
+
+    const input = screen.getByPlaceholderText('Iceland 2024')
+    // Type the same name as an existing project (different case)
+    await user.type(input, 'iceland 2024')
+
+    await user.click(screen.getByRole('button', { name: 'Create' }))
+
+    // Error message should appear — no create_project call should have been made
+    await waitFor(() => {
+      expect(screen.getByText(/already exists/i)).toBeInTheDocument()
+    })
+
+    // Verify create_project was NOT called
+    expect(mockInvoke).not.toHaveBeenCalledWith('create_project', expect.anything())
+
+    // Should stay on project-list
+    expect(navigation.current.kind).toBe('project-list')
+  })
+
+  it('allows creating a project with a unique name', async () => {
+    await renderWithProjects([ICELAND])
+    const user = userEvent.setup()
+
+    await user.click(screen.getByText('New Project'))
+
+    // Use command-based mock to handle non-deterministic ordering
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === 'suggest_slug') return Promise.resolve('new-unique-project')
+      if (cmd === 'create_project') return Promise.resolve({
+        id: 5, name: 'New Unique Project', slug: 'new-unique-project',
+        created_at: '2026-03-01T00:00:00Z', last_opened_at: null,
+      })
+      throw new Error(`Unmocked invoke("${cmd}")`)
+    })
+
+    const input = screen.getByPlaceholderText('Iceland 2024')
+    await user.type(input, 'New Unique Project')
+
+    await user.click(screen.getByRole('button', { name: 'Create' }))
+
+    // Should navigate successfully — no error
+    await waitFor(() => {
+      expect(navigation.current.kind).toBe('stack-overview')
+    })
+    expect(screen.queryByText(/already exists/i)).not.toBeInTheDocument()
   })
 })
 

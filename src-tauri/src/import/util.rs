@@ -6,9 +6,16 @@ use std::path::Path;
 /// Reserves 2 cores for the UI / GTK event loop so the app stays responsive,
 /// but never returns less than 1.
 pub fn capped_num_threads() -> usize {
-    std::thread::available_parallelism()
-        .map(|n| n.get().saturating_sub(2).max(1))
-        .unwrap_or(1)
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    // In test builds, cap hard at 2 threads to prevent thread explosion
+    // (cargo test already runs tests in parallel; rayon pools compound it).
+    #[cfg(test)]
+    let limit = 2;
+    #[cfg(not(test))]
+    let limit = cores;
+    limit.min(cores.saturating_sub(2).max(1))
 }
 
 /// Scan a thumbnail cache directory and return the set of logical_photo IDs

@@ -85,6 +85,7 @@ function renderStackOverview(overrides?: Partial<{
   const status = overrides?.status ?? IDLE_STATUS
 
   // loadAll() core: list_source_folders, list_stacks, get_indexing_status
+  // (expand_source_scopes is handled by the default mockImplementation in beforeEach)
   mockInvoke.mockResolvedValueOnce(folders)
   mockInvoke.mockResolvedValueOnce(stacks)
   mockInvoke.mockResolvedValueOnce(status)
@@ -120,6 +121,8 @@ beforeEach(() => {
   // then restore the Rule 9 throwing default.
   mockInvoke.mockReset()
   mockInvoke.mockImplementation((cmd: string) => {
+    // expand_source_scopes is fire-and-forget in loadAll(); silently resolve it
+    if (cmd === 'expand_source_scopes') return Promise.resolve(undefined)
     throw new Error(`Unmocked invoke("${cmd}"). Add mockInvoke.mockResolvedValueOnce(...) before this call.`)
   })
   setupNav()

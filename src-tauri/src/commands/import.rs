@@ -8,7 +8,7 @@ use crate::state::AppState;
 use rusqlite::Connection;
 use std::sync::atomic::Ordering;
 use std::sync::MutexGuard;
-use tauri::State;
+use tauri::{Manager, State};
 
 // ── Lock helpers ──────────────────────────────────────────────────────────────
 
@@ -47,6 +47,38 @@ fn with_open_project<'s>(state: &'s AppState, slug: &str) -> Result<ProjectGuard
     Ok((db_guard, project_guard))
 }
 
+// ── Asset scope expansion ────────────────────────────────────────────────────
+
+/// Expand the Tauri asset protocol scope to include the given directory.
+/// This allows the frontend to load files (e.g. source JPEGs) via `convertFileSrc()`.
+/// Read-only: the asset protocol only serves files, it cannot write or delete.
+pub fn expand_asset_scope(app_handle: &tauri::AppHandle, path: &std::path::Path) {
+    match app_handle.asset_protocol_scope().allow_directory(path, true) {
+        Ok(()) => tracing::info!("asset scope expanded: {}", path.display()),
+        Err(e) => tracing::warn!("asset scope expansion failed for {}: {}", path.display(), e),
+    }
+}
+
+/// Expand asset scope for all source folders of the currently open project.
+pub fn expand_asset_scope_for_project(
+    app_handle: &tauri::AppHandle,
+    conn: &Connection,
+    project_id: i64,
+) {
+    match repository::list_source_folders(conn, project_id) {
+        Ok(folders) => {
+            for folder in &folders {
+                expand_asset_scope(app_handle, std::path::Path::new(&folder.path));
+            }
+            tracing::info!(
+                "asset scope expanded for {} source folders",
+                folders.len()
+            );
+        }
+        Err(e) => tracing::warn!("cannot list source folders for scope expansion: {}", e),
+    }
+}
+
 // ── Source folder management ──────────────────────────────────────────────────
 
 #[tauri::command]
@@ -81,6 +113,21 @@ pub fn add_source_folder(
     );
 
     tracing::info!("add_source_folder: slug={} path={}", slug, path);
+    Ok(())
+}
+
+/// Expand asset protocol scope for all source folders of the open project.
+/// Called by the frontend after opening a project or adding source folders.
+#[tauri::command]
+pub fn expand_source_scopes(
+    slug: String,
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let (db_guard, project_guard) = with_open_project(&state, &slug)?;
+    let conn = db_guard.as_ref().unwrap();
+    let project = project_guard.as_ref().unwrap();
+    expand_asset_scope_for_project(&app_handle, conn, project.id);
     Ok(())
 }
 

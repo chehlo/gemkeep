@@ -116,14 +116,15 @@ describe('SingleView — loading and rendering', () => {
     expect(screen.getByTestId('loading-indicator')).toBeInTheDocument()
   })
 
-  it('renders photo image with asset:// URL from thumbnail_path (preferred over jpeg_path)', async () => {
+  it('renders photo image with asset:// URL from jpeg_path (preferred for full-res viewing)', async () => {
     vi.mocked(convertFileSrc).mockImplementation((p: string) => `asset://localhost${p}`)
     mockMountSequence()
     render(SingleView)
     await waitFor(() => {
       const img = screen.getByRole('img')
-      // thumbnail_path is preferred because it's inside .gem-keep (asset protocol scope)
-      expect(img).toHaveAttribute('src', `asset://localhost/cache/thumbnails/1.jpg`)
+      // jpeg_path is preferred in SingleView for full-resolution viewing
+      // (asset scope expanded at runtime for source folders)
+      expect(img).toHaveAttribute('src', `asset://localhost/home/user/Photos/IMG_001.jpg`)
     })
   })
 

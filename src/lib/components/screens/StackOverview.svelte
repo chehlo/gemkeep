@@ -8,6 +8,7 @@
     startIndexing, cancelIndexing, pauseIndexing, resumeIndexing,
     getIndexingStatus, listStacks, getThumbnailUrl, resumeThumbnails,
     getBurstGap, setBurstGap, restack, mergeStacks, undoLastMerge,
+    expandSourceScopes,
     type SourceFolder, type IndexingStatus, type StackSummary
   } from '$lib/api/index.js'
   import { formatDate } from '$lib/utils/date.js'
@@ -65,6 +66,8 @@
         cards[restoreIdx]?.scrollIntoView({ block: 'nearest', behavior: 'instant' })
       }
     }
+    // Expand asset protocol scope for source folders (fire-and-forget, non-blocking)
+    if (projectSlug) expandSourceScopes(projectSlug).catch(() => {})
   })
 
   onDestroy(() => {
@@ -130,6 +133,7 @@
     if (!path || typeof path !== 'string') return
     await addSourceFolder(projectSlug, path)
     sourceFolders = await listSourceFolders(projectSlug)
+    await expandSourceScopes(projectSlug)
     // Auto-start indexing when user adds the first folder and has no stacks yet
     if (sourceFolders.length > 0 && stacks.length === 0 && !status.running && !status.thumbnails_running) {
       await handleIndex()

@@ -39,6 +39,7 @@ pub fn run() {
             commands::import::get_burst_gap,
             commands::import::set_burst_gap,
             commands::import::restack,
+            commands::import::expand_source_scopes,
             commands::stacks::merge_stacks,
             commands::stacks::undo_last_merge,
             commands::stacks::list_stack_transactions,

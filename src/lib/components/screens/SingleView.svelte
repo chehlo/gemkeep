@@ -209,10 +209,10 @@
   {:else if currentPhoto}
     <!-- Photo display -->
     <div class="flex-1 relative flex items-center justify-center">
-      {#if currentPhoto.thumbnail_path}
-        <img src={getThumbnailUrl(currentPhoto.thumbnail_path)} alt="Photo" class="max-w-full max-h-full object-contain" />
-      {:else if currentPhoto.jpeg_path}
+      {#if currentPhoto.jpeg_path}
         <img src={getThumbnailUrl(currentPhoto.jpeg_path)} alt="Photo" class="max-w-full max-h-full object-contain" />
+      {:else if currentPhoto.thumbnail_path}
+        <img src={getThumbnailUrl(currentPhoto.thumbnail_path)} alt="Photo" class="max-w-full max-h-full object-contain" />
       {:else}
         <div class="text-gray-500 text-sm" data-testid="no-preview">No preview available</div>
       {/if}

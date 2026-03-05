@@ -142,6 +142,10 @@ export async function restack(slug: string): Promise<void> {
   await invoke('restack', { slug })
 }
 
+export async function expandSourceScopes(slug: string): Promise<void> {
+  return invoke('expand_source_scopes', { slug })
+}
+
 // Sprint 7: Decision engine types
 export interface DecisionResult {
   decision_id: number

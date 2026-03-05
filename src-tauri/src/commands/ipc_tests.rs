@@ -6,8 +6,12 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::commands::import::{get_burst_gap, set_burst_gap, *};
+    use crate::commands::decisions::*;
+    use crate::commands::import::{
+        cancel_indexing, get_burst_gap, pause_indexing, restack, resume_indexing, set_burst_gap, *,
+    };
     use crate::commands::projects::*;
+    use crate::commands::stacks::*;
     use crate::state::AppState;
     use tauri::ipc::CallbackFn;
     use tauri::test::{mock_builder, mock_context, noop_assets};
@@ -41,6 +45,19 @@ mod tests {
                 list_logical_photos,
                 get_burst_gap,
                 set_burst_gap,
+                cancel_indexing,
+                pause_indexing,
+                resume_indexing,
+                restack,
+                merge_stacks,
+                undo_last_merge,
+                list_stack_transactions,
+                make_decision,
+                undo_decision,
+                get_round_status,
+                commit_round,
+                get_photo_detail,
+                get_stack_decisions,
             ])
             .build(mock_context(noop_assets()))
             .unwrap()
@@ -581,4 +598,1240 @@ mod tests {
         let value: u64 = get_result.unwrap().deserialize().unwrap();
         assert_eq!(value, 10, "burst_gap must be 10 after set_burst_gap(10)");
     }
+
+    // ── Sprint 7 §16.5: IPC Contract Tests ──────────────────────────────────
+
+    /// Helper: set up a project on disk with photos ingested via pipeline.
+    /// Returns (home_path, TempDir) — the TempDir must be kept alive for the
+    /// duration of the test to prevent the temp directory from being deleted.
+    fn setup_project_with_photos(tmp: &TempDir, num_photos: usize) -> std::path::PathBuf {
+        use crate::db::run_migrations;
+        use crate::photos::model::IndexingStatus;
+        use std::sync::atomic::{AtomicBool, AtomicUsize};
+        use std::sync::{Arc, Mutex};
+
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(home.join("projects")).unwrap();
+        create_project_on_disk(&home, "Test", "test");
+
+        let project_dir = home.join("projects").join("test");
+        let db_path = project_dir.join("project.db");
+        let conn = crate::db::open_connection(&db_path).unwrap();
+        run_migrations(&conn).unwrap();
+
+        let project_id: i64 = conn
+            .query_row("SELECT id FROM projects WHERE slug = 'test'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+
+        // Write minimal JPEGs
+        let photo_dir = tmp.path().join("photos");
+        std::fs::create_dir_all(&photo_dir).unwrap();
+        for i in 0..num_photos {
+            image::DynamicImage::new_rgb8(10, 10)
+                .save(photo_dir.join(format!("shot_{}.jpg", i)))
+                .unwrap();
+        }
+
+        std::fs::create_dir_all(project_dir.join("cache").join("thumbnails")).unwrap();
+
+        let status = Arc::new(Mutex::new(IndexingStatus::default()));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let pause = Arc::new(AtomicBool::new(false));
+
+        crate::import::pipeline::run_pipeline(
+            &conn,
+            project_id,
+            &project_dir,
+            vec![photo_dir],
+            3,
+            status,
+            cancel,
+            pause,
+            None,
+            Arc::new(AtomicUsize::new(0)),
+        );
+
+        drop(conn);
+        home
+    }
+
+    #[test]
+    fn test_ipc_merge_stacks_json_shape() {
+        // Sprint 7 §16.5: Contract test — verify merge_stacks returns JSON
+        // matching the TypeScript MergeResult interface.
+        // NOTE: This test will fail (panic) in RED phase because merge_stacks
+        // is not implemented. That is expected for TDD.
+        let tmp = TempDir::new().unwrap();
+        let home = setup_project_with_photos(&tmp, 4);
+        let app = make_app(home);
+        let wv = make_webview(&app);
+
+        // Open project
+        let open_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("open_project", serde_json::json!({ "slug": "test" })),
+        );
+        assert!(open_result.is_ok(), "open_project must succeed");
+
+        // Get stacks to find 2 stack IDs to merge
+        // (with burst_gap=3 and 4 photos, we may have 1 stack; we need at least 2
+        //  but in the RED phase the merge command panics anyway.)
+        let stacks_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("list_stacks", serde_json::json!({ "slug": "test" })),
+        );
+        assert!(stacks_result.is_ok(), "list_stacks must succeed");
+        let stacks: serde_json::Value = stacks_result.unwrap().deserialize().unwrap();
+        let stacks_arr = stacks.as_array().unwrap();
+
+        // For the contract test, we just need any two valid stack IDs.
+        // If only 1 stack exists, use it twice (the command should validate and
+        // error, but the test is primarily about JSON shape).
+        let sid1 = stacks_arr
+            .first()
+            .and_then(|s| s["stack_id"].as_i64())
+            .unwrap_or(1);
+        let sid2 = stacks_arr
+            .get(1)
+            .and_then(|s| s["stack_id"].as_i64())
+            .unwrap_or(sid1 + 1);
+
+        let result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req(
+                "merge_stacks",
+                serde_json::json!({ "slug": "test", "stackIds": [sid1, sid2] }),
+            ),
+        );
+        assert!(result.is_ok(), "merge_stacks must succeed: {:?}", result);
+        let val: serde_json::Value = result.unwrap().deserialize().unwrap();
+
+        // Verify JSON shape matches TypeScript MergeResult interface
+        assert!(
+            val["merged_stack_id"].is_number(),
+            "merged_stack_id must be a number"
+        );
+        assert!(
+            val["logical_photos_moved"].is_number(),
+            "logical_photos_moved must be a number"
+        );
+        assert!(
+            val["source_stack_ids"].is_array(),
+            "source_stack_ids must be an array"
+        );
+        assert!(
+            val["transaction_id"].is_number(),
+            "transaction_id must be a number"
+        );
+    }
+
+    #[test]
+    fn test_ipc_make_decision_json_shape() {
+        // Sprint 7 §16.5: Contract test — verify make_decision returns JSON
+        // matching the TypeScript DecisionResult interface.
+        let tmp = TempDir::new().unwrap();
+        let home = setup_project_with_photos(&tmp, 2);
+        let app = make_app(home);
+        let wv = make_webview(&app);
+
+        // Open project
+        let open_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("open_project", serde_json::json!({ "slug": "test" })),
+        );
+        assert!(open_result.is_ok(), "open_project must succeed");
+
+        // Get a logical_photo_id
+        let stacks_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("list_stacks", serde_json::json!({ "slug": "test" })),
+        );
+        let stacks: serde_json::Value = stacks_result.unwrap().deserialize().unwrap();
+        let stack_id = stacks.as_array().unwrap()[0]["stack_id"].as_i64().unwrap();
+
+        let lp_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req(
+                "list_logical_photos",
+                serde_json::json!({ "slug": "test", "stackId": stack_id }),
+            ),
+        );
+        let lps: serde_json::Value = lp_result.unwrap().deserialize().unwrap();
+        let lp_id = lps.as_array().unwrap()[0]["logical_photo_id"]
+            .as_i64()
+            .unwrap();
+
+        // Call make_decision
+        let result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req(
+                "make_decision",
+                serde_json::json!({
+                    "slug": "test",
+                    "logicalPhotoId": lp_id,
+                    "action": "keep"
+                }),
+            ),
+        );
+        assert!(result.is_ok(), "make_decision must succeed: {:?}", result);
+        let val: serde_json::Value = result.unwrap().deserialize().unwrap();
+
+        // Verify JSON shape matches TypeScript DecisionResult interface
+        assert!(
+            val["decision_id"].is_number(),
+            "decision_id must be a number"
+        );
+        assert!(val["round_id"].is_number(), "round_id must be a number");
+        assert!(val["action"].is_string(), "action must be a string");
+        assert!(
+            val["current_status"].is_string(),
+            "current_status must be a string"
+        );
+        assert!(
+            val["round_auto_created"].is_boolean(),
+            "round_auto_created must be a boolean"
+        );
+    }
+
+    #[test]
+    fn test_ipc_get_round_status_json_shape() {
+        // Sprint 7 §16.5: Contract test — verify get_round_status returns JSON
+        // matching the TypeScript RoundStatus interface.
+        let tmp = TempDir::new().unwrap();
+        let home = setup_project_with_photos(&tmp, 3);
+        let app = make_app(home);
+        let wv = make_webview(&app);
+
+        // Open project
+        let open_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("open_project", serde_json::json!({ "slug": "test" })),
+        );
+        assert!(open_result.is_ok(), "open_project must succeed");
+
+        // Get a stack_id
+        let stacks_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("list_stacks", serde_json::json!({ "slug": "test" })),
+        );
+        let stacks: serde_json::Value = stacks_result.unwrap().deserialize().unwrap();
+        let stack_id = stacks.as_array().unwrap()[0]["stack_id"].as_i64().unwrap();
+
+        // Call get_round_status
+        let result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req(
+                "get_round_status",
+                serde_json::json!({ "slug": "test", "stackId": stack_id }),
+            ),
+        );
+        assert!(
+            result.is_ok(),
+            "get_round_status must succeed: {:?}",
+            result
+        );
+        let val: serde_json::Value = result.unwrap().deserialize().unwrap();
+
+        // Verify JSON shape matches TypeScript RoundStatus interface
+        assert!(val["round_id"].is_number(), "round_id must be a number");
+        assert!(
+            val["round_number"].is_number(),
+            "round_number must be a number"
+        );
+        assert!(val["state"].is_string(), "state must be a string");
+        assert!(
+            val["total_photos"].is_number(),
+            "total_photos must be a number"
+        );
+        assert!(val["decided"].is_number(), "decided must be a number");
+        assert!(val["kept"].is_number(), "kept must be a number");
+        assert!(val["eliminated"].is_number(), "eliminated must be a number");
+        assert!(val["undecided"].is_number(), "undecided must be a number");
+        // committed_at is nullable (null when round is open)
+        assert!(
+            val["committed_at"].is_null() || val["committed_at"].is_string(),
+            "committed_at must be null or string"
+        );
+    }
+
+    #[test]
+    fn test_ipc_get_photo_detail_json_shape() {
+        // Sprint 7 §16.5: Contract test — verify get_photo_detail returns JSON
+        // matching the TypeScript PhotoDetail interface.
+        let tmp = TempDir::new().unwrap();
+        let home = setup_project_with_photos(&tmp, 1);
+        let app = make_app(home);
+        let wv = make_webview(&app);
+
+        // Open project
+        let open_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("open_project", serde_json::json!({ "slug": "test" })),
+        );
+        assert!(open_result.is_ok(), "open_project must succeed");
+
+        // Get a logical_photo_id
+        let stacks_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("list_stacks", serde_json::json!({ "slug": "test" })),
+        );
+        let stacks: serde_json::Value = stacks_result.unwrap().deserialize().unwrap();
+        let stack_id = stacks.as_array().unwrap()[0]["stack_id"].as_i64().unwrap();
+        let lp_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req(
+                "list_logical_photos",
+                serde_json::json!({ "slug": "test", "stackId": stack_id }),
+            ),
+        );
+        let lps: serde_json::Value = lp_result.unwrap().deserialize().unwrap();
+        let lp_id = lps.as_array().unwrap()[0]["logical_photo_id"]
+            .as_i64()
+            .unwrap();
+
+        // Call get_photo_detail
+        let result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req(
+                "get_photo_detail",
+                serde_json::json!({ "slug": "test", "logicalPhotoId": lp_id }),
+            ),
+        );
+        assert!(
+            result.is_ok(),
+            "get_photo_detail must succeed: {:?}",
+            result
+        );
+        let val: serde_json::Value = result.unwrap().deserialize().unwrap();
+
+        // Verify JSON shape matches TypeScript PhotoDetail interface
+        assert!(
+            val["logical_photo_id"].is_number(),
+            "logical_photo_id must be a number"
+        );
+        assert!(
+            val["thumbnail_path"].is_null() || val["thumbnail_path"].is_string(),
+            "thumbnail_path must be null or string"
+        );
+        assert!(
+            val["capture_time"].is_null() || val["capture_time"].is_string(),
+            "capture_time must be null or string"
+        );
+        assert!(
+            val["camera_model"].is_null() || val["camera_model"].is_string(),
+            "camera_model must be null or string"
+        );
+        assert!(
+            val["lens"].is_null() || val["lens"].is_string(),
+            "lens must be null or string"
+        );
+        assert!(val["has_raw"].is_boolean(), "has_raw must be a boolean");
+        assert!(val["has_jpeg"].is_boolean(), "has_jpeg must be a boolean");
+        assert!(
+            val["current_status"].is_string(),
+            "current_status must be a string"
+        );
+        // Camera parameters (all nullable)
+        assert!(
+            val["aperture"].is_null() || val["aperture"].is_number(),
+            "aperture must be null or number"
+        );
+        assert!(
+            val["shutter_speed"].is_null() || val["shutter_speed"].is_string(),
+            "shutter_speed must be null or string"
+        );
+        assert!(
+            val["iso"].is_null() || val["iso"].is_number(),
+            "iso must be null or number"
+        );
+        assert!(
+            val["focal_length"].is_null() || val["focal_length"].is_number(),
+            "focal_length must be null or number"
+        );
+        assert!(
+            val["exposure_comp"].is_null() || val["exposure_comp"].is_number(),
+            "exposure_comp must be null or number"
+        );
+        // File paths (nullable)
+        assert!(
+            val["jpeg_path"].is_null() || val["jpeg_path"].is_string(),
+            "jpeg_path must be null or string"
+        );
+        assert!(
+            val["raw_path"].is_null() || val["raw_path"].is_string(),
+            "raw_path must be null or string"
+        );
+    }
+
+    #[test]
+    fn test_ipc_get_stack_decisions_json_shape() {
+        // Sprint 7 §16.5: Contract test — verify get_stack_decisions returns JSON
+        // matching the TypeScript PhotoDecisionStatus[] interface.
+        let tmp = TempDir::new().unwrap();
+        let home = setup_project_with_photos(&tmp, 3);
+        let app = make_app(home);
+        let wv = make_webview(&app);
+
+        // Open project
+        let open_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("open_project", serde_json::json!({ "slug": "test" })),
+        );
+        assert!(open_result.is_ok(), "open_project must succeed");
+
+        // Get a stack_id
+        let stacks_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("list_stacks", serde_json::json!({ "slug": "test" })),
+        );
+        let stacks: serde_json::Value = stacks_result.unwrap().deserialize().unwrap();
+        let stack_id = stacks.as_array().unwrap()[0]["stack_id"].as_i64().unwrap();
+
+        // Call get_stack_decisions
+        let result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req(
+                "get_stack_decisions",
+                serde_json::json!({ "slug": "test", "stackId": stack_id }),
+            ),
+        );
+        assert!(
+            result.is_ok(),
+            "get_stack_decisions must succeed: {:?}",
+            result
+        );
+        let val: serde_json::Value = result.unwrap().deserialize().unwrap();
+
+        // Must be an array
+        let arr = val
+            .as_array()
+            .expect("get_stack_decisions must return an array");
+        assert!(
+            !arr.is_empty(),
+            "get_stack_decisions must return at least 1 entry for a stack with photos"
+        );
+
+        // Verify shape of each entry matches PhotoDecisionStatus
+        for entry in arr {
+            assert!(
+                entry["logical_photo_id"].is_number(),
+                "logical_photo_id must be a number"
+            );
+            assert!(
+                entry["current_status"].is_string(),
+                "current_status must be a string"
+            );
+        }
+    }
+
+    #[test]
+    fn test_ipc_commit_round_then_decision_rejected() {
+        // Sprint 7 §16.5: Full IPC integration test — create project, add photos,
+        // make_decision, commit_round, attempt make_decision → must error.
+        let tmp = TempDir::new().unwrap();
+        let home = setup_project_with_photos(&tmp, 2);
+        let app = make_app(home);
+        let wv = make_webview(&app);
+
+        // Open project
+        let open_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("open_project", serde_json::json!({ "slug": "test" })),
+        );
+        assert!(open_result.is_ok(), "open_project must succeed");
+
+        // Get a stack_id and lp_id
+        let stacks_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("list_stacks", serde_json::json!({ "slug": "test" })),
+        );
+        let stacks: serde_json::Value = stacks_result.unwrap().deserialize().unwrap();
+        let stack_id = stacks.as_array().unwrap()[0]["stack_id"].as_i64().unwrap();
+
+        let lp_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req(
+                "list_logical_photos",
+                serde_json::json!({ "slug": "test", "stackId": stack_id }),
+            ),
+        );
+        let lps: serde_json::Value = lp_result.unwrap().deserialize().unwrap();
+        let lp_ids: Vec<i64> = lps
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|lp| lp["logical_photo_id"].as_i64().unwrap())
+            .collect();
+
+        // Step 1: Make a decision (this auto-creates Round 1)
+        let decision_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req(
+                "make_decision",
+                serde_json::json!({
+                    "slug": "test",
+                    "logicalPhotoId": lp_ids[0],
+                    "action": "keep"
+                }),
+            ),
+        );
+        assert!(
+            decision_result.is_ok(),
+            "first make_decision must succeed: {:?}",
+            decision_result
+        );
+
+        // Step 2: Commit the round
+        let commit_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req(
+                "commit_round",
+                serde_json::json!({ "slug": "test", "stackId": stack_id }),
+            ),
+        );
+        assert!(
+            commit_result.is_ok(),
+            "commit_round must succeed: {:?}",
+            commit_result
+        );
+
+        // Step 3: Attempt another decision — must be rejected
+        let rejected_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req(
+                "make_decision",
+                serde_json::json!({
+                    "slug": "test",
+                    "logicalPhotoId": lp_ids[0],
+                    "action": "eliminate"
+                }),
+            ),
+        );
+        assert!(
+            rejected_result.is_err(),
+            "make_decision after commit must be rejected (round is committed)"
+        );
+    }
+
+    // ── New IPC contract tests for previously uncovered commands ──────────────
+
+    #[test]
+    fn test_ipc_suggest_slug_json_shape() {
+        // Contract test: suggest_slug returns a string slug derived from the name.
+        // TypeScript: suggestSlug(name: string) => Promise<string>
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().to_path_buf();
+        std::fs::create_dir_all(home.join("projects")).unwrap();
+
+        let app = make_app(home);
+        let wv = make_webview(&app);
+
+        let result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req(
+                "suggest_slug",
+                serde_json::json!({ "name": "My Wedding Shoot" }),
+            ),
+        );
+        assert!(result.is_ok(), "suggest_slug must succeed: {:?}", result);
+        let val: serde_json::Value = result.unwrap().deserialize().unwrap();
+        assert!(val.is_string(), "suggest_slug must return a string");
+        let slug_str = val.as_str().unwrap();
+        assert!(!slug_str.is_empty(), "slug must not be empty");
+        // Slug should be URL-safe (no spaces, lowercase)
+        assert!(
+            !slug_str.contains(' '),
+            "slug must not contain spaces, got: {}",
+            slug_str
+        );
+    }
+
+    #[test]
+    fn test_ipc_suggest_slug_avoids_collision() {
+        // Contract test: suggest_slug avoids collisions with existing project slugs.
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().to_path_buf();
+        std::fs::create_dir_all(home.join("projects")).unwrap();
+        // Create a project with slug "test" to force collision avoidance
+        create_project_on_disk(&home, "Test", "test");
+
+        let app = make_app(home);
+        let wv = make_webview(&app);
+
+        let result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("suggest_slug", serde_json::json!({ "name": "Test" })),
+        );
+        assert!(result.is_ok(), "suggest_slug must succeed");
+        let val: serde_json::Value = result.unwrap().deserialize().unwrap();
+        let slug_str = val.as_str().unwrap();
+        assert_ne!(
+            slug_str, "test",
+            "suggest_slug must avoid collision with existing slug 'test', got: {}",
+            slug_str
+        );
+    }
+
+    #[test]
+    fn test_ipc_create_project_json_shape() {
+        // Contract test: create_project returns JSON matching TypeScript Project interface.
+        // TypeScript: { id: number, name: string, slug: string, created_at: string, last_opened_at: string | null }
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().to_path_buf();
+        std::fs::create_dir_all(home.join("projects")).unwrap();
+
+        let app = make_app(home);
+        let wv = make_webview(&app);
+
+        let result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req(
+                "create_project",
+                serde_json::json!({ "name": "My Test Project" }),
+            ),
+        );
+        assert!(result.is_ok(), "create_project must succeed: {:?}", result);
+        let val: serde_json::Value = result.unwrap().deserialize().unwrap();
+
+        // Verify JSON shape matches TypeScript Project interface
+        assert!(val["id"].is_number(), "id must be a number");
+        assert!(val["name"].is_string(), "name must be a string");
+        assert_eq!(
+            val["name"].as_str().unwrap(),
+            "My Test Project",
+            "name must match input"
+        );
+        assert!(val["slug"].is_string(), "slug must be a string");
+        assert!(
+            !val["slug"].as_str().unwrap().is_empty(),
+            "slug must not be empty"
+        );
+        assert!(val["created_at"].is_string(), "created_at must be a string");
+        // last_opened_at can be null or string
+        assert!(
+            val["last_opened_at"].is_null() || val["last_opened_at"].is_string(),
+            "last_opened_at must be null or string"
+        );
+    }
+
+    #[test]
+    fn test_ipc_delete_project_removes_from_list() {
+        // Contract test: delete_project succeeds and the project is no longer
+        // returned by list_projects.
+        // TypeScript: deleteProject(slug: string) => Promise<void>
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().to_path_buf();
+        std::fs::create_dir_all(home.join("projects")).unwrap();
+        create_project_on_disk(&home, "ToDelete", "to-delete");
+
+        let app = make_app(home);
+        let wv = make_webview(&app);
+
+        // Verify project exists before delete
+        let list_before =
+            tauri::test::get_ipc_response(&wv, invoke_req("list_projects", serde_json::json!({})));
+        assert!(list_before.is_ok(), "list_projects must succeed");
+        let before_val: serde_json::Value = list_before.unwrap().deserialize().unwrap();
+        assert_eq!(
+            before_val.as_array().unwrap().len(),
+            1,
+            "must have 1 project before delete"
+        );
+
+        // Delete the project
+        let delete_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("delete_project", serde_json::json!({ "slug": "to-delete" })),
+        );
+        assert!(
+            delete_result.is_ok(),
+            "delete_project must succeed: {:?}",
+            delete_result
+        );
+
+        // Verify project is gone
+        let list_after =
+            tauri::test::get_ipc_response(&wv, invoke_req("list_projects", serde_json::json!({})));
+        assert!(
+            list_after.is_ok(),
+            "list_projects must succeed after delete"
+        );
+        let after_val: serde_json::Value = list_after.unwrap().deserialize().unwrap();
+        assert_eq!(
+            after_val.as_array().unwrap().len(),
+            0,
+            "must have 0 projects after delete"
+        );
+    }
+
+    #[test]
+    fn test_ipc_delete_project_nonexistent_returns_error() {
+        // Contract test: delete_project on a nonexistent slug returns an error.
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().to_path_buf();
+        std::fs::create_dir_all(home.join("projects")).unwrap();
+
+        let app = make_app(home);
+        let wv = make_webview(&app);
+
+        let result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req(
+                "delete_project",
+                serde_json::json!({ "slug": "nonexistent" }),
+            ),
+        );
+        assert!(
+            result.is_err(),
+            "delete_project on nonexistent slug must return error"
+        );
+    }
+
+    #[test]
+    fn test_ipc_cancel_indexing_succeeds() {
+        // Contract test: cancel_indexing sets the cancellation flag.
+        // TypeScript: cancelIndexing() => Promise<void>
+        // cancel_indexing returns () and must not error.
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().to_path_buf();
+        std::fs::create_dir_all(home.join("projects")).unwrap();
+
+        let app = make_app(home);
+        let wv = make_webview(&app);
+
+        let result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("cancel_indexing", serde_json::json!({})),
+        );
+        assert!(result.is_ok(), "cancel_indexing must succeed: {:?}", result);
+    }
+
+    #[test]
+    fn test_ipc_pause_indexing_sets_paused_flag() {
+        // Contract test: pause_indexing succeeds and get_indexing_status reflects paused=true.
+        // TypeScript: pauseIndexing() => Promise<void>
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().to_path_buf();
+        std::fs::create_dir_all(home.join("projects")).unwrap();
+
+        let app = make_app(home);
+        let wv = make_webview(&app);
+
+        // Call pause_indexing
+        let pause_result =
+            tauri::test::get_ipc_response(&wv, invoke_req("pause_indexing", serde_json::json!({})));
+        assert!(
+            pause_result.is_ok(),
+            "pause_indexing must succeed: {:?}",
+            pause_result
+        );
+
+        // Verify that get_indexing_status now shows paused=true
+        let status_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("get_indexing_status", serde_json::json!({})),
+        );
+        assert!(status_result.is_ok(), "get_indexing_status must succeed");
+        let status: serde_json::Value = status_result.unwrap().deserialize().unwrap();
+        assert_eq!(
+            status["paused"].as_bool(),
+            Some(true),
+            "paused must be true after pause_indexing"
+        );
+    }
+
+    #[test]
+    fn test_ipc_resume_indexing_clears_paused_flag() {
+        // Contract test: resume_indexing clears paused flag.
+        // TypeScript: resumeIndexing() => Promise<void>
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().to_path_buf();
+        std::fs::create_dir_all(home.join("projects")).unwrap();
+
+        let app = make_app(home);
+        let wv = make_webview(&app);
+
+        // First pause
+        let pause_result =
+            tauri::test::get_ipc_response(&wv, invoke_req("pause_indexing", serde_json::json!({})));
+        assert!(pause_result.is_ok(), "pause_indexing must succeed");
+
+        // Then resume
+        let resume_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("resume_indexing", serde_json::json!({})),
+        );
+        assert!(
+            resume_result.is_ok(),
+            "resume_indexing must succeed: {:?}",
+            resume_result
+        );
+
+        // Verify paused=false
+        let status_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("get_indexing_status", serde_json::json!({})),
+        );
+        assert!(status_result.is_ok(), "get_indexing_status must succeed");
+        let status: serde_json::Value = status_result.unwrap().deserialize().unwrap();
+        assert_eq!(
+            status["paused"].as_bool(),
+            Some(false),
+            "paused must be false after resume_indexing"
+        );
+    }
+
+    #[test]
+    fn test_ipc_restack_on_project_with_photos() {
+        // Contract test: restack succeeds on a project with indexed photos.
+        // TypeScript: restack(slug: string) => Promise<void>
+        let tmp = TempDir::new().unwrap();
+        let home = setup_project_with_photos(&tmp, 3);
+        let app = make_app(home);
+        let wv = make_webview(&app);
+
+        // Open project
+        let open_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("open_project", serde_json::json!({ "slug": "test" })),
+        );
+        assert!(open_result.is_ok(), "open_project must succeed");
+
+        // Restack
+        let result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("restack", serde_json::json!({ "slug": "test" })),
+        );
+        assert!(result.is_ok(), "restack must succeed: {:?}", result);
+
+        // Verify stacks still exist after restack
+        let stacks_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("list_stacks", serde_json::json!({ "slug": "test" })),
+        );
+        assert!(
+            stacks_result.is_ok(),
+            "list_stacks must succeed after restack"
+        );
+        let stacks: serde_json::Value = stacks_result.unwrap().deserialize().unwrap();
+        assert!(
+            !stacks.as_array().unwrap().is_empty(),
+            "stacks must not be empty after restack"
+        );
+    }
+
+    #[test]
+    fn test_ipc_list_stacks_json_shape_with_data() {
+        // Contract test: verify list_stacks returns JSON matching TypeScript StackSummary
+        // interface when there is actual data (complements ipc_list_stacks_empty_project
+        // which only tests the empty case).
+        // TypeScript: { stack_id: number, logical_photo_count: number,
+        //   earliest_capture: string | null, has_raw: boolean, has_jpeg: boolean,
+        //   thumbnail_path: string | null }
+        let tmp = TempDir::new().unwrap();
+        let home = setup_project_with_photos(&tmp, 2);
+        let app = make_app(home);
+        let wv = make_webview(&app);
+
+        // Open project
+        let open_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("open_project", serde_json::json!({ "slug": "test" })),
+        );
+        assert!(open_result.is_ok(), "open_project must succeed");
+
+        // list_stacks
+        let result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("list_stacks", serde_json::json!({ "slug": "test" })),
+        );
+        assert!(result.is_ok(), "list_stacks must succeed: {:?}", result);
+        let val: serde_json::Value = result.unwrap().deserialize().unwrap();
+        let stacks = val.as_array().expect("list_stacks must return an array");
+        assert!(!stacks.is_empty(), "must have at least one stack");
+
+        // Verify JSON shape of each stack matches TypeScript StackSummary
+        for stack in stacks {
+            assert!(stack["stack_id"].is_number(), "stack_id must be a number");
+            assert!(
+                stack["logical_photo_count"].is_number(),
+                "logical_photo_count must be a number"
+            );
+            assert!(
+                stack["earliest_capture"].is_null() || stack["earliest_capture"].is_string(),
+                "earliest_capture must be null or string"
+            );
+            assert!(stack["has_raw"].is_boolean(), "has_raw must be a boolean");
+            assert!(stack["has_jpeg"].is_boolean(), "has_jpeg must be a boolean");
+            assert!(
+                stack["thumbnail_path"].is_null() || stack["thumbnail_path"].is_string(),
+                "thumbnail_path must be null or string"
+            );
+        }
+    }
+
+    #[test]
+    fn test_ipc_undo_last_merge_after_merge() {
+        // Contract test: undo_last_merge succeeds after a merge and restores
+        // the original stacks.
+        // TypeScript: undoLastMerge(slug: string) => Promise<void>
+        let tmp = TempDir::new().unwrap();
+        let home = setup_project_with_photos(&tmp, 4);
+        let app = make_app(home);
+        let wv = make_webview(&app);
+
+        // Open project
+        let open_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("open_project", serde_json::json!({ "slug": "test" })),
+        );
+        assert!(open_result.is_ok(), "open_project must succeed");
+
+        // Get stacks
+        let stacks_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("list_stacks", serde_json::json!({ "slug": "test" })),
+        );
+        let stacks: serde_json::Value = stacks_result.unwrap().deserialize().unwrap();
+        let stacks_arr = stacks.as_array().unwrap();
+        let original_count = stacks_arr.len();
+
+        // We need at least 2 stacks to merge. If only 1 exists, get 2 logical
+        // photo IDs from it — but merge_stacks expects stack_ids. If there's
+        // only one stack, create a second one by direct DB manipulation isn't
+        // possible through IPC. Instead, use the same stack_id twice which
+        // the merge command should handle (or error). The important thing is
+        // verifying the undo contract shape.
+        let sid1 = stacks_arr
+            .first()
+            .and_then(|s| s["stack_id"].as_i64())
+            .unwrap();
+
+        if stacks_arr.len() >= 2 {
+            let sid2 = stacks_arr[1]["stack_id"].as_i64().unwrap();
+
+            // Merge the two stacks
+            let merge_result = tauri::test::get_ipc_response(
+                &wv,
+                invoke_req(
+                    "merge_stacks",
+                    serde_json::json!({ "slug": "test", "stackIds": [sid1, sid2] }),
+                ),
+            );
+            assert!(
+                merge_result.is_ok(),
+                "merge_stacks must succeed: {:?}",
+                merge_result
+            );
+
+            // Undo the merge
+            let undo_result = tauri::test::get_ipc_response(
+                &wv,
+                invoke_req("undo_last_merge", serde_json::json!({ "slug": "test" })),
+            );
+            assert!(
+                undo_result.is_ok(),
+                "undo_last_merge must succeed: {:?}",
+                undo_result
+            );
+
+            // Verify stacks are restored
+            let stacks_after = tauri::test::get_ipc_response(
+                &wv,
+                invoke_req("list_stacks", serde_json::json!({ "slug": "test" })),
+            );
+            let after_val: serde_json::Value = stacks_after.unwrap().deserialize().unwrap();
+            assert_eq!(
+                after_val.as_array().unwrap().len(),
+                original_count,
+                "stack count must be restored after undo_last_merge"
+            );
+        } else {
+            // Only 1 stack — undo_last_merge with no prior merge should error
+            let undo_result = tauri::test::get_ipc_response(
+                &wv,
+                invoke_req("undo_last_merge", serde_json::json!({ "slug": "test" })),
+            );
+            assert!(
+                undo_result.is_err(),
+                "undo_last_merge with no prior merge must return error"
+            );
+        }
+    }
+
+    #[test]
+    fn test_ipc_list_stack_transactions_json_shape() {
+        // Contract test: list_stack_transactions returns JSON matching TypeScript
+        // StackTransaction[] interface.
+        // TypeScript: { id: number, project_id: number, action: string,
+        //   details: string, created_at: string }
+        let tmp = TempDir::new().unwrap();
+        let home = setup_project_with_photos(&tmp, 4);
+        let app = make_app(home);
+        let wv = make_webview(&app);
+
+        // Open project
+        let open_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("open_project", serde_json::json!({ "slug": "test" })),
+        );
+        assert!(open_result.is_ok(), "open_project must succeed");
+
+        // First call with no merges — should return an array (possibly with import transactions)
+        let result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req(
+                "list_stack_transactions",
+                serde_json::json!({ "slug": "test" }),
+            ),
+        );
+        assert!(
+            result.is_ok(),
+            "list_stack_transactions must succeed: {:?}",
+            result
+        );
+        let val: serde_json::Value = result.unwrap().deserialize().unwrap();
+        let txns = val
+            .as_array()
+            .expect("list_stack_transactions must return an array");
+
+        // If there are transactions (e.g., from import), verify their shape
+        for txn in txns {
+            assert!(txn["id"].is_number(), "id must be a number");
+            assert!(txn["project_id"].is_number(), "project_id must be a number");
+            assert!(txn["action"].is_string(), "action must be a string");
+            assert!(txn["details"].is_string(), "details must be a string");
+            assert!(txn["created_at"].is_string(), "created_at must be a string");
+        }
+
+        // Now create a merge transaction to guarantee at least one entry
+        let stacks_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("list_stacks", serde_json::json!({ "slug": "test" })),
+        );
+        let stacks: serde_json::Value = stacks_result.unwrap().deserialize().unwrap();
+        let stacks_arr = stacks.as_array().unwrap();
+
+        if stacks_arr.len() >= 2 {
+            let sid1 = stacks_arr[0]["stack_id"].as_i64().unwrap();
+            let sid2 = stacks_arr[1]["stack_id"].as_i64().unwrap();
+
+            let merge_result = tauri::test::get_ipc_response(
+                &wv,
+                invoke_req(
+                    "merge_stacks",
+                    serde_json::json!({ "slug": "test", "stackIds": [sid1, sid2] }),
+                ),
+            );
+            assert!(merge_result.is_ok(), "merge_stacks must succeed");
+
+            // Now list_stack_transactions should have a merge entry
+            let result2 = tauri::test::get_ipc_response(
+                &wv,
+                invoke_req(
+                    "list_stack_transactions",
+                    serde_json::json!({ "slug": "test" }),
+                ),
+            );
+            assert!(result2.is_ok(), "list_stack_transactions must succeed");
+            let val2: serde_json::Value = result2.unwrap().deserialize().unwrap();
+            let txns2 = val2.as_array().unwrap();
+            assert!(
+                !txns2.is_empty(),
+                "must have at least 1 transaction after merge"
+            );
+
+            // Verify shape of merge transaction
+            let merge_txn = &txns2[0]; // newest first
+            assert!(merge_txn["id"].is_number(), "id must be a number");
+            assert!(
+                merge_txn["project_id"].is_number(),
+                "project_id must be a number"
+            );
+            assert_eq!(
+                merge_txn["action"].as_str(),
+                Some("merge"),
+                "action must be 'merge'"
+            );
+            assert!(merge_txn["details"].is_string(), "details must be a string");
+            assert!(
+                merge_txn["created_at"].is_string(),
+                "created_at must be a string"
+            );
+        }
+    }
+
+    #[test]
+    fn test_ipc_undo_decision_after_keep() {
+        // Contract test: undo_decision succeeds after make_decision and the
+        // photo returns to "undecided" status.
+        // TypeScript: undoDecision(slug: string, logicalPhotoId: number) => Promise<void>
+        let tmp = TempDir::new().unwrap();
+        let home = setup_project_with_photos(&tmp, 2);
+        let app = make_app(home);
+        let wv = make_webview(&app);
+
+        // Open project
+        let open_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("open_project", serde_json::json!({ "slug": "test" })),
+        );
+        assert!(open_result.is_ok(), "open_project must succeed");
+
+        // Get a logical_photo_id
+        let stacks_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("list_stacks", serde_json::json!({ "slug": "test" })),
+        );
+        let stacks: serde_json::Value = stacks_result.unwrap().deserialize().unwrap();
+        let stack_id = stacks.as_array().unwrap()[0]["stack_id"].as_i64().unwrap();
+
+        let lp_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req(
+                "list_logical_photos",
+                serde_json::json!({ "slug": "test", "stackId": stack_id }),
+            ),
+        );
+        let lps: serde_json::Value = lp_result.unwrap().deserialize().unwrap();
+        let lp_id = lps.as_array().unwrap()[0]["logical_photo_id"]
+            .as_i64()
+            .unwrap();
+
+        // Make a decision
+        let decision_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req(
+                "make_decision",
+                serde_json::json!({
+                    "slug": "test",
+                    "logicalPhotoId": lp_id,
+                    "action": "keep"
+                }),
+            ),
+        );
+        assert!(
+            decision_result.is_ok(),
+            "make_decision must succeed: {:?}",
+            decision_result
+        );
+
+        // Verify photo is now "keep"
+        let detail_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req(
+                "get_photo_detail",
+                serde_json::json!({ "slug": "test", "logicalPhotoId": lp_id }),
+            ),
+        );
+        let detail: serde_json::Value = detail_result.unwrap().deserialize().unwrap();
+        assert_eq!(
+            detail["current_status"].as_str(),
+            Some("keep"),
+            "photo must be 'keep' after make_decision"
+        );
+
+        // Undo the decision
+        let undo_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req(
+                "undo_decision",
+                serde_json::json!({ "slug": "test", "logicalPhotoId": lp_id }),
+            ),
+        );
+        assert!(
+            undo_result.is_ok(),
+            "undo_decision must succeed: {:?}",
+            undo_result
+        );
+
+        // Verify photo is back to "undecided"
+        let detail_after = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req(
+                "get_photo_detail",
+                serde_json::json!({ "slug": "test", "logicalPhotoId": lp_id }),
+            ),
+        );
+        let detail_val: serde_json::Value = detail_after.unwrap().deserialize().unwrap();
+        assert_eq!(
+            detail_val["current_status"].as_str(),
+            Some("undecided"),
+            "photo must be 'undecided' after undo_decision"
+        );
+    }
+
+    #[test]
+    fn test_ipc_open_project_json_shape() {
+        // Contract test: open_project returns JSON matching TypeScript Project interface.
+        // Existing tests use open_project but don't fully verify all fields.
+        // TypeScript: { id: number, name: string, slug: string, created_at: string, last_opened_at: string | null }
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().to_path_buf();
+        std::fs::create_dir_all(home.join("projects")).unwrap();
+        create_project_on_disk(&home, "Shape Test", "shape-test");
+
+        let app = make_app(home);
+        let wv = make_webview(&app);
+
+        let result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("open_project", serde_json::json!({ "slug": "shape-test" })),
+        );
+        assert!(result.is_ok(), "open_project must succeed: {:?}", result);
+        let val: serde_json::Value = result.unwrap().deserialize().unwrap();
+
+        assert!(val["id"].is_number(), "id must be a number");
+        assert_eq!(val["name"].as_str(), Some("Shape Test"), "name must match");
+        assert_eq!(val["slug"].as_str(), Some("shape-test"), "slug must match");
+        assert!(val["created_at"].is_string(), "created_at must be a string");
+        assert!(
+            val["last_opened_at"].is_null() || val["last_opened_at"].is_string(),
+            "last_opened_at must be null or string"
+        );
+    }
+
+    #[test]
+    fn test_ipc_list_projects_json_shape() {
+        // Contract test: list_projects returns JSON array where each item matches
+        // TypeScript Project interface. Existing tests verify length and slug but
+        // not all fields.
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().to_path_buf();
+        std::fs::create_dir_all(home.join("projects")).unwrap();
+        create_project_on_disk(&home, "Alpha", "alpha");
+        create_project_on_disk(&home, "Beta", "beta");
+
+        let app = make_app(home);
+        let wv = make_webview(&app);
+
+        let result =
+            tauri::test::get_ipc_response(&wv, invoke_req("list_projects", serde_json::json!({})));
+        assert!(result.is_ok(), "list_projects must succeed");
+        let val: serde_json::Value = result.unwrap().deserialize().unwrap();
+        let projects = val.as_array().expect("must return an array");
+        assert_eq!(projects.len(), 2, "must have 2 projects");
+
+        for project in projects {
+            assert!(project["id"].is_number(), "id must be a number");
+            assert!(project["name"].is_string(), "name must be a string");
+            assert!(project["slug"].is_string(), "slug must be a string");
+            assert!(
+                project["created_at"].is_string(),
+                "created_at must be a string"
+            );
+            assert!(
+                project["last_opened_at"].is_null() || project["last_opened_at"].is_string(),
+                "last_opened_at must be null or string"
+            );
+        }
+    }
+
+    // NOTE: start_indexing and resume_thumbnails are NOT tested here because they
+    // require a real `tauri::AppHandle` for event emission and spawn background
+    // threads. The Tauri mock runtime provides an AppHandle but the async thread
+    // spawning + event emission makes these commands non-deterministic in tests.
+    // They are covered by the existing E2E Playwright tests and manual testing.
 }

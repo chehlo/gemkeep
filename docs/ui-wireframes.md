@@ -94,6 +94,51 @@ Sprint readiness markers:
 
 **Keyboard:** Enter submits the form when name input is focused.
 
+### 1.4 Delete Confirmation Modal
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│  (dimmed ProjectList behind)                                         │
+│                                                                      │
+│          ┌──────────────────────────────────────┐                   │
+│          │  Delete project?                      │                   │
+│          │                                       │                   │
+│          │  iceland-2024 will be permanently     │                   │
+│          │  deleted. This cannot be undone.       │                   │
+│          │                                       │                   │
+│          │              [Cancel]  [Delete]        │                   │
+│          └──────────────────────────────────────┘                   │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+### 1.5 Behaviors
+
+**Auto-open:** On app launch, if a last-opened project exists, the app
+navigates directly to StackOverview (skipping ProjectList). The user only
+sees ProjectList when pressing Esc from StackOverview, which sets
+`skipAutoOpen` and populates the Resume card.
+
+**Tab / Shift+Tab:** Browser-native Tab cycles focus between interactive
+elements (Resume Open → button, + New Project, project row Open/Delete
+buttons). Focus rings (`ring-2 ring-blue-500/30`) should be visible on
+all focusable elements.
+
+**"No projects yet":** When the project list is empty and no Resume card
+is shown, display "No projects yet." below the + New Project button.
+
+**? Help overlay** shows for this screen:
+- `Enter` — Open project / submit create form
+- `Esc` — Close overlay
+- `?` — Toggle this help
+
+**Future improvements [S-improvement]:**
+- Arrow Up/Down to visually select project rows (highlighted row)
+- Enter opens selected row; Delete requires separate confirmation
+- `/` fuzzy search projects by name
+- `N` shortcut to toggle New Project form
+- `D` or `Del` to initiate delete on selected row (with confirmation)
+
 ---
 
 ## 2. StackOverview
@@ -202,7 +247,51 @@ Enter opens the focused stack in StackFocus.
 - `[3/8 ●●○]` = 3 of 8 decided, compact dots
 - `[done ✓]` = all decided / finalized (green checkmark)
 
-### 2.5 Burst Config Panel (Ctrl+B Overlay)
+### 2.5 Behaviors
+
+**Auto-start indexing:** When source folders exist but no stacks are
+present (first open or after delete), indexing starts automatically
+without user action.
+
+**Auto-resume thumbnails:** When the project is re-opened and some
+stacks have missing thumbnails, thumbnail generation resumes
+automatically in the background.
+
+**Remove folder (×):** Each source folder row shows a small × button
+to remove it. Hidden during active indexing to prevent inconsistent state.
+
+**Error log:** After indexing completes with errors, a collapsible
+"Show N errors" section displays the error log.
+
+**Sticky header area:** The source folders and summary section should
+remain visible (sticky or scroll-bounded) so that the stack grid scrolls
+independently beneath it. Arrow-key navigation in the grid should not
+push the header off-screen.
+
+**Selection for merge:** Shift+Arrow selects adjacent stacks. For
+non-adjacent stacks, Ctrl+Click (or a toggle-select key) adds/removes
+individual stacks from the selection. M merges all selected stacks.
+Yellow ring (`ring-yellow-400`) indicates selected cards.
+
+**? Help overlay** shows for this screen:
+- `Arrow keys` / `hjkl` — Move focus
+- `Enter` — Open stack
+- `Home` / `End` — First / last stack
+- `Shift+Arrow` — Multi-select adjacent stacks
+- `M` — Merge selected stacks
+- `Ctrl+Z` — Undo last merge
+- `Ctrl+B` — Burst gap config
+- `i` / `r` — Index / Re-index photos
+- `Esc` — Back to ProjectList
+- `?` — Toggle this help
+
+**Future improvements [S-improvement]:**
+- Ctrl+Click (or toggle key) to select non-adjacent stacks for merge
+- hjkl Vim-style navigation (S7 spec, not yet implemented)
+- Home/End jump to first/last stack (S7 spec, not yet implemented)
+- Bottom shortcut hint bar [S12]
+
+### 2.6 Burst Config Panel (Ctrl+B Overlay)
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -298,7 +387,35 @@ below each thumbnail. The focused photo has a bright blue selection ring.
 **Round indicator [S9]:**
 Shows `Round 1 of N` in the header. Bracket keys `[` `]` navigate rounds.
 
-### 3.2 Stack Complete State **[S8]**
+### 3.2 Behaviors
+
+**Decision visual components must be shared** across StackFocus and
+SingleView via a common component (e.g. `DecisionIndicator.svelte`)
+so that changing the style in one place updates all screens.
+
+**scrollIntoView:** Arrow-key navigation must scroll the focused card
+into view, matching the pattern used in StackOverview.
+
+**? Help overlay** shows for this screen:
+- `Arrow keys` / `hjkl` — Move focus in grid
+- `Enter` / `E` — Open in single view
+- `Tab` — Jump to next undecided
+- `Shift+Tab` — Jump to previous undecided
+- `Home` / `End` — First / last photo
+- `Y` — Keep photo
+- `X` — Eliminate photo
+- `Ctrl+Enter` — Commit round
+- `Esc` — Back to StackOverview
+- `?` — Toggle this help
+
+**Future improvements [S-improvement]:**
+- hjkl Vim-style navigation (S7 spec, not yet implemented)
+- Home/End first/last photo (S7 spec, not yet implemented)
+- E key to open SingleView (S7 spec, not yet implemented)
+- Camera params on grid cards (aperture, shutter, ISO, focal length)
+  requires extending LogicalPhotoSummary IPC contract
+
+### 3.3 Stack Complete State **[S8]**
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -462,7 +579,30 @@ fields that the hobbyist user studies to learn from their photos.
 **Sprint 7 "good enough":** Monospace text, semi-transparent dark background.
 No fancy styling. Just readable numbers that align vertically.
 
-### 4.5 Round Committed State **[S9]**
+### 4.5 Behaviors
+
+**Decision borders use shared component** with StackFocus — same
+`DecisionIndicator.svelte` component renders the viewport-level border
+in SingleView and the card-level indicator in StackFocus grid.
+
+**Status bar format:** `Photo {n}/{total} . Stack: {name} . Round {n} . {STATUS}`
+
+**Camera params panel:** Right-side floating overlay (not bottom bar).
+Toggle with `I` key. Default: visible.
+
+**? Help overlay** shows for this screen:
+- `Left` / `Right` / `h` / `l` — Previous / next photo
+- `Home` / `End` — First / last photo
+- `Tab` — Jump to next undecided
+- `Shift+Tab` — Jump to previous undecided
+- `Y` — Keep photo
+- `X` — Eliminate photo
+- `I` — Toggle camera params
+- `Ctrl+Enter` — Commit round
+- `Esc` — Back to StackFocus
+- `?` — Toggle this help
+
+### 4.6 Round Committed State **[S9]**
 
 After Ctrl+Enter, the status bar changes and Y/X are disabled.
 

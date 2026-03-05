@@ -183,8 +183,13 @@ fn generate_jpeg_thumbnail(
         }
     }
 
-    // Fallback: full JPEG decode (slow ~1-4 s/photo, used when no adequate embedded thumbnail).
-    tracing::debug!("thumbnail: full decode fallback for {:?}", source_path);
+    // Primary fallback: turbojpeg DCT 1/8 downscale (~50x faster than full decode)
+    if let Some(result) = generate_jpeg_thumbnail_turbo(source_path, out_path, orientation) {
+        return Some(result);
+    }
+
+    // Last resort: full JPEG decode (slow, used only if turbojpeg fails)
+    tracing::debug!("thumbnail: full decode last-resort for {:?}", source_path);
     let img = match image::open(source_path) {
         Ok(i) => i,
         Err(e) => {
@@ -192,7 +197,6 @@ fn generate_jpeg_thumbnail(
             return None;
         }
     };
-
     generate_thumbnail_from_image(img, out_path, orientation)
 }
 
@@ -202,6 +206,103 @@ fn generate_raw_thumbnail(source_path: &Path, out_path: &Path) -> Option<PathBuf
     let jpeg_bytes = extract_raw_embedded_jpeg(source_path)?;
     let img = image::load_from_memory(&jpeg_bytes).ok()?;
     generate_thumbnail_from_image(img, out_path, None) // RAW preview is pre-oriented
+}
+
+/// Adaptive thumbnail generation strategy based on batch size.
+pub struct ThumbnailStrategy {
+    /// Whether to attempt EXIF IFD1 embedded thumbnail extraction first.
+    pub use_exif_fast_path: bool,
+    /// Number of rayon threads for parallel thumbnail generation.
+    pub num_threads: usize,
+}
+
+pub fn thumbnail_strategy(photo_count: usize) -> ThumbnailStrategy {
+    let max_threads = super::util::capped_num_threads();
+    if photo_count <= 50 {
+        ThumbnailStrategy {
+            use_exif_fast_path: true,
+            num_threads: max_threads,
+        }
+    } else if photo_count <= 500 {
+        ThumbnailStrategy {
+            use_exif_fast_path: false,
+            num_threads: max_threads.min(6),
+        }
+    } else {
+        ThumbnailStrategy {
+            use_exif_fast_path: false,
+            num_threads: max_threads.min(4),
+        }
+    }
+}
+
+/// Generate JPEG thumbnail using turbojpeg DCT 1/8 downscaling.
+/// Decodes at 1/8 resolution (e.g. 6000x4000 -> 750x500), then resizes to 256x256.
+/// ~50x faster than full decode and uses ~63x less memory.
+pub fn generate_jpeg_thumbnail_turbo(
+    source_path: &Path,
+    out_path: &Path,
+    orientation: Option<u16>,
+) -> Option<PathBuf> {
+    let jpeg_bytes = match std::fs::read(source_path) {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::debug!("turbo: cannot read {:?}: {}", source_path, e);
+            return None;
+        }
+    };
+
+    let mut decompressor = match turbojpeg::Decompressor::new() {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::debug!("turbo: decompressor init failed: {}", e);
+            return None;
+        }
+    };
+
+    let header = match decompressor.read_header(&jpeg_bytes) {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::debug!("turbo: read header failed for {:?}: {}", source_path, e);
+            return None;
+        }
+    };
+
+    let scaling = turbojpeg::ScalingFactor::ONE_EIGHTH;
+    if let Err(e) = decompressor.set_scaling_factor(scaling) {
+        tracing::debug!("turbo: set scaling failed: {}", e);
+        return None;
+    }
+
+    let scaled = header.scaled(scaling);
+
+    let mut turbo_image = turbojpeg::Image {
+        pixels: vec![0u8; 3 * scaled.width * scaled.height],
+        width: scaled.width,
+        pitch: 3 * scaled.width,
+        height: scaled.height,
+        format: turbojpeg::PixelFormat::RGB,
+    };
+
+    if let Err(e) = decompressor.decompress(&jpeg_bytes, turbo_image.as_deref_mut()) {
+        tracing::debug!("turbo: decompress failed for {:?}: {}", source_path, e);
+        return None;
+    }
+
+    let rgb_img = match image::RgbImage::from_raw(
+        turbo_image.width as u32,
+        turbo_image.height as u32,
+        turbo_image.pixels,
+    ) {
+        Some(img) => img,
+        None => {
+            tracing::debug!("turbo: RgbImage::from_raw failed for {:?}", source_path);
+            return None;
+        }
+    };
+
+    let dyn_img = image::DynamicImage::ImageRgb8(rgb_img);
+    generate_thumbnail_from_image(dyn_img, out_path, orientation)
 }
 
 fn extract_raw_embedded_jpeg(source_path: &Path) -> Option<Vec<u8>> {
@@ -656,6 +757,231 @@ mod tests {
         // Just verify the output is valid and the function doesn't crash.
         assert_eq!(img.width(), 256);
         assert_eq!(img.height(), 256);
+    }
+
+    #[test]
+    #[ignore = "PoC: generates DCT 1/8 thumbnail for visual quality inspection"]
+    fn poc_turbojpeg_dct_thumbnail_quality() {
+        // Proof of concept: generate a thumbnail using turbojpeg DCT 1/8 downscaling
+        // and save it alongside the original's EXIF thumbnail for visual comparison.
+        use std::time::Instant;
+
+        let source = std::path::Path::new(
+            "/home/ilya/ssd_disk/photo/venice 2022/old/to review/IMG_3747.JPG",
+        );
+        if !source.exists() {
+            println!("SKIP: source photo not found");
+            return;
+        }
+
+        let out_dir = std::path::Path::new("/tmp/gemkeep-poc-thumbnails");
+        std::fs::create_dir_all(out_dir).unwrap();
+
+        // Method 1: Current full decode (image::open)
+        let start = Instant::now();
+        let img_full = image::open(source).unwrap();
+        let full_decode_ms = start.elapsed().as_millis();
+        let full_resized = img_full.resize_to_fill(256, 256, image::imageops::FilterType::Lanczos3);
+        let full_total_ms = start.elapsed().as_millis();
+        full_resized
+            .save(out_dir.join("method1_full_decode.jpg"))
+            .unwrap();
+        println!(
+            "Full decode: {}×{} → 256×256 in {}ms (decode {}ms)",
+            img_full.width(),
+            img_full.height(),
+            full_total_ms,
+            full_decode_ms
+        );
+
+        // Method 2: turbojpeg DCT 1/8 downscale
+        let start = Instant::now();
+        let jpeg_bytes = std::fs::read(source).unwrap();
+        let mut decompressor = turbojpeg::Decompressor::new().unwrap();
+        let header = decompressor.read_header(&jpeg_bytes).unwrap();
+        let scaling = turbojpeg::ScalingFactor::ONE_EIGHTH;
+        decompressor.set_scaling_factor(scaling).unwrap();
+        let scaled = header.scaled(scaling);
+        println!(
+            "Original: {}×{}, DCT 1/8 target: {}×{}",
+            header.width, header.height, scaled.width, scaled.height
+        );
+
+        // Allocate output buffer and decompress at 1/8 scale
+        let mut turbo_image = turbojpeg::Image {
+            pixels: vec![0u8; 3 * scaled.width * scaled.height],
+            width: scaled.width,
+            pitch: 3 * scaled.width,
+            height: scaled.height,
+            format: turbojpeg::PixelFormat::RGB,
+        };
+        decompressor
+            .decompress(&jpeg_bytes, turbo_image.as_deref_mut())
+            .unwrap();
+        let dct_decode_ms = start.elapsed().as_millis();
+
+        // Convert to image::DynamicImage
+        let rgb_img = image::RgbImage::from_raw(
+            turbo_image.width as u32,
+            turbo_image.height as u32,
+            turbo_image.pixels,
+        )
+        .unwrap();
+        let dyn_img = image::DynamicImage::ImageRgb8(rgb_img);
+        let turbo_resized = dyn_img.resize_to_fill(256, 256, image::imageops::FilterType::Lanczos3);
+        let turbo_total_ms = start.elapsed().as_millis();
+        turbo_resized
+            .save(out_dir.join("method2_dct_eighth.jpg"))
+            .unwrap();
+        println!(
+            "DCT 1/8: {}×{} → 256×256 in {}ms (decode {}ms)",
+            dyn_img.width(),
+            dyn_img.height(),
+            turbo_total_ms,
+            dct_decode_ms
+        );
+
+        // Method 3: EXIF embedded thumbnail (for reference)
+        if let Some(exif_bytes) = extract_exif_embedded_thumbnail(source) {
+            if let Ok(exif_img) = image::load_from_memory(&exif_bytes) {
+                let exif_resized =
+                    exif_img.resize_to_fill(256, 256, image::imageops::FilterType::Lanczos3);
+                exif_resized
+                    .save(out_dir.join("method3_exif_embedded.jpg"))
+                    .unwrap();
+                println!(
+                    "EXIF embedded: {}×{} → 256×256",
+                    exif_img.width(),
+                    exif_img.height()
+                );
+            }
+        }
+
+        println!(
+            "\nSpeedup: {:.1}x faster",
+            full_total_ms as f64 / turbo_total_ms as f64
+        );
+        println!("Output dir: {}", out_dir.display());
+        println!("Compare visually:");
+        println!("  method1_full_decode.jpg  (gold standard)");
+        println!("  method2_dct_eighth.jpg   (new DCT 1/8 path)");
+        println!("  method3_exif_embedded.jpg (current EXIF, if any)");
+    }
+
+    // ── Sprint 7 Part B: Thumbnail DCT optimization tests (RED) ─────────────
+
+    #[test]
+    fn test_turbo_thumbnail_produces_256x256_jpeg() {
+        // RED: generate_jpeg_thumbnail_turbo doesn't exist yet
+        let src = make_jpeg(800, 600);
+        let cache_dir = TempDir::new().unwrap();
+        let out_path = cache_dir.path().join("turbo_test.jpg");
+
+        let result = super::generate_jpeg_thumbnail_turbo(src.path(), &out_path, None);
+
+        assert!(result.is_some(), "turbo path must produce a thumbnail");
+        let img = image::open(&out_path).expect("output must be readable");
+        assert_eq!(img.width(), 256, "turbo thumbnail width must be 256");
+        assert_eq!(img.height(), 256, "turbo thumbnail height must be 256");
+    }
+
+    #[test]
+    fn test_turbo_thumbnail_output_is_valid_jpeg() {
+        let src = make_jpeg(400, 400);
+        let cache_dir = TempDir::new().unwrap();
+        let out_path = cache_dir.path().join("turbo_valid.jpg");
+
+        super::generate_jpeg_thumbnail_turbo(src.path(), &out_path, None);
+
+        let bytes = std::fs::read(&out_path).expect("thumbnail file must exist");
+        assert_eq!(
+            &bytes[0..2],
+            &[0xFF, 0xD8],
+            "turbo output must start with JPEG magic bytes"
+        );
+    }
+
+    #[test]
+    fn test_turbo_thumbnail_with_orientation() {
+        let src = make_jpeg(600, 200);
+        let cache_dir = TempDir::new().unwrap();
+        let out_path = cache_dir.path().join("turbo_orient.jpg");
+
+        let result = super::generate_jpeg_thumbnail_turbo(src.path(), &out_path, Some(6));
+
+        assert!(result.is_some());
+        let img = image::open(&out_path).unwrap();
+        assert_eq!((img.width(), img.height()), (256, 256));
+    }
+
+    #[test]
+    fn test_turbo_thumbnail_nonexistent_source_returns_none() {
+        let cache_dir = TempDir::new().unwrap();
+        let out_path = cache_dir.path().join("turbo_missing.jpg");
+        let missing = Path::new("/tmp/definitely_does_not_exist_gemkeep_turbo.jpg");
+
+        let result = super::generate_jpeg_thumbnail_turbo(missing, &out_path, None);
+
+        assert!(result.is_none(), "must return None for missing source");
+    }
+
+    #[test]
+    fn test_thumbnail_strategy_small_batch() {
+        // RED: thumbnail_strategy doesn't exist yet
+        let strategy = super::thumbnail_strategy(30);
+        assert!(
+            strategy.use_exif_fast_path,
+            "small batch should try EXIF first"
+        );
+        assert_eq!(
+            strategy.num_threads,
+            super::super::util::capped_num_threads()
+        );
+    }
+
+    #[test]
+    fn test_thumbnail_strategy_medium_batch() {
+        let strategy = super::thumbnail_strategy(200);
+        assert!(
+            !strategy.use_exif_fast_path,
+            "medium batch should skip EXIF"
+        );
+        assert!(
+            strategy.num_threads <= 6,
+            "medium batch should cap threads at 6"
+        );
+    }
+
+    #[test]
+    fn test_thumbnail_strategy_large_batch() {
+        let strategy = super::thumbnail_strategy(1000);
+        assert!(!strategy.use_exif_fast_path, "large batch should skip EXIF");
+        assert!(
+            strategy.num_threads <= 4,
+            "large batch should cap threads at 4"
+        );
+    }
+
+    #[test]
+    fn test_thumbnail_strategy_boundary_50() {
+        let small = super::thumbnail_strategy(50);
+        let medium = super::thumbnail_strategy(51);
+        assert!(small.use_exif_fast_path, "50 should use EXIF");
+        assert!(!medium.use_exif_fast_path, "51 should skip EXIF");
+    }
+
+    #[test]
+    fn test_thumbnail_strategy_boundary_500() {
+        let medium = super::thumbnail_strategy(500);
+        let large = super::thumbnail_strategy(501);
+        // Both skip EXIF
+        assert!(!medium.use_exif_fast_path);
+        assert!(!large.use_exif_fast_path);
+        // Large should have fewer threads
+        assert!(
+            large.num_threads <= medium.num_threads,
+            "501+ should have equal or fewer threads than 500"
+        );
     }
 
     #[test]

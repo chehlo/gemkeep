@@ -9,3 +9,7 @@
 [env]
 PKG_CONFIG_PATH = { value = "/home/ilya/.local/lib/pkgconfig", force = true }
 LIBRARY_PATH = { value = "/home/ilya/.local/lib", force = true }
+# Limit parallel test threads to prevent system unresponsiveness.
+# Without this, cargo test spawns 12 threads (one per core), and tests that
+# create rayon pools multiply that further, causing thread explosion.
+RUST_TEST_THREADS = { value = "4", force = false }

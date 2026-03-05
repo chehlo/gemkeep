@@ -132,17 +132,16 @@ async fn get_photos(project_id: i64, state: State<'_, AppState>) -> Result<Vec<P
 <script lang="ts">
     // 1. Imports
     import { invoke } from '@tauri-apps/api/core';
-    import { onMount } from 'svelte';
 
-    // 2. Props
-    export let projectId: number;
+    // 2. Props (Svelte 5 runes)
+    let { projectId }: { projectId: number } = $props();
 
     // 3. State
-    let photos: Photo[] = [];
-    let loading = true;
+    let photos: Photo[] = $state([]);
+    let loading = $state(true);
 
-    // 4. Reactive statements
-    $: activePhotos = photos.filter(p => p.status === 'active');
+    // 4. Derived values
+    const activePhotos = $derived(photos.filter(p => p.status === 'active'));
 
     // 5. Functions
     async function loadPhotos() {
@@ -150,8 +149,10 @@ async fn get_photos(project_id: i64, state: State<'_, AppState>) -> Result<Vec<P
         loading = false;
     }
 
-    // 6. Lifecycle
-    onMount(loadPhotos);
+    // 6. Side effects
+    $effect(() => {
+        loadPhotos();
+    });
 </script>
 
 <!-- Template -->
@@ -166,6 +167,31 @@ async fn get_photos(project_id: i64, state: State<'_, AppState>) -> Result<Vec<P
 </style>
 ```
 
+Use Svelte 5 runes exclusively: `$state`, `$derived`, `$props`, `$effect`. Do not use Svelte 4 patterns (`export let`, `$:` reactive statements).
+
+### Component Extraction
+- Shared UI components live in `src/lib/components/`
+- Screen-level components live in `src/lib/components/screens/`
+- Extract into a shared component when the same markup appears in 2 or more screens
+- Example: `DecisionIndicator.svelte` renders keep/eliminate border overlays; used in both StackOverview cards and SingleView
+
+### Shared Constants
+- Visual constants (CSS class names, selectors) live in `src/lib/constants/`
+- Tests import CSS selectors from constants; never hardcode class strings in test files
+- Changing a style means editing 1-2 files (the constant + the component), not every test
+- Example: `src/lib/constants/decisions.ts` exports `DECISION_CLASSES`, `DECISION_BORDERS`, `DECISION_SELECTORS`
+
+### Shared Utilities
+- Reusable pure functions live in `src/lib/utils/`
+- Prefer pure functions with no side effects; state mutation only when Svelte reactivity requires it
+- Example: `src/lib/utils/photos.ts` exports `updateDecisionState`, `formatCaptureTime`, `truncate`
+
+### Test Helpers
+- Shared test helper functions live in `src/test/`
+- Helpers derive DOM selectors from constants (never hardcode CSS class strings)
+- If a class name changes, only the constant and the helper need updating — not individual test files
+- Example: `src/test/decision-helpers.ts` wraps `DECISION_SELECTORS` into `queryKeepIndicator()`, `queryEliminateIndicator()`, etc.
+
 ### Styling
 - Use Tailwind CSS utility classes
 - Avoid custom CSS unless necessary
@@ -177,7 +203,7 @@ async fn get_photos(project_id: i64, state: State<'_, AppState>) -> Result<Vec<P
 - Document all keyboard shortcuts
 
 ```svelte
-<svelte:window on:keydown={handleKeydown} />
+<svelte:window onkeydown={handleKeydown} />
 
 <script lang="ts">
 function handleKeydown(e: KeyboardEvent) {
@@ -192,7 +218,8 @@ function handleKeydown(e: KeyboardEvent) {
 ## Code Duplication (DRY)
 
 Extract when:
-- Pattern repeated ≥3 times
+- Pattern repeated ≥3 times (Rust logic, query builders, parsers)
+- UI component or markup repeated in ≥2 screens
 - Common query builders, parsers, UI patterns
 
 Do not extract when:

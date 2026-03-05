@@ -8,7 +8,9 @@
     "baseUrl": ".",
     "paths": {
       "$lib": ["src/lib"],
-      "$lib/*": ["src/lib/*"]
+      "$lib/*": ["src/lib/*"],
+      "$test": ["src/test"],
+      "$test/*": ["src/test/*"]
     },
     "allowImportingTsExtensions": true,
     "moduleDetection": "force",

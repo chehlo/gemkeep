@@ -64,6 +64,50 @@ export const THUMBS_DONE_STATUS = {
   thumbnails_total: 10, thumbnails_done: 10,
 }
 
+// ── Sprint 7 presets ─────────────────────────────────────────────────────────
+
+export const makePhotos = (count: number, stackId = 1) =>
+  Array.from({ length: count }, (_, i) => ({
+    logical_photo_id: stackId * 100 + i + 1,
+    thumbnail_path: `/cache/photo_${stackId * 100 + i + 1}.jpg`,
+    capture_time: `2024-03-15T10:${String(i).padStart(2, '0')}:00Z`,
+    camera_model: 'Canon EOS R5',
+    lens: 'RF 85mm F1.2L',
+    has_raw: true,
+    has_jpeg: true,
+  }))
+
+export const makePhotoDetail = (photoId: number, overrides: Record<string, unknown> = {}) => ({
+  logical_photo_id: photoId,
+  thumbnail_path: `/cache/photo_${photoId}.jpg`,
+  capture_time: '2024-03-15T10:00:00Z',
+  camera_model: 'Canon EOS R5',
+  lens: 'RF 85mm F1.2L',
+  has_raw: true,
+  has_jpeg: true,
+  current_status: 'undecided',
+  aperture: 2.8,
+  shutter_speed: '1/250',
+  iso: 400,
+  focal_length: 85.0,
+  exposure_comp: 0.7,
+  jpeg_path: `/photos/photo_${photoId}.jpg`,
+  raw_path: `/photos/photo_${photoId}.cr2`,
+  ...overrides,
+})
+
+export const makeRoundStatus = (totalPhotos: number, decided = 0, kept = 0, eliminated = 0) => ({
+  round_id: 1,
+  round_number: 1,
+  state: 'open',
+  total_photos: totalPhotos,
+  decided,
+  kept,
+  eliminated,
+  undecided: totalPhotos - decided,
+  committed_at: null,
+})
+
 export const THUMBS_RUNNING_PROJECT = {
   initialFolders: [FOLDER_ICELAND],
   initialStacks: makeStacks(3),
@@ -158,8 +202,19 @@ export async function injectTauriMock(
       stacksAfterThumbnail: (s.stacksAfterThumbnail ?? null) as unknown[] | null,
       stacksAfterRestack: (s.stacksAfterRestack ?? null) as unknown[] | null,
       stacksAfterResume: (s.stacksAfterResume ?? null) as unknown[] | null,
+      stacksAfterMerge: (s.stacksAfterMerge ?? null) as unknown[] | null,
+      stacksAfterUndo: (s.stacksAfterUndo ?? null) as unknown[] | null,
       thumbnailEventFired: false,
       ipcLog: [] as string[],
+      // Sprint 7: decision & merge state
+      merged: false,
+      mergeUndone: false,
+      photos: (s.initialPhotos ?? []) as unknown[],
+      photoDetails: (s.initialPhotoDetails ?? {}) as Record<number, unknown>,
+      decisions: (s.initialDecisions ?? []) as Array<{ logical_photo_id: number; current_status: string }>,
+      roundStatus: (s.initialRoundStatus ?? null) as unknown,
+      roundCommitted: false,
+      transactions: (s.initialTransactions ?? []) as unknown[],
     }
 
     function makeSlug(name: string): string {
@@ -223,6 +278,8 @@ export async function injectTauriMock(
             store.folders = store.folders.filter(f => f.id !== (args.folderId as number))
             return undefined
           case 'list_stacks': {
+            if (store.mergeUndone && store.stacksAfterUndo) return [...store.stacksAfterUndo]
+            if (store.merged && store.stacksAfterMerge) return [...store.stacksAfterMerge]
             if (store.restacked && store.stacksAfterRestack) return [...store.stacksAfterRestack]
             if (store.thumbnailEventFired && store.stacksAfterThumbnail) return [...store.stacksAfterThumbnail]
             if (store.resumeCalled && store.stacksAfterResume) return [...store.stacksAfterResume]
@@ -276,10 +333,85 @@ export async function injectTauriMock(
           case 'get_burst_gap':
             return store.burstGap
           case 'set_burst_gap':
-            store.burstGap = args.gap as number
+            store.burstGap = args.secs as number
             return undefined
           case 'restack':
             store.restacked = true
+            return undefined
+
+          // ── Sprint 7: Stack merge ──
+          case 'merge_stacks': {
+            store.merged = true
+            store.mergeUndone = false
+            const ids = args.stackIds as number[]
+            return {
+              merged_stack_id: Math.min(...ids),
+              logical_photos_moved: ids.length * 4,
+              source_stack_ids: ids,
+              transaction_id: 1,
+            }
+          }
+          case 'undo_last_merge':
+            store.mergeUndone = true
+            store.merged = false
+            return undefined
+          case 'list_stack_transactions':
+            return [...store.transactions]
+
+          // ── Sprint 7: Decision engine ──
+          case 'list_logical_photos':
+            return [...store.photos]
+          case 'get_photo_detail': {
+            const lpId = args.logicalPhotoId as number
+            const detail = (store.photoDetails as Record<number, unknown>)[lpId]
+            if (detail) {
+              // Reflect current decision status
+              const dec = store.decisions.find(
+                (d: { logical_photo_id: number }) => d.logical_photo_id === lpId
+              )
+              return { ...(detail as Record<string, unknown>), current_status: dec?.current_status ?? 'undecided' }
+            }
+            return null
+          }
+          case 'get_stack_decisions':
+            return [...store.decisions]
+          case 'get_round_status': {
+            if (store.roundCommitted && store.roundStatus) {
+              return { ...(store.roundStatus as Record<string, unknown>), state: 'committed' }
+            }
+            return store.roundStatus
+          }
+          case 'make_decision': {
+            const photoId = args.logicalPhotoId as number
+            const action = args.action as string
+            const existing = store.decisions.findIndex(
+              (d: { logical_photo_id: number }) => d.logical_photo_id === photoId
+            )
+            if (existing >= 0) {
+              store.decisions[existing] = { logical_photo_id: photoId, current_status: action }
+            } else {
+              store.decisions.push({ logical_photo_id: photoId, current_status: action })
+            }
+            return {
+              decision_id: store.decisions.length,
+              round_id: 1,
+              action,
+              current_status: action,
+              round_auto_created: store.decisions.length === 1,
+            }
+          }
+          case 'undo_decision': {
+            const undoId = args.logicalPhotoId as number
+            const idx = store.decisions.findIndex(
+              (d: { logical_photo_id: number }) => d.logical_photo_id === undoId
+            )
+            if (idx >= 0) {
+              store.decisions[idx] = { logical_photo_id: undoId, current_status: 'undecided' }
+            }
+            return undefined
+          }
+          case 'commit_round':
+            store.roundCommitted = true
             return undefined
 
           default:

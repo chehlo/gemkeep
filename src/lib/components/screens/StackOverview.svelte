@@ -7,10 +7,12 @@
     addSourceFolder, removeSourceFolder, listSourceFolders,
     startIndexing, cancelIndexing, pauseIndexing, resumeIndexing,
     getIndexingStatus, listStacks, getThumbnailUrl, resumeThumbnails,
-    getBurstGap, setBurstGap, restack,
+    getBurstGap, setBurstGap, restack, mergeStacks, undoLastMerge,
+    expandSourceScopes,
     type SourceFolder, type IndexingStatus, type StackSummary
   } from '$lib/api/index.js'
   import { formatDate } from '$lib/utils/date.js'
+  import { createTimedError } from '$lib/utils/errors.js'
 
   // Derive project info from navigation state
   const projectSlug = $derived(
@@ -32,15 +34,22 @@
   let showBurstPanel = $state(false)
   let burstGapInput = $state(3)
   let burstRestacking = $state(false)
+  let selectedStacks = $state<Set<number>>(new Set())
+  let actionError = $state<string | null>(null)
+  let thumbnailDebounceTimer: ReturnType<typeof setTimeout> | null = null
+  const { show: showActionError, cleanup: cleanupErrorTimer } = createTimedError(5000, (v) => { actionError = v })
 
   // Load initial state
   onMount(async () => {
     window.addEventListener('keydown', handleKey)
 
-    // Progressive thumbnail updates: each thumbnail-ready event triggers a stack reload
-    // so cards show their images as soon as they are written, not all at once.
-    unlistenThumbnail = await listen('thumbnail-ready', async () => {
-      if (projectSlug) stacks = await listStacks(projectSlug)
+    // Progressive thumbnail updates: debounce rapid thumbnail-ready events so that
+    // bursts from the rayon pool are collapsed into a single listStacks call.
+    unlistenThumbnail = await listen('thumbnail-ready', () => {
+      if (thumbnailDebounceTimer) clearTimeout(thumbnailDebounceTimer)
+      thumbnailDebounceTimer = setTimeout(async () => {
+        if (projectSlug) stacks = await listStacks(projectSlug)
+      }, 300)
     })
 
     let restoreIdx: number | null = null
@@ -57,12 +66,16 @@
         cards[restoreIdx]?.scrollIntoView({ block: 'nearest', behavior: 'instant' })
       }
     }
+    // Expand asset protocol scope for source folders (fire-and-forget, non-blocking)
+    if (projectSlug) expandSourceScopes(projectSlug).catch(() => {})
   })
 
   onDestroy(() => {
     window.removeEventListener('keydown', handleKey)
     if (pollInterval) clearInterval(pollInterval)
     unlistenThumbnail?.()
+    cleanupErrorTimer()
+    if (thumbnailDebounceTimer) clearTimeout(thumbnailDebounceTimer)
   })
 
   async function loadAll(): Promise<number | null> {
@@ -120,6 +133,7 @@
     if (!path || typeof path !== 'string') return
     await addSourceFolder(projectSlug, path)
     sourceFolders = await listSourceFolders(projectSlug)
+    await expandSourceScopes(projectSlug)
     // Auto-start indexing when user adds the first folder and has no stacks yet
     if (sourceFolders.length > 0 && stacks.length === 0 && !status.running && !status.thumbnails_running) {
       await handleIndex()
@@ -139,8 +153,11 @@
       startPolling()
     } catch (e) {
       console.error("startIndexing failed:", e)
-      try { status = await getIndexingStatus() } catch {}
+      try { status = await getIndexingStatus() } catch {
+        status = { ...status, running: false, thumbnails_running: false }
+      }
       try { stacks = await listStacks(projectSlug) } catch {}
+      showActionError('Failed to start indexing. Please try again.')
     }
   }
 
@@ -194,20 +211,80 @@
 
   function handleKey(e: KeyboardEvent) {
     if (e.key.toLowerCase() === 'b' && e.ctrlKey) { e.preventDefault(); openBurstPanel(); return }
+    if (e.key.toLowerCase() === 'z' && e.ctrlKey) { e.preventDefault(); handleUndoMerge(); return }
+    if (e.key === 'Escape' && showBurstPanel) { showBurstPanel = false; return }
     if (e.key === 'Escape') { back(); return }
     if (e.key === 'i' && sourceFolders.length > 0 && !status.running) { handleIndex(); return }
     if (e.key === 'r' && stacks.length > 0 && !status.running) { handleIndex(); return }
+    if ((e.key === 'm' || e.key === 'M') && stacks.length > 0 && !status.running) { handleMerge(); return }
     if (stacks.length > 0 && !status.running) {
       const cols = 4
-      if (e.key === 'ArrowRight') { focusedIndex = Math.min(focusedIndex + 1, stacks.length - 1); e.preventDefault() }
-      if (e.key === 'ArrowLeft') { focusedIndex = Math.max(focusedIndex - 1, 0); e.preventDefault() }
-      if (e.key === 'ArrowDown') { focusedIndex = Math.min(focusedIndex + cols, stacks.length - 1); e.preventDefault() }
-      if (e.key === 'ArrowUp') { focusedIndex = Math.max(focusedIndex - cols, 0); e.preventDefault() }
+
+      // Map hjkl to arrow equivalents (only when no Ctrl/Shift/Alt modifier)
+      let mappedKey = e.key
+      if (!e.ctrlKey && !e.shiftKey && !e.altKey) {
+        if (e.key === 'l') mappedKey = 'ArrowRight'
+        if (e.key === 'h') mappedKey = 'ArrowLeft'
+        if (e.key === 'j') mappedKey = 'ArrowDown'
+        if (e.key === 'k') mappedKey = 'ArrowUp'
+      }
+
+      // Shift+Arrow: multi-select stacks in all 4 directions
+      if (e.shiftKey && ['ArrowRight', 'ArrowLeft', 'ArrowDown', 'ArrowUp'].includes(e.key)) {
+        selectedStacks.add(stacks[focusedIndex].stack_id)
+        if (e.key === 'ArrowRight') focusedIndex = Math.min(focusedIndex + 1, stacks.length - 1)
+        if (e.key === 'ArrowLeft')  focusedIndex = Math.max(focusedIndex - 1, 0)
+        if (e.key === 'ArrowDown')  focusedIndex = Math.min(focusedIndex + cols, stacks.length - 1)
+        if (e.key === 'ArrowUp')    focusedIndex = Math.max(focusedIndex - cols, 0)
+        selectedStacks.add(stacks[focusedIndex].stack_id)
+        selectedStacks = new Set(selectedStacks) // trigger reactivity
+        e.preventDefault()
+        scrollFocusedCardIntoView()
+        return
+      }
+      if (mappedKey === 'ArrowRight') { selectedStacks = new Set(); focusedIndex = Math.min(focusedIndex + 1, stacks.length - 1); e.preventDefault(); scrollFocusedCardIntoView() }
+      if (mappedKey === 'ArrowLeft') { selectedStacks = new Set(); focusedIndex = Math.max(focusedIndex - 1, 0); e.preventDefault(); scrollFocusedCardIntoView() }
+      if (mappedKey === 'ArrowDown') { selectedStacks = new Set(); focusedIndex = Math.min(focusedIndex + cols, stacks.length - 1); e.preventDefault(); scrollFocusedCardIntoView() }
+      if (mappedKey === 'ArrowUp') { selectedStacks = new Set(); focusedIndex = Math.max(focusedIndex - cols, 0); e.preventDefault(); scrollFocusedCardIntoView() }
+      if (mappedKey === 'Home') { selectedStacks = new Set(); focusedIndex = 0; e.preventDefault(); scrollFocusedCardIntoView() }
+      if (mappedKey === 'End') { selectedStacks = new Set(); focusedIndex = stacks.length - 1; e.preventDefault(); scrollFocusedCardIntoView() }
       if (e.key === 'Enter' && !(e.target instanceof HTMLInputElement)) {
         const stack = stacks[focusedIndex]
         navigation.stackOverviewFocusIndex = focusedIndex
         navigate({ kind: 'stack-focus', projectSlug, projectName, stackId: stack.stack_id })
       }
+    }
+  }
+
+  function scrollFocusedCardIntoView() {
+    tick().then(() => {
+      const cards = document.querySelectorAll('[data-stack-card]')
+      cards[focusedIndex]?.scrollIntoView({ block: 'nearest' })
+    })
+  }
+
+  async function handleMerge() {
+    if (selectedStacks.size < 2) return
+    try {
+      const result = await mergeStacks(projectSlug, [...selectedStacks])
+      stacks = await listStacks(projectSlug)
+      selectedStacks = new Set()
+      // Focus on the merged stack
+      const mergedIdx = stacks.findIndex(s => s.stack_id === result.merged_stack_id)
+      focusedIndex = mergedIdx >= 0 ? mergedIdx : 0
+    } catch (e) {
+      console.error('mergeStacks failed:', e)
+      showActionError('Failed to merge stacks. Please try again.')
+    }
+  }
+
+  async function handleUndoMerge() {
+    try {
+      await undoLastMerge(projectSlug)
+      stacks = await listStacks(projectSlug)
+    } catch (e) {
+      console.error('undoLastMerge failed:', e)
+      showActionError('Failed to undo merge. Please try again.')
     }
   }
 
@@ -480,7 +557,8 @@
             class="flex flex-col rounded-lg overflow-hidden border transition-all text-left
               {i === focusedIndex
                 ? 'border-blue-500 ring-2 ring-blue-500/30 bg-gray-800'
-                : 'border-gray-800 bg-gray-900 hover:border-gray-600'}"
+                : 'border-gray-800 bg-gray-900 hover:border-gray-600'}
+              {selectedStacks.has(stack.stack_id) ? 'ring-2 ring-yellow-400 border-yellow-400' : ''}"
             onclick={() => {
               focusedIndex = i
               navigation.stackOverviewFocusIndex = i
@@ -509,6 +587,12 @@
       </div>
     {/if}
 
+    {/if}
+
+    {#if actionError}
+      <div class="px-4 py-2 bg-red-900/80 text-red-200 text-sm rounded" data-testid="action-error">
+        {actionError}
+      </div>
     {/if}
 
   </main>

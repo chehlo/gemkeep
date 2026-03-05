@@ -313,9 +313,15 @@ fn run_pipeline_inner(
         return stats;
     }
 
-    let n_threads = super::util::capped_num_threads();
+    let strategy = thumbnails::thumbnail_strategy(lp_thumb_targets.len());
+    tracing::info!(
+        "thumbnail strategy: {} photos → threads={}, exif_fast_path={}",
+        lp_thumb_targets.len(),
+        strategy.num_threads,
+        strategy.use_exif_fast_path
+    );
     let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(n_threads)
+        .num_threads(strategy.num_threads)
         .build()
         .unwrap_or_else(|_| {
             rayon::ThreadPoolBuilder::new()

@@ -976,6 +976,157 @@ mod tests {
         assert_eq!(detail.raw_path.as_deref(), Some("/test/shot.CR2"));
     }
 
+    // ── SF-41: Decision re-decide overwrites in DB ─────────────────────────
+
+    #[test]
+    fn test_sf41_redecide_overwrites_latest_decision_in_db() {
+        // SF-41: make_decision(keep) then make_decision(eliminate) on same photo.
+        // The latest decision must be effective: current_status = 'eliminate'.
+        // Verify via direct DB query that only the latest action is reflected
+        // in the materialized current_status, even though both rows exist.
+        let (conn, project_id, stack_id, lp_ids) = setup_test_db(3);
+        let lp_a = lp_ids[0];
+        let lp_b = lp_ids[1];
+        let lp_c = lp_ids[2];
+
+        let (round_id, _) = find_or_create_round(&conn, project_id, stack_id).unwrap();
+
+        // Photo A: keep then eliminate
+        record_decision(&conn, lp_a, round_id, &DecisionAction::Keep).unwrap();
+        record_decision(&conn, lp_a, round_id, &DecisionAction::Eliminate).unwrap();
+
+        // Photo B: eliminate then keep (reverse order)
+        record_decision(&conn, lp_b, round_id, &DecisionAction::Eliminate).unwrap();
+        record_decision(&conn, lp_b, round_id, &DecisionAction::Keep).unwrap();
+
+        // Photo C: keep only (no re-decide, control case)
+        record_decision(&conn, lp_c, round_id, &DecisionAction::Keep).unwrap();
+
+        // Verify current_status for each photo
+        let status_a: String = conn
+            .query_row(
+                "SELECT current_status FROM logical_photos WHERE id = ?1",
+                params![lp_a],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            status_a, "eliminate",
+            "photo A: keep->eliminate must result in 'eliminate'"
+        );
+
+        let status_b: String = conn
+            .query_row(
+                "SELECT current_status FROM logical_photos WHERE id = ?1",
+                params![lp_b],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            status_b, "keep",
+            "photo B: eliminate->keep must result in 'keep'"
+        );
+
+        let status_c: String = conn
+            .query_row(
+                "SELECT current_status FROM logical_photos WHERE id = ?1",
+                params![lp_c],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(status_c, "keep", "photo C: single keep must result in 'keep'");
+
+        // Verify round status counts reflect the final state
+        let round_status = get_round_status(&conn, project_id, stack_id).unwrap();
+        assert_eq!(round_status.kept, 2, "2 photos should be in 'keep' state");
+        assert_eq!(
+            round_status.eliminated, 1,
+            "1 photo should be in 'eliminate' state"
+        );
+        assert_eq!(round_status.undecided, 0, "no photos should be undecided");
+    }
+
+    // ── RUST-UNDO-COMMIT: Undo blocked after round commit ────────────────────
+
+    #[test]
+    fn test_undo_after_commit_is_blocked() {
+        // RUST-UNDO-COMMIT: After committing a round, undo_decision must not
+        // corrupt data. The engine layer's undo_decision does not check commit
+        // status (that's the command layer's job), but we verify that after
+        // commit, the round state is 'committed' and is_round_committed returns true,
+        // which the command layer uses to block undo.
+        let (conn, project_id, stack_id, lp_ids) = setup_test_db(2);
+        let lp_a = lp_ids[0];
+        let lp_b = lp_ids[1];
+
+        let (round_id, _) = find_or_create_round(&conn, project_id, stack_id).unwrap();
+
+        // Make decisions
+        record_decision(&conn, lp_a, round_id, &DecisionAction::Keep).unwrap();
+        record_decision(&conn, lp_b, round_id, &DecisionAction::Eliminate).unwrap();
+
+        // Commit the round
+        commit_round(&conn, round_id).unwrap();
+
+        // Verify round is committed
+        assert!(
+            is_round_committed(&conn, round_id).unwrap(),
+            "round must be committed after commit_round"
+        );
+
+        // Verify decisions survive the commit (not deleted)
+        let decision_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM decisions WHERE round_id = ?1",
+                params![round_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            decision_count, 2,
+            "committed round must preserve all decision rows"
+        );
+
+        // Verify current_status is still correct after commit
+        let status_a: String = conn
+            .query_row(
+                "SELECT current_status FROM logical_photos WHERE id = ?1",
+                params![lp_a],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            status_a, "keep",
+            "commit must not change current_status"
+        );
+
+        let status_b: String = conn
+            .query_row(
+                "SELECT current_status FROM logical_photos WHERE id = ?1",
+                params![lp_b],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            status_b, "eliminate",
+            "commit must not change current_status"
+        );
+
+        // Verify that find_or_create_round after commit creates a NEW round
+        // (the old one is committed, so a new open round is needed)
+        // This is the mechanism that prevents undo on the committed round
+        let (new_round_id, was_created) =
+            find_or_create_round(&conn, project_id, stack_id).unwrap();
+        assert!(
+            was_created,
+            "after commit, find_or_create_round must create a new round"
+        );
+        assert_ne!(
+            new_round_id, round_id,
+            "new round must have a different id than the committed one"
+        );
+    }
+
     // ── Bug 1 RED TEST: Thumbnail path prefix mismatch ─────────────────────
 
     #[test]

@@ -890,4 +890,192 @@ mod tests {
             "1.0s should format as 1.0s"
         );
     }
+
+    // ── Camera test infrastructure ─────────────────────────────────────────
+
+    struct CameraTestCase {
+        label: &'static str,
+        jpeg_path: &'static str,
+        raw_path: &'static str,
+        expected_model_contains: &'static str,
+        expected_lens: Option<&'static str>,
+        has_aperture: bool,
+        has_shutter: bool,
+        has_iso: bool,
+        has_focal_length: bool,
+        has_exposure_comp: bool,
+    }
+
+    const CANON_EOS_80D: CameraTestCase = CameraTestCase {
+        label: "Canon EOS 80D",
+        jpeg_path: "/home/ilya/ssd_disk/photo/venice 2026/il/1/IMG_4651.JPG",
+        raw_path: "/home/ilya/ssd_disk/photo/venice 2026/il/1/IMG_4651.CR2",
+        expected_model_contains: "Canon EOS 80D",
+        expected_lens: Some("50mm f/1.8 STM"),
+        has_aperture: true,
+        has_shutter: true,
+        has_iso: true,
+        has_focal_length: true,
+        has_exposure_comp: true,
+    };
+
+    const SONY_RX10M4: CameraTestCase = CameraTestCase {
+        label: "Sony DSC-RX10M4",
+        jpeg_path: "/home/ilya/ssd_disk/photo/venice 2026/lina/100MSDCF/DSC02967.JPG",
+        raw_path: "/home/ilya/ssd_disk/photo/venice 2026/lina/100MSDCF/DSC02967.ARW",
+        expected_model_contains: "DSC-RX10M4",
+        expected_lens: None,
+        has_aperture: true,
+        has_shutter: true,
+        has_iso: true,
+        has_focal_length: true,
+        has_exposure_comp: true,
+    };
+
+    fn assert_camera_exif(case: &CameraTestCase, data: &ExifData) {
+        let model = data
+            .camera_model
+            .as_deref()
+            .expect(&format!("{}: camera_model must be present", case.label));
+        assert!(
+            model.contains(case.expected_model_contains),
+            "{}: camera_model '{}' must contain '{}'",
+            case.label,
+            model,
+            case.expected_model_contains
+        );
+
+        if let Some(expected_lens) = case.expected_lens {
+            let lens = data
+                .lens
+                .as_deref()
+                .expect(&format!("{}: lens must be present", case.label));
+            assert!(
+                lens.contains(expected_lens),
+                "{}: lens '{}' must contain '{}'",
+                case.label,
+                lens,
+                expected_lens
+            );
+        }
+
+        if case.has_aperture {
+            assert!(
+                data.aperture.is_some(),
+                "{}: aperture must be present",
+                case.label
+            );
+        }
+        if case.has_shutter {
+            assert!(
+                data.shutter_speed.is_some(),
+                "{}: shutter_speed must be present",
+                case.label
+            );
+        }
+        if case.has_iso {
+            assert!(data.iso.is_some(), "{}: iso must be present", case.label);
+        }
+        if case.has_focal_length {
+            assert!(
+                data.focal_length.is_some(),
+                "{}: focal_length must be present",
+                case.label
+            );
+        }
+        if case.has_exposure_comp {
+            assert!(
+                data.exposure_comp.is_some(),
+                "{}: exposure_comp must be present",
+                case.label
+            );
+        }
+    }
+
+    #[test]
+    fn test_canon_jpeg_metadata() {
+        let path = Path::new(CANON_EOS_80D.jpeg_path);
+        if !path.exists() {
+            eprintln!("SKIP: Canon JPEG test photo not found");
+            return;
+        }
+        let data = extract_jpeg_exif(path);
+        assert_camera_exif(&CANON_EOS_80D, &data);
+    }
+
+    #[test]
+    fn test_canon_raw_metadata() {
+        let path = Path::new(CANON_EOS_80D.raw_path);
+        if !path.exists() {
+            eprintln!("SKIP: Canon RAW test photo not found");
+            return;
+        }
+        let data = extract_raw_exif(path);
+        assert_camera_exif(&CANON_EOS_80D, &data);
+    }
+
+    #[test]
+    fn test_sony_jpeg_metadata() {
+        let path = Path::new(SONY_RX10M4.jpeg_path);
+        if !path.exists() {
+            eprintln!("SKIP: Sony JPEG test photo not found");
+            return;
+        }
+        let data = extract_jpeg_exif(path);
+        assert_camera_exif(&SONY_RX10M4, &data);
+    }
+
+    #[test]
+    fn test_sony_raw_metadata() {
+        let path = Path::new(SONY_RX10M4.raw_path);
+        if !path.exists() {
+            eprintln!("SKIP: Sony RAW test photo not found");
+            return;
+        }
+        let data = extract_raw_exif(path);
+        assert_camera_exif(&SONY_RX10M4, &data);
+    }
+
+    // ── RED test: ScannedFile must carry camera params to DB ─────────────
+
+    #[test]
+    fn test_scanned_file_carries_camera_params() {
+        // RED: ScannedFile lacks aperture, shutter_speed, iso, focal_length, exposure_comp fields.
+        // ExifData extracts them correctly, but they are dropped in the pipeline because
+        // ScannedFile doesn't have slots for them and insert_photo() doesn't write them.
+        // This test documents the pipeline gap: EXIF → ScannedFile → insert_photo → DB.
+        let f = make_jpeg_with_camera_params(
+            28, 10, // aperture = 2.8
+            1, 250, // shutter = 1/250
+            400, // iso
+            850, 10, // focal_length = 85.0
+            7, 10, // exposure_comp = +0.7
+        );
+        let exif_data = extract_jpeg_exif(f.path());
+
+        // Verify EXIF extraction works (these pass)
+        assert!(exif_data.aperture.is_some(), "ExifData has aperture");
+        assert!(
+            exif_data.shutter_speed.is_some(),
+            "ExifData has shutter_speed"
+        );
+        assert!(exif_data.iso.is_some(), "ExifData has iso");
+        assert!(
+            exif_data.focal_length.is_some(),
+            "ExifData has focal_length"
+        );
+        assert!(
+            exif_data.exposure_comp.is_some(),
+            "ExifData has exposure_comp"
+        );
+
+        // RED: ScannedFile lacks aperture field — these 5 camera params are silently dropped
+        // in the pipeline (pipeline.rs lines 176-185) because ScannedFile only carries
+        // capture_time, camera_model, lens, orientation.
+        assert!(
+            false,
+            "RED: ScannedFile does not carry camera params (aperture, shutter_speed, iso, focal_length, exposure_comp) to DB. \
+             ExifData extracts them but they are dropped in the pipeline."
+        );
+    }
 }

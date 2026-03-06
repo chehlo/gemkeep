@@ -251,6 +251,22 @@ fn run_pipeline_inner(
         return stats;
     }
 
+    // Save photo_path → old_lp_id mapping before clearing, so we can
+    // rename existing thumbnail files to match new LP IDs after rebuild.
+    let old_path_to_lp: std::collections::HashMap<String, i64> = conn
+        .prepare(
+            "SELECT p.path, lp.id FROM logical_photos lp \
+             JOIN photos p ON p.id = lp.representative_photo_id \
+             WHERE lp.project_id = ?1",
+        )
+        .and_then(|mut stmt| {
+            let rows = stmt.query_map(rusqlite::params![config.project_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })?;
+            rows.collect::<Result<std::collections::HashMap<_, _>, _>>()
+        })
+        .unwrap_or_default();
+
     // Clear old stacks/logical_photos so we can rebuild cleanly.
     if let Err(e) = repository::clear_stacks_and_logical_photos(conn, config.project_id) {
         let msg = format!("pipeline: failed to clear stacks: {}", e);
@@ -287,6 +303,37 @@ fn run_pipeline_inner(
         Some(&existing_paths),
         &mut stats,
     );
+
+    // Rename old thumbnail files to new LP IDs so they aren't regenerated.
+    // LP IDs change on reindex (clear + recreate), but the photo paths are
+    // the same. If a photo's old LP had a thumbnail, rename it to the new ID.
+    let mut reused_thumbs = 0usize;
+    for (new_lp_id, path, _format, _orient) in &lp_thumb_targets {
+        let path_str = path.to_string_lossy().to_string();
+        if let Some(&old_lp_id) = old_path_to_lp.get(&path_str) {
+            if old_lp_id == *new_lp_id {
+                continue; // same ID, no rename needed
+            }
+            let old_thumb = cache_dir.join(format!("{}.jpg", old_lp_id));
+            let new_thumb = cache_dir.join(format!("{}.jpg", new_lp_id));
+            if old_thumb.exists()
+                && !new_thumb.exists()
+                && std::fs::rename(&old_thumb, &new_thumb).is_ok()
+            {
+                reused_thumbs += 1;
+            }
+        }
+    }
+    if reused_thumbs > 0 {
+        tracing::info!("pipeline: reused {} existing thumbnails via rename", reused_thumbs);
+    }
+
+    // Filter out LPs that already have thumbnails on disk (reused or pre-existing).
+    let existing_thumb_ids = crate::import::util::cached_thumbnail_ids(&cache_dir);
+    let lp_thumb_targets: Vec<_> = lp_thumb_targets
+        .into_iter()
+        .filter(|(lp_id, _, _, _)| !existing_thumb_ids.contains(lp_id))
+        .collect();
 
     tracing::info!(
         "pipeline: DB writes complete — imported={} skipped_existing={} errors={}",

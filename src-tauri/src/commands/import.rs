@@ -235,14 +235,6 @@ pub fn prepare_indexing(
         (project_id, project_dir, folder_paths, burst_gap_secs)
     };
 
-    // Clear stale thumbnail cache so re-index starts fresh
-    let thumb_dir = project_dir.join("cache").join("thumbnails");
-    if thumb_dir.exists() {
-        if let Err(e) = std::fs::remove_dir_all(&thumb_dir) {
-            tracing::warn!("start_indexing: cannot clear thumbnail cache: {}", e);
-        }
-    }
-
     // Reset cancel and pause flags, then mark as running
     state.cancel_indexing.store(false, Ordering::SeqCst);
     state.pause_indexing.store(false, Ordering::SeqCst);

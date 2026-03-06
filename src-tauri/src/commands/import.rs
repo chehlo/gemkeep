@@ -191,12 +191,13 @@ pub fn list_source_folders(
 
 // ── Indexing ──────────────────────────────────────────────────────────────────
 
-#[tauri::command]
-pub fn start_indexing(
-    slug: String,
-    state: State<'_, AppState>,
-    app_handle: tauri::AppHandle,
-) -> Result<(), String> {
+/// Pre-pipeline setup for indexing: guards, config collection, state reset.
+/// Extracted from start_indexing so it can be tested without AppHandle.
+/// Returns (project_id, project_dir, folder_paths, burst_gap_secs).
+pub fn prepare_indexing(
+    state: &AppState,
+    slug: &str,
+) -> Result<(i64, std::path::PathBuf, Vec<std::path::PathBuf>, u64), String> {
     // Guard: already running?
     {
         let status = state
@@ -210,7 +211,7 @@ pub fn start_indexing(
 
     // Collect everything needed for the background thread while locks are held.
     let (project_id, project_dir, folder_paths, burst_gap_secs) = {
-        let (db_guard, project_guard) = with_open_project(&state, &slug)?;
+        let (db_guard, project_guard) = with_open_project(state, slug)?;
         let conn = db_guard.as_ref().unwrap();
         let project = project_guard.as_ref().unwrap();
 
@@ -228,7 +229,7 @@ pub fn start_indexing(
 
         let config = manager::read_config(&state.gemkeep_home).unwrap_or_default();
         let burst_gap_secs = config.burst_gap_secs;
-        let project_dir = manager::project_dir(&state.gemkeep_home, &slug);
+        let project_dir = manager::project_dir(&state.gemkeep_home, slug);
         let project_id = project.id;
 
         (project_id, project_dir, folder_paths, burst_gap_secs)
@@ -264,6 +265,18 @@ pub fn start_indexing(
             thumbnails_done: 0,
         };
     }
+
+    Ok((project_id, project_dir, folder_paths, burst_gap_secs))
+}
+
+#[tauri::command]
+pub fn start_indexing(
+    slug: String,
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let (project_id, project_dir, folder_paths, burst_gap_secs) =
+        prepare_indexing(&state, &slug)?;
 
     // Log start
     manager::append_operation_log(

@@ -59,7 +59,7 @@ fn write_valid_jpeg(path: &std::path::Path) {
 ///
 /// Strategy: encode a real 50×50 image to a buffer, strip the SOI (first 2 bytes),
 /// then prepend: SOI + APP1(EXIF+timestamp) + remaining JPEG data.
-fn write_valid_jpeg_with_timestamp(path: &std::path::Path, datetime_original: &str) {
+pub fn write_valid_jpeg_with_timestamp(path: &std::path::Path, datetime_original: &str) {
     assert_eq!(
         datetime_original.len(),
         19,
@@ -1763,3 +1763,4 @@ fn test_restack_during_active_thumbnails_does_not_interfere() {
         lp_ids_before, lp_ids_after
     );
 }
+

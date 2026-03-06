@@ -8,7 +8,8 @@
 mod tests {
     use crate::commands::decisions::*;
     use crate::commands::import::{
-        cancel_indexing, get_burst_gap, pause_indexing, restack, resume_indexing, set_burst_gap, *,
+        cancel_indexing, get_burst_gap, pause_indexing, prepare_indexing, restack,
+        resume_indexing, set_burst_gap, *,
     };
     use crate::commands::projects::*;
     use crate::commands::stacks::*;
@@ -1829,9 +1830,128 @@ mod tests {
         }
     }
 
-    // NOTE: start_indexing and resume_thumbnails are NOT tested here because they
-    // require a real `tauri::AppHandle` for event emission and spawn background
-    // threads. The Tauri mock runtime provides an AppHandle but the async thread
-    // spawning + event emission makes these commands non-deterministic in tests.
-    // They are covered by the existing E2E Playwright tests and manual testing.
+    // NOTE: resume_thumbnails is NOT tested here because it requires a real
+    // `tauri::AppHandle` for event emission and spawns background threads.
+    // start_indexing's pre-pipeline setup is tested via prepare_indexing below.
+
+    #[test]
+    fn test_start_indexing_preserves_thumbnail_cache() {
+        // BUG: start_indexing called remove_dir_all on the thumbnail cache before
+        // running the pipeline. The pipeline's find_missing_thumbnail_targets()
+        // correctly skips existing thumbnails — but they were already deleted.
+        //
+        // This test calls prepare_indexing (the real function that start_indexing
+        // delegates to) after generating thumbnails, and asserts they survive.
+        //
+        // Previous tests (test_resume_thumbnails_skips_stacks_where_thumbnail_exists
+        // and friends) tested the PIPELINE function, not the IPC COMMAND. The pipeline
+        // is correct. The command wrapping it destroyed the data before calling it.
+        // This is Pattern D (testing the wrong layer) from testing-philosophy.md.
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().to_path_buf();
+        std::fs::create_dir_all(home.join("projects")).unwrap();
+        create_project_on_disk(&home, "Test", "test");
+
+        // Create source folder with real JPEG files
+        let photo_dir = tmp.path().join("photos");
+        std::fs::create_dir_all(&photo_dir).unwrap();
+        crate::import::integration_tests::write_valid_jpeg_with_timestamp(
+            &photo_dir.join("img1.jpg"),
+            "2024:10:01 12:00:00",
+        );
+        crate::import::integration_tests::write_valid_jpeg_with_timestamp(
+            &photo_dir.join("img2.jpg"),
+            "2024:10:01 12:00:01",
+        );
+
+        let state = AppState::new(home.clone());
+
+        // Open project (populates AppState.db)
+        {
+            let mut db = state.db.lock().unwrap();
+            let db_path = home.join("projects").join("test").join("project.db");
+            *db = Some(crate::db::open_connection(&db_path).unwrap());
+            crate::db::run_migrations(db.as_ref().unwrap()).unwrap();
+        }
+        {
+            let mut ap = state.active_project.lock().unwrap();
+            let conn = state.db.lock().unwrap();
+            let projects =
+                crate::projects::repository::list_projects_in_db(conn.as_ref().unwrap()).unwrap();
+            *ap = projects.into_iter().find(|p| p.slug == "test");
+        }
+
+        // Add source folder to DB
+        {
+            let conn = state.db.lock().unwrap();
+            let conn = conn.as_ref().unwrap();
+            let project_id = state.active_project.lock().unwrap().as_ref().unwrap().id;
+            crate::photos::repository::add_source_folder(
+                conn,
+                project_id,
+                photo_dir.to_str().unwrap(),
+            )
+            .unwrap();
+        }
+
+        // Run pipeline to generate thumbnails
+        let project_dir = home.join("projects").join("test");
+        let cache_dir = project_dir.join("cache").join("thumbnails");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        {
+            let conn = state.db.lock().unwrap();
+            let conn = conn.as_ref().unwrap();
+            let project_id = state.active_project.lock().unwrap().as_ref().unwrap().id;
+            crate::import::pipeline::run_pipeline(
+                conn,
+                project_id,
+                &project_dir,
+                vec![photo_dir],
+                10,
+                std::sync::Arc::clone(&state.indexing_status),
+                std::sync::Arc::clone(&state.cancel_indexing),
+                std::sync::Arc::clone(&state.pause_indexing),
+                None,
+                std::sync::Arc::clone(&state.thumbnails_done_counter),
+            );
+            // Reset running flag so prepare_indexing doesn't reject "already running"
+            let mut status = state.indexing_status.lock().unwrap();
+            status.running = false;
+            status.thumbnails_running = false;
+        }
+
+        // Verify thumbnails exist
+        let thumb_count_before = std::fs::read_dir(&cache_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map_or(false, |ext| ext == "jpg"))
+            .count();
+        assert!(
+            thumb_count_before > 0,
+            "pipeline must generate thumbnails before testing prepare_indexing"
+        );
+
+        // Call prepare_indexing — the REAL function start_indexing delegates to.
+        // This MUST NOT delete the thumbnail cache.
+        let result = prepare_indexing(&state, "test");
+        assert!(result.is_ok(), "prepare_indexing must succeed: {:?}", result);
+
+        // Assert thumbnails survived
+        let thumb_count_after = std::fs::read_dir(&cache_dir)
+            .map(|rd| {
+                rd.filter_map(|e| e.ok())
+                    .filter(|e| e.path().extension().map_or(false, |ext| ext == "jpg"))
+                    .count()
+            })
+            .unwrap_or(0);
+
+        assert_eq!(
+            thumb_count_before, thumb_count_after,
+            "prepare_indexing (called by start_indexing) must NOT delete thumbnail cache. \
+             Had {} thumbnails before, {} after. The pipeline's find_missing_thumbnail_targets() \
+             already skips existing thumbnails — deleting the cache forces expensive \
+             re-generation of ALL thumbnails on every reindex.",
+            thumb_count_before, thumb_count_after
+        );
+    }
 }

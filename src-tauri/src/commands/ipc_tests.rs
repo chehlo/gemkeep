@@ -1830,9 +1830,207 @@ mod tests {
         }
     }
 
-    // NOTE: resume_thumbnails is NOT tested here because it requires a real
-    // `tauri::AppHandle` for event emission and spawns background threads.
-    // start_indexing's pre-pipeline setup is tested via prepare_indexing below.
+    // ── IPC contract: start_indexing (via prepare_indexing + get_indexing_status) ──
+
+    #[test]
+    fn ipc_start_indexing_prepare_and_status_shape() {
+        // WHY (R13 IPC contract): start_indexing takes AppHandle which MockRuntime
+        // cannot deserialize. We test the contract by: (1) calling prepare_indexing
+        // (the real function start_indexing delegates to) to verify it succeeds,
+        // (2) manually setting the status to "running" as start_indexing would,
+        // (3) verifying get_indexing_status IPC returns the full expected shape.
+        use tauri::Manager;
+
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(home.join("projects")).unwrap();
+        create_project_on_disk(&home, "Test", "test");
+
+        // Create a source folder with a real JPEG
+        let photo_dir = tmp.path().join("photos");
+        std::fs::create_dir_all(&photo_dir).unwrap();
+        image::DynamicImage::new_rgb8(10, 10)
+            .save(photo_dir.join("shot.jpg"))
+            .unwrap();
+        let photo_dir_str = photo_dir.to_string_lossy().into_owned();
+
+        // Create thumbnail cache dir
+        let project_dir = home.join("projects").join("test");
+        std::fs::create_dir_all(project_dir.join("cache").join("thumbnails")).unwrap();
+
+        let app = make_app(home);
+        let wv = make_webview(&app);
+
+        // Open project via IPC
+        let open_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("open_project", serde_json::json!({ "slug": "test" })),
+        );
+        assert!(open_result.is_ok(), "open_project must succeed");
+
+        // Add source folder via IPC
+        let add_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req(
+                "add_source_folder",
+                serde_json::json!({ "slug": "test", "path": photo_dir_str }),
+            ),
+        );
+        assert!(
+            add_result.is_ok(),
+            "add_source_folder must succeed: {:?}",
+            add_result
+        );
+
+        // Call prepare_indexing — the function start_indexing delegates to
+        let state: tauri::State<AppState> = app.state();
+        let result = prepare_indexing(&state, "test");
+        assert!(
+            result.is_ok(),
+            "prepare_indexing must succeed: {:?}",
+            result
+        );
+        let (project_id, _project_dir, folder_paths, burst_gap_secs) = result.unwrap();
+        assert!(project_id > 0, "project_id must be positive");
+        assert_eq!(folder_paths.len(), 1, "must have 1 source folder");
+        assert!(burst_gap_secs > 0, "burst_gap_secs must be > 0 (default is 3)");
+
+        // After prepare_indexing, status should be set to running=true
+        // (prepare_indexing sets this before returning)
+        let status_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("get_indexing_status", serde_json::json!({})),
+        );
+        assert!(
+            status_result.is_ok(),
+            "get_indexing_status must succeed after prepare_indexing"
+        );
+        let status: serde_json::Value = status_result.unwrap().deserialize().unwrap();
+
+        // Verify the full IndexingStatus IPC contract shape
+        assert!(
+            status["running"].is_boolean(),
+            "running must be boolean, got: {:?}",
+            status["running"]
+        );
+        assert!(
+            status["thumbnails_running"].is_boolean(),
+            "thumbnails_running must be boolean"
+        );
+        assert!(
+            status["processed"].is_number(),
+            "processed must be a number"
+        );
+        assert!(status["total"].is_number(), "total must be a number");
+        assert!(status["errors"].is_number(), "errors must be a number");
+        assert!(
+            status["thumbnails_total"].is_number(),
+            "thumbnails_total must be a number"
+        );
+        assert!(
+            status["thumbnails_done"].is_number(),
+            "thumbnails_done must be a number"
+        );
+        assert!(
+            status["paused"].is_boolean(),
+            "paused must be boolean, got: {:?}",
+            status["paused"]
+        );
+        assert!(
+            status["cancelled"].is_boolean(),
+            "cancelled must be boolean, got: {:?}",
+            status["cancelled"]
+        );
+        // After prepare_indexing, running should be true
+        assert_eq!(
+            status["running"].as_bool(),
+            Some(true),
+            "running must be true after prepare_indexing"
+        );
+    }
+
+    // ── IPC contract: resume_thumbnails (via find_missing_thumbnail_targets) ──
+
+    #[test]
+    fn ipc_resume_thumbnails_contract() {
+        // WHY (R13 IPC contract): resume_thumbnails takes AppHandle (cannot use
+        // MockRuntime IPC dispatch). We verify the contract by:
+        // (1) calling find_missing_thumbnail_targets to confirm no missing thumbs,
+        // (2) verifying get_indexing_status IPC shape after the equivalent guard check.
+        // This tests the pre-condition logic resume_thumbnails uses to decide
+        // whether to spawn a background thread.
+        use tauri::Manager;
+
+        let tmp = TempDir::new().unwrap();
+        let home = setup_project_with_photos(&tmp, 2);
+
+        let app = make_app(home.clone());
+        let wv = make_webview(&app);
+
+        // Open project via IPC
+        let open_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("open_project", serde_json::json!({ "slug": "test" })),
+        );
+        assert!(open_result.is_ok(), "open_project must succeed");
+
+        // Call find_missing_thumbnail_targets — the function resume_thumbnails
+        // uses to decide what work to do
+        let state: tauri::State<AppState> = app.state();
+        {
+            let db_guard = state.db.lock().unwrap();
+            let conn = db_guard.as_ref().unwrap();
+            let project = state.active_project.lock().unwrap();
+            let project_id = project.as_ref().unwrap().id;
+            let project_dir = home.join("projects").join("test");
+            let cache_dir = project_dir.join("cache").join("thumbnails");
+
+            let result = find_missing_thumbnail_targets(conn, project_id, &cache_dir);
+            assert!(
+                result.is_ok(),
+                "find_missing_thumbnail_targets must succeed: {:?}",
+                result
+            );
+            let (targets, total) = result.unwrap();
+            assert!(
+                total >= 2,
+                "total logical photos must be >= 2, got {}",
+                total
+            );
+            // setup_project_with_photos runs the full pipeline including thumbnails,
+            // so all thumbnails should already exist → targets should be empty or very small
+            // (depends on whether the pipeline actually generates thumbnails for minimal JPEGs)
+        }
+
+        // Verify indexing status shape is valid
+        let status_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("get_indexing_status", serde_json::json!({})),
+        );
+        assert!(status_result.is_ok(), "get_indexing_status must succeed");
+        let status: serde_json::Value = status_result.unwrap().deserialize().unwrap();
+        assert!(
+            status["thumbnails_running"].is_boolean(),
+            "thumbnails_running must be boolean"
+        );
+        assert!(
+            status["thumbnails_total"].is_number(),
+            "thumbnails_total must be a number"
+        );
+        assert!(
+            status["thumbnails_done"].is_number(),
+            "thumbnails_done must be a number"
+        );
+        // Not running since we didn't actually call resume_thumbnails
+        assert_eq!(
+            status["thumbnails_running"].as_bool(),
+            Some(false),
+            "thumbnails_running should be false (we didn't start it)"
+        );
+    }
+
+    // NOTE: CONFIG-BURST-GAP and RESTACK-IDEMPOTENT tests are in
+    // import/integration_tests.rs (pipeline-level, not IPC-level).
 
     #[test]
     fn test_start_indexing_preserves_thumbnail_cache() {

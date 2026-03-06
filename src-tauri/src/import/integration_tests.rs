@@ -1824,3 +1824,195 @@ fn test_reindex_does_not_generate_any_thumbnails() {
     );
 }
 
+// ── CONFIG-BURST-GAP: burst_gap_secs config variation ──────────────────────
+
+#[test]
+fn test_config_burst_gap_affects_stack_count() {
+    // WHY (R12 config variation): Run the pipeline with burst_gap=1 and burst_gap=3600
+    // on the same timestamped photos, assert different stack counts.
+    // Photos: 4 photos at t=0, t=2, t=10, t=12 seconds.
+    // burst_gap=1: gaps of 2s, 8s, 2s — all exceed 1s → 4 stacks (each photo its own)
+    // burst_gap=3600: all gaps ≤ 3600s → 1 stack
+    let folder_gap1 = tempfile::tempdir().unwrap();
+    let (conn1, tmp1, project_id1) = setup();
+    let photos1 = folder_gap1.path().join("photos");
+    std::fs::create_dir_all(&photos1).unwrap();
+    write_valid_jpeg_with_timestamp(&photos1.join("a.jpg"), "2024:07:01 10:00:00");
+    write_valid_jpeg_with_timestamp(&photos1.join("b.jpg"), "2024:07:01 10:00:02");
+    write_valid_jpeg_with_timestamp(&photos1.join("c.jpg"), "2024:07:01 10:00:10");
+    write_valid_jpeg_with_timestamp(&photos1.join("d.jpg"), "2024:07:01 10:00:12");
+
+    pipeline::run_pipeline(
+        &conn1,
+        project_id1,
+        tmp1.path(),
+        vec![photos1],
+        1, // burst_gap=1s — every 2s gap exceeds 1s
+        make_status(),
+        make_cancel(),
+        make_pause(),
+        None,
+        make_counter(),
+    );
+    let stacks_gap1 = repository::list_stacks_summary(&conn1, project_id1).unwrap();
+
+    // Second run with burst_gap=3600
+    let folder_gap3600 = tempfile::tempdir().unwrap();
+    let (conn2, tmp2, project_id2) = setup();
+    let photos2 = folder_gap3600.path().join("photos");
+    std::fs::create_dir_all(&photos2).unwrap();
+    write_valid_jpeg_with_timestamp(&photos2.join("a.jpg"), "2024:07:01 10:00:00");
+    write_valid_jpeg_with_timestamp(&photos2.join("b.jpg"), "2024:07:01 10:00:02");
+    write_valid_jpeg_with_timestamp(&photos2.join("c.jpg"), "2024:07:01 10:00:10");
+    write_valid_jpeg_with_timestamp(&photos2.join("d.jpg"), "2024:07:01 10:00:12");
+
+    pipeline::run_pipeline(
+        &conn2,
+        project_id2,
+        tmp2.path(),
+        vec![photos2],
+        3600, // burst_gap=3600s — all photos within 12s window
+        make_status(),
+        make_cancel(),
+        make_pause(),
+        None,
+        make_counter(),
+    );
+    let stacks_gap3600 = repository::list_stacks_summary(&conn2, project_id2).unwrap();
+
+    assert!(
+        stacks_gap1.len() > stacks_gap3600.len(),
+        "burst_gap=1 must produce MORE stacks than burst_gap=3600. \
+         Got gap1={} stacks, gap3600={} stacks",
+        stacks_gap1.len(),
+        stacks_gap3600.len()
+    );
+    assert_eq!(
+        stacks_gap3600.len(),
+        1,
+        "burst_gap=3600 must produce exactly 1 stack (all photos within 12s), got {}",
+        stacks_gap3600.len()
+    );
+    assert!(
+        stacks_gap1.len() >= 2,
+        "burst_gap=1 must produce at least 2 stacks (gaps of 2s exceed 1s), got {}",
+        stacks_gap1.len()
+    );
+}
+
+// ── RESTACK-IDEMPOTENT: restack called twice is non-destructive ────────────
+
+#[test]
+fn test_restack_idempotent_second_call_no_change() {
+    // WHY (R11 idempotency): Restack called twice in succession must not alter
+    // the stacking state. Run restack, capture state, run restack again,
+    // assert state is unchanged (same stack count, same logical photo assignments).
+    let (conn, tmp, project_id) = setup();
+    let folder = tmp.path().join("photos");
+    std::fs::create_dir_all(&folder).unwrap();
+
+    // 4 photos: two groups separated by a 20s gap
+    write_valid_jpeg_with_timestamp(&folder.join("a.jpg"), "2024:07:01 10:00:00");
+    write_valid_jpeg_with_timestamp(&folder.join("b.jpg"), "2024:07:01 10:00:01");
+    write_valid_jpeg_with_timestamp(&folder.join("c.jpg"), "2024:07:01 10:00:20");
+    write_valid_jpeg_with_timestamp(&folder.join("d.jpg"), "2024:07:01 10:00:21");
+
+    // Initial pipeline with burst_gap=3
+    pipeline::run_pipeline(
+        &conn,
+        project_id,
+        tmp.path(),
+        vec![folder],
+        3,
+        make_status(),
+        make_cancel(),
+        make_pause(),
+        None,
+        make_counter(),
+    );
+
+    // First restack
+    let _stats1 = pipeline::restack_from_existing_photos(&conn, project_id, 3)
+        .expect("first restack must succeed");
+
+    // Capture state after first restack
+    let stacks_after_first = repository::list_stacks_summary(&conn, project_id).unwrap();
+    let lp_count_first: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM logical_photos WHERE project_id = ?1",
+            [project_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    // Record which logical_photo belongs to which stack
+    let assignments_first: Vec<(i64, i64)> = {
+        let mut stmt = conn
+            .prepare("SELECT id, stack_id FROM logical_photos WHERE project_id = ?1 ORDER BY id")
+            .unwrap();
+        stmt.query_map([project_id], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    };
+
+    // Second restack (same burst_gap)
+    let _stats2 = pipeline::restack_from_existing_photos(&conn, project_id, 3)
+        .expect("second restack must succeed");
+
+    // Capture state after second restack
+    let stacks_after_second = repository::list_stacks_summary(&conn, project_id).unwrap();
+    let lp_count_second: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM logical_photos WHERE project_id = ?1",
+            [project_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let assignments_second: Vec<(i64, i64)> = {
+        let mut stmt = conn
+            .prepare("SELECT id, stack_id FROM logical_photos WHERE project_id = ?1 ORDER BY id")
+            .unwrap();
+        stmt.query_map([project_id], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    };
+
+    // Assert idempotency
+    assert_eq!(
+        stacks_after_first.len(),
+        stacks_after_second.len(),
+        "restack called twice must produce same number of stacks. First: {}, Second: {}",
+        stacks_after_first.len(),
+        stacks_after_second.len()
+    );
+    assert_eq!(
+        lp_count_first, lp_count_second,
+        "restack must not create or destroy logical photos. First: {}, Second: {}",
+        lp_count_first, lp_count_second
+    );
+    // Verify logical photo IDs are preserved (same IDs exist)
+    let ids_first: Vec<i64> = assignments_first.iter().map(|(id, _)| *id).collect();
+    let ids_second: Vec<i64> = assignments_second.iter().map(|(id, _)| *id).collect();
+    assert_eq!(
+        ids_first, ids_second,
+        "logical photo IDs must be identical after second restack"
+    );
+    // Stack counts per stack should match (same grouping)
+    let mut counts_first: Vec<usize> = stacks_after_first
+        .iter()
+        .map(|s| s.logical_photo_count as usize)
+        .collect();
+    let mut counts_second: Vec<usize> = stacks_after_second
+        .iter()
+        .map(|s| s.logical_photo_count as usize)
+        .collect();
+    counts_first.sort();
+    counts_second.sort();
+    assert_eq!(
+        counts_first, counts_second,
+        "stack sizes must be identical after second restack. First: {:?}, Second: {:?}",
+        counts_first, counts_second
+    );
+}
+

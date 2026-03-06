@@ -123,9 +123,7 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
     // ALTER TABLE to add the missing columns.
     if pre_version < 4 {
         // Check if columns already exist (fresh DB has them from CREATE TABLE above).
-        let has_aperture: bool = conn
-            .prepare("SELECT aperture FROM photos LIMIT 0")
-            .is_ok();
+        let has_aperture: bool = conn.prepare("SELECT aperture FROM photos LIMIT 0").is_ok();
         if !has_aperture {
             conn.execute_batch(
                 "
@@ -458,7 +456,13 @@ mod tests {
             .filter_map(|r| r.ok())
             .collect();
 
-        for col in &["aperture", "shutter_speed", "iso", "focal_length", "exposure_comp"] {
+        for col in &[
+            "aperture",
+            "shutter_speed",
+            "iso",
+            "focal_length",
+            "exposure_comp",
+        ] {
             assert!(
                 cols.contains(&col.to_string()),
                 "v3→v4 migration must add '{}' column, found: {:?}",
@@ -504,7 +508,11 @@ mod tests {
         .expect("insert_photo with camera params must work after v3→v4 migration");
 
         let aperture: f64 = conn
-            .query_row("SELECT aperture FROM photos WHERE path = '/test.jpg'", [], |r| r.get(0))
+            .query_row(
+                "SELECT aperture FROM photos WHERE path = '/test.jpg'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert!((aperture - 2.8).abs() < 0.01);
     }

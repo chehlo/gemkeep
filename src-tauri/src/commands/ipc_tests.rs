@@ -8,8 +8,8 @@
 mod tests {
     use crate::commands::decisions::*;
     use crate::commands::import::{
-        cancel_indexing, get_burst_gap, pause_indexing, prepare_indexing, restack,
-        resume_indexing, set_burst_gap, *,
+        cancel_indexing, get_burst_gap, pause_indexing, prepare_indexing, restack, resume_indexing,
+        set_burst_gap, *,
     };
     use crate::commands::projects::*;
     use crate::commands::stacks::*;
@@ -1893,7 +1893,10 @@ mod tests {
         let (project_id, _project_dir, folder_paths, burst_gap_secs) = result.unwrap();
         assert!(project_id > 0, "project_id must be positive");
         assert_eq!(folder_paths.len(), 1, "must have 1 source folder");
-        assert!(burst_gap_secs > 0, "burst_gap_secs must be > 0 (default is 3)");
+        assert!(
+            burst_gap_secs > 0,
+            "burst_gap_secs must be > 0 (default is 3)"
+        );
 
         // After prepare_indexing, status should be set to running=true
         // (prepare_indexing sets this before returning)
@@ -2132,7 +2135,11 @@ mod tests {
         // Call prepare_indexing — the REAL function start_indexing delegates to.
         // This MUST NOT delete the thumbnail cache.
         let result = prepare_indexing(&state, "test");
-        assert!(result.is_ok(), "prepare_indexing must succeed: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "prepare_indexing must succeed: {:?}",
+            result
+        );
 
         // Assert thumbnails survived
         let thumb_count_after = std::fs::read_dir(&cache_dir)

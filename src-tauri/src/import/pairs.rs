@@ -228,7 +228,11 @@ mod tests {
         jpeg.base_name = "img_001".to_string(); // already lowercase
 
         let groups = detect_pairs(vec![raw, jpeg]);
-        assert_eq!(groups.len(), 1, "mixed-case pair must produce 1 logical group");
+        assert_eq!(
+            groups.len(),
+            1,
+            "mixed-case pair must produce 1 logical group"
+        );
         assert!(
             groups[0].is_pair,
             "IMG_001.CR2 + img_001.jpg must be detected as a pair"
@@ -248,7 +252,11 @@ mod tests {
         jpeg.base_name = "shot_42".to_string(); // pipeline lowercases file_stem
 
         let groups = detect_pairs(vec![raw, jpeg]);
-        assert_eq!(groups.len(), 1, "case-insensitive pairing must produce 1 group");
+        assert_eq!(
+            groups.len(),
+            1,
+            "case-insensitive pairing must produce 1 group"
+        );
         assert!(groups[0].is_pair, "shot_42.arw + SHOT_42.JPEG must pair");
     }
 

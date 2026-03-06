@@ -1034,7 +1034,10 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(status_c, "keep", "photo C: single keep must result in 'keep'");
+        assert_eq!(
+            status_c, "keep",
+            "photo C: single keep must result in 'keep'"
+        );
 
         // Verify round status counts reflect the final state
         let round_status = get_round_status(&conn, project_id, stack_id).unwrap();
@@ -1095,10 +1098,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(
-            status_a, "keep",
-            "commit must not change current_status"
-        );
+        assert_eq!(status_a, "keep", "commit must not change current_status");
 
         let status_b: String = conn
             .query_row(

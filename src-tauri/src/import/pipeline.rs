@@ -325,7 +325,10 @@ fn run_pipeline_inner(
         }
     }
     if reused_thumbs > 0 {
-        tracing::info!("pipeline: reused {} existing thumbnails via rename", reused_thumbs);
+        tracing::info!(
+            "pipeline: reused {} existing thumbnails via rename",
+            reused_thumbs
+        );
     }
 
     // Filter out LPs that already have thumbnails on disk (reused or pre-existing).

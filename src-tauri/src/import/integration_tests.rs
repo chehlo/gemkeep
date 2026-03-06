@@ -2015,4 +2015,3 @@ fn test_restack_idempotent_second_call_no_change() {
         counts_first, counts_second
     );
 }
-

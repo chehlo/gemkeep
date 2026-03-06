@@ -267,8 +267,7 @@ pub fn start_indexing(
     state: State<'_, AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    let (project_id, project_dir, folder_paths, burst_gap_secs) =
-        prepare_indexing(&state, &slug)?;
+    let (project_id, project_dir, folder_paths, burst_gap_secs) = prepare_indexing(&state, &slug)?;
 
     // Log start
     manager::append_operation_log(

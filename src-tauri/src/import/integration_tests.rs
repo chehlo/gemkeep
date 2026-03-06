@@ -1764,3 +1764,63 @@ fn test_restack_during_active_thumbnails_does_not_interfere() {
     );
 }
 
+// ── Reindex must not regenerate thumbnails ────────────────────────────────────
+
+#[test]
+fn test_reindex_does_not_generate_any_thumbnails() {
+    // BEHAVIOR: when all thumbnails already exist, reindexing must not
+    // generate any new thumbnails. We don't care WHY it might — we just
+    // check the counter stays at zero.
+    let (conn, tmp, project_id) = setup();
+    let folder = tmp.path().join("reindex_no_thumbs");
+    std::fs::create_dir_all(&folder).unwrap();
+
+    write_valid_jpeg_with_timestamp(&folder.join("a.jpg"), "2024:11:01 10:00:00");
+    write_valid_jpeg_with_timestamp(&folder.join("b.jpg"), "2024:11:01 10:00:01");
+
+    // First run — generates thumbnails
+    let counter = make_counter();
+    pipeline::run_pipeline(
+        &conn,
+        project_id,
+        tmp.path(),
+        vec![folder.clone()],
+        10,
+        make_status(),
+        make_cancel(),
+        make_pause(),
+        None,
+        Arc::clone(&counter),
+    );
+    let first_run_count = counter.load(Ordering::SeqCst);
+    assert!(
+        first_run_count > 0,
+        "first run must generate thumbnails, counter={}",
+        first_run_count
+    );
+
+    // Second run — same photos, nothing changed.
+    // Reset counter and run again.
+    counter.store(0, Ordering::SeqCst);
+    pipeline::run_pipeline(
+        &conn,
+        project_id,
+        tmp.path(),
+        vec![folder],
+        10,
+        make_status(),
+        make_cancel(),
+        make_pause(),
+        None,
+        Arc::clone(&counter),
+    );
+    let second_run_count = counter.load(Ordering::SeqCst);
+
+    assert_eq!(
+        second_run_count, 0,
+        "reindex must not generate any thumbnails when nothing changed. \
+         Generated {} thumbnails on second run (first run generated {}).",
+        second_run_count, first_run_count
+    );
+}
+

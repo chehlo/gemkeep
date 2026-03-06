@@ -2015,3 +2015,106 @@ fn test_restack_idempotent_second_call_no_change() {
         counts_first, counts_second
     );
 }
+
+/// SMOKE-02 / migration lifecycle: Fresh DB → migrations → full pipeline → decisions → read back.
+/// Catches schema migration bugs that break real data flow (not just "tables exist").
+/// This is an integration-level substitute for the L5 smoke test until cargo tauri dev
+/// infrastructure is available.
+#[test]
+fn test_fresh_db_migration_full_data_lifecycle() {
+    // 1. Fresh in-memory DB + migrations (same as real app startup)
+    let conn = Connection::open_in_memory().unwrap();
+    run_migrations(&conn).unwrap();
+
+    // 2. Create a project (same SQL path as create_project IPC)
+    conn.execute(
+        "INSERT INTO projects (name, slug, created_at) VALUES ('Lifecycle Test', 'lifecycle-test', '2024-07-01T00:00:00Z')",
+        [],
+    ).unwrap();
+    let project_id: i64 = conn.last_insert_rowid();
+    assert!(project_id > 0, "project must get a valid ID");
+
+    // 3. Run import pipeline with real JPEG files
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tmp.path().join("cache").join("thumbnails")).unwrap();
+    let photos_dir = tmp.path().join("photos");
+    std::fs::create_dir_all(&photos_dir).unwrap();
+    write_valid_jpeg_with_timestamp(&photos_dir.join("img1.jpg"), "2024:07:01 10:00:00");
+    write_valid_jpeg_with_timestamp(&photos_dir.join("img2.jpg"), "2024:07:01 10:00:01");
+    write_valid_jpeg_with_timestamp(&photos_dir.join("img3.jpg"), "2024:07:01 10:00:10");
+
+    pipeline::run_pipeline(
+        &conn,
+        project_id,
+        tmp.path(),
+        vec![photos_dir],
+        3, // burst_gap=3s → img1+img2 in one stack, img3 in another
+        make_status(),
+        make_cancel(),
+        make_pause(),
+        None,
+        make_counter(),
+    );
+
+    // 4. Verify stacks were created and queryable
+    let stacks = repository::list_stacks_summary(&conn, project_id).unwrap();
+    assert_eq!(
+        stacks.len(),
+        2,
+        "burst_gap=3 on 3 photos (0s,1s,10s gap) must produce 2 stacks"
+    );
+
+    // 5. Verify logical photos exist and have stack assignments
+    let lp_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM logical_photos WHERE project_id = ?1",
+            [project_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(lp_count, 3, "3 photos must produce 3 logical photos");
+
+    // 6. Make decisions (exercises decisions + rounds tables)
+    use crate::decisions::engine::*;
+    use crate::decisions::model::DecisionAction;
+    let stack_id = stacks[0].stack_id;
+    let (round_id, _) = find_or_create_round(&conn, project_id, stack_id).unwrap();
+    assert!(round_id > 0, "round must get a valid ID");
+
+    let lp_ids: Vec<i64> = conn
+        .prepare("SELECT id FROM logical_photos WHERE stack_id = ?1 ORDER BY id")
+        .unwrap()
+        .query_map([stack_id], |row| row.get(0))
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect();
+
+    for &lp_id in &lp_ids {
+        record_decision(&conn, lp_id, round_id, &DecisionAction::Keep).unwrap();
+    }
+
+    // 7. Read back decisions — proves the full write→read cycle works on migrated schema
+    let status = get_round_status(&conn, project_id, stack_id).unwrap();
+    assert_eq!(
+        status.decided,
+        lp_ids.len() as i64,
+        "all photos in stack must be decided"
+    );
+
+    // 8. Commit round — exercises round state transitions
+    commit_round(&conn, round_id).unwrap();
+    assert!(
+        is_round_committed(&conn, round_id).unwrap(),
+        "round must be committed"
+    );
+
+    // 9. Verify project is queryable after all operations
+    let project_name: String = conn
+        .query_row(
+            "SELECT name FROM projects WHERE id = ?1",
+            [project_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(project_name, "Lifecycle Test");
+}

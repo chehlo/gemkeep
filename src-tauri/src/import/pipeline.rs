@@ -180,6 +180,11 @@ fn run_pipeline_inner(
             camera_model: exif_data.camera_model,
             lens: exif_data.lens,
             orientation: exif_data.orientation,
+            aperture: exif_data.aperture,
+            shutter_speed: exif_data.shutter_speed,
+            iso: exif_data.iso,
+            focal_length: exif_data.focal_length,
+            exposure_comp: exif_data.exposure_comp,
             base_name,
             dir,
         });
@@ -507,6 +512,11 @@ fn insert_scanned_file(conn: &Connection, file: &ScannedFile) -> rusqlite::Resul
         file.orientation,
         file.camera_model.as_deref(),
         file.lens.as_deref(),
+        file.aperture,
+        file.shutter_speed.as_deref(),
+        file.iso,
+        file.focal_length,
+        file.exposure_comp,
     )
 }
 

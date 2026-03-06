@@ -53,7 +53,10 @@ fn with_open_project<'s>(state: &'s AppState, slug: &str) -> Result<ProjectGuard
 /// This allows the frontend to load files (e.g. source JPEGs) via `convertFileSrc()`.
 /// Read-only: the asset protocol only serves files, it cannot write or delete.
 pub fn expand_asset_scope(app_handle: &tauri::AppHandle, path: &std::path::Path) {
-    match app_handle.asset_protocol_scope().allow_directory(path, true) {
+    match app_handle
+        .asset_protocol_scope()
+        .allow_directory(path, true)
+    {
         Ok(()) => tracing::info!("asset scope expanded: {}", path.display()),
         Err(e) => tracing::warn!("asset scope expansion failed for {}: {}", path.display(), e),
     }
@@ -70,10 +73,7 @@ pub fn expand_asset_scope_for_project(
             for folder in &folders {
                 expand_asset_scope(app_handle, std::path::Path::new(&folder.path));
             }
-            tracing::info!(
-                "asset scope expanded for {} source folders",
-                folders.len()
-            );
+            tracing::info!("asset scope expanded for {} source folders", folders.len());
         }
         Err(e) => tracing::warn!("cannot list source folders for scope expansion: {}", e),
     }

@@ -127,6 +127,11 @@ mod tests {
             camera_model: None,
             lens: None,
             orientation: None,
+            aperture: None,
+            shutter_speed: None,
+            iso: None,
+            focal_length: None,
+            exposure_comp: None,
             base_name: std::path::Path::new(name)
                 .file_stem()
                 .unwrap()

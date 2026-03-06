@@ -293,6 +293,7 @@ pub fn extract_exif(path: &Path, format: &PhotoFormat) -> ExifData {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::photos::model::ScannedFile;
 
     #[test]
     fn test_exif_jpeg_no_file() {
@@ -1069,13 +1070,40 @@ mod tests {
             "ExifData has exposure_comp"
         );
 
-        // RED: ScannedFile lacks aperture field — these 5 camera params are silently dropped
-        // in the pipeline (pipeline.rs lines 176-185) because ScannedFile only carries
-        // capture_time, camera_model, lens, orientation.
+        // GREEN: ScannedFile now carries camera params through the pipeline
+        let scanned = ScannedFile {
+            path: f.path().to_path_buf(),
+            format: PhotoFormat::Jpeg,
+            capture_time: exif_data.capture_time,
+            camera_model: exif_data.camera_model,
+            lens: exif_data.lens,
+            orientation: exif_data.orientation,
+            aperture: exif_data.aperture,
+            shutter_speed: exif_data.shutter_speed,
+            iso: exif_data.iso,
+            focal_length: exif_data.focal_length,
+            exposure_comp: exif_data.exposure_comp,
+            base_name: "test".to_string(),
+            dir: f.path().parent().unwrap().to_path_buf(),
+        };
+
         assert!(
-            false,
-            "RED: ScannedFile does not carry camera params (aperture, shutter_speed, iso, focal_length, exposure_comp) to DB. \
-             ExifData extracts them but they are dropped in the pipeline."
+            (scanned.aperture.unwrap() - 2.8).abs() < 0.01,
+            "aperture should be ~2.8"
+        );
+        assert_eq!(
+            scanned.shutter_speed.as_deref(),
+            Some("1/250"),
+            "shutter_speed should be 1/250"
+        );
+        assert_eq!(scanned.iso, Some(400), "iso should be 400");
+        assert!(
+            (scanned.focal_length.unwrap() - 85.0).abs() < 0.01,
+            "focal_length should be ~85.0"
+        );
+        assert!(
+            (scanned.exposure_comp.unwrap() - 0.7).abs() < 0.01,
+            "exposure_comp should be ~0.7"
         );
     }
 }

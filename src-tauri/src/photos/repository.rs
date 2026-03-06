@@ -44,6 +44,7 @@ pub fn photo_exists(conn: &Connection, path: &str) -> rusqlite::Result<bool> {
 }
 
 /// Insert a new photo row. Returns the new row id.
+#[allow(clippy::too_many_arguments)]
 pub fn insert_photo(
     conn: &Connection,
     path: &str,
@@ -52,11 +53,16 @@ pub fn insert_photo(
     orientation: Option<u16>,
     camera_model: Option<&str>,
     lens: Option<&str>,
+    aperture: Option<f64>,
+    shutter_speed: Option<&str>,
+    iso: Option<u32>,
+    focal_length: Option<f64>,
+    exposure_comp: Option<f64>,
 ) -> rusqlite::Result<i64> {
     conn.execute(
-        "INSERT OR IGNORE INTO photos (path, format, capture_time, orientation, camera_model, lens)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![path, format, capture_time, orientation, camera_model, lens],
+        "INSERT OR IGNORE INTO photos (path, format, capture_time, orientation, camera_model, lens, aperture, shutter_speed, iso, focal_length, exposure_comp)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![path, format, capture_time, orientation, camera_model, lens, aperture, shutter_speed, iso, focal_length, exposure_comp],
     )?;
     // If the row already existed, the INSERT OR IGNORE does nothing; return the existing id.
     let id: i64 = conn.query_row(
@@ -465,7 +471,7 @@ pub fn update_logical_photo_stack(
 /// but still exist in the photos table. We reload them to re-pair and re-stack.
 pub fn load_existing_scanned_files(conn: &Connection) -> Vec<ScannedFile> {
     let mut stmt = match conn
-        .prepare("SELECT path, format, capture_time, orientation, camera_model, lens FROM photos")
+        .prepare("SELECT path, format, capture_time, orientation, camera_model, lens, aperture, shutter_speed, iso, focal_length, exposure_comp FROM photos")
     {
         Ok(s) => s,
         Err(e) => {
@@ -481,6 +487,11 @@ pub fn load_existing_scanned_files(conn: &Connection) -> Vec<ScannedFile> {
         let orientation: Option<u16> = row.get(3)?;
         let camera_model: Option<String> = row.get(4)?;
         let lens: Option<String> = row.get(5)?;
+        let aperture: Option<f64> = row.get(6)?;
+        let shutter_speed: Option<String> = row.get(7)?;
+        let iso: Option<u32> = row.get(8)?;
+        let focal_length: Option<f64> = row.get(9)?;
+        let exposure_comp: Option<f64> = row.get(10)?;
         Ok((
             path_str,
             format_str,
@@ -488,6 +499,11 @@ pub fn load_existing_scanned_files(conn: &Connection) -> Vec<ScannedFile> {
             orientation,
             camera_model,
             lens,
+            aperture,
+            shutter_speed,
+            iso,
+            focal_length,
+            exposure_comp,
         ))
     });
 
@@ -501,7 +517,19 @@ pub fn load_existing_scanned_files(conn: &Connection) -> Vec<ScannedFile> {
 
     let mut files = Vec::new();
     for row in rows.flatten() {
-        let (path_str, format_str, capture_time_str, orientation, camera_model, lens) = row;
+        let (
+            path_str,
+            format_str,
+            capture_time_str,
+            orientation,
+            camera_model,
+            lens,
+            aperture,
+            shutter_speed,
+            iso,
+            focal_length,
+            exposure_comp,
+        ) = row;
         let path = PathBuf::from(&path_str);
         let format = match format_str.as_str() {
             "jpeg" => PhotoFormat::Jpeg,
@@ -527,6 +555,11 @@ pub fn load_existing_scanned_files(conn: &Connection) -> Vec<ScannedFile> {
             camera_model,
             lens,
             orientation,
+            aperture,
+            shutter_speed,
+            iso,
+            focal_length,
+            exposure_comp,
             base_name,
             dir,
         });
@@ -987,6 +1020,11 @@ mod tests {
             Some(1u16),
             None,
             None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         .unwrap();
 
@@ -1047,6 +1085,11 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         .unwrap();
         let jpg_id = insert_photo(
@@ -1054,6 +1097,11 @@ mod tests {
             "/img/shot.JPG",
             "jpeg",
             Some("2024-01-01T10:00:00Z"),
+            None,
+            None,
+            None,
+            None,
+            None,
             None,
             None,
             None,
@@ -1104,9 +1152,21 @@ mod tests {
                 photo_counter += 1;
                 let path = format!("/test/photo_{}.jpg", photo_counter);
                 let capture_time = format!("2024-01-01T10:{:02}:00Z", photo_counter);
-                let photo_id =
-                    insert_photo(&conn, &path, "jpeg", Some(&capture_time), None, None, None)
-                        .unwrap();
+                let photo_id = insert_photo(
+                    &conn,
+                    &path,
+                    "jpeg",
+                    Some(&capture_time),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
                 let lp_id = insert_logical_photo(&conn, project_id, photo_id, stack_id).unwrap();
                 conn.execute(
                     "UPDATE photos SET logical_photo_id = ?1 WHERE id = ?2",

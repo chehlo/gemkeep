@@ -12,6 +12,11 @@ pub fn make_group(capture_time: Option<chrono::DateTime<chrono::Utc>>) -> Logica
         camera_model: None,
         lens: None,
         orientation: None,
+        aperture: None,
+        shutter_speed: None,
+        iso: None,
+        focal_length: None,
+        exposure_comp: None,
         base_name: "photo".to_string(),
         dir: PathBuf::from("/tmp"),
     };

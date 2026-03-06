@@ -25,6 +25,11 @@ pub struct ScannedFile {
     pub camera_model: Option<String>,
     pub lens: Option<String>,
     pub orientation: Option<u16>,
+    pub aperture: Option<f64>,
+    pub shutter_speed: Option<String>,
+    pub iso: Option<u32>,
+    pub focal_length: Option<f64>,
+    pub exposure_comp: Option<f64>,
     /// lowercase filename without extension, for pair matching
     pub base_name: String,
     /// parent directory

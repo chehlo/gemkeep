@@ -1169,8 +1169,10 @@ mod tests {
         let wv = make_webview(&app);
 
         // Call pause_indexing
-        let pause_result =
-            tauri::test::get_ipc_response(&wv, invoke_req("pause_indexing", serde_json::json!({ "slug": "test" })));
+        let pause_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("pause_indexing", serde_json::json!({ "slug": "test" })),
+        );
         assert!(
             pause_result.is_ok(),
             "pause_indexing must succeed: {:?}",
@@ -1201,8 +1203,10 @@ mod tests {
         let wv = make_webview(&app);
 
         // First pause
-        let pause_result =
-            tauri::test::get_ipc_response(&wv, invoke_req("pause_indexing", serde_json::json!({ "slug": "test" })));
+        let pause_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req("pause_indexing", serde_json::json!({ "slug": "test" })),
+        );
         assert!(pause_result.is_ok(), "pause_indexing must succeed");
 
         // Then resume
@@ -2075,7 +2079,10 @@ mod tests {
 
         // Shape validation
         let photo = &photos[0];
-        assert!(photo["logical_photo_id"].is_number(), "logical_photo_id must be a number");
+        assert!(
+            photo["logical_photo_id"].is_number(),
+            "logical_photo_id must be a number"
+        );
         assert!(photo["has_jpeg"].is_boolean(), "has_jpeg must be a boolean");
         assert!(photo["has_raw"].is_boolean(), "has_raw must be a boolean");
     }

@@ -53,6 +53,7 @@ See `docs/sprints/sprint-plan.md` §Sprint 8 success criteria (items 1-10).
 - Restore eliminated photos
 - Round navigation ([ ] keys)
 - Round finalize action
+- **undo_merge round restoration**: Currently undo_merge creates fresh round 1 for restored stacks. Should restore original rounds (they're still in DB — no FK cascade). Design decision: what happens to decisions made in the merged stack's round?
 
 ### S11 — GemStack — Final Curation
 - GemStack: special stack for final curation (G key promotes survivors)

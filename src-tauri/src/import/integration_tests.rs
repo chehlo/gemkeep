@@ -1451,3 +1451,218 @@ fn test_restack_during_active_thumbnails_does_not_interfere() {
         lp_ids_before, lp_ids_after
     );
 }
+
+// ─── RED: Import must create round 1 for every stack ────────────────────────
+
+/// Behavior 1: Import pipeline creates round 1 for each stack.
+/// After import of 3 stacks, each stack must have a round in the `rounds` table
+/// and `round_photos` populated with all logical photos.
+#[test]
+fn test_import_creates_round_for_each_stack() {
+    let h = PipelineHarness::new();
+    let folder = h.create_folder("photos");
+
+    // Create 3 JPEGs with timestamps far apart so they land in 3 separate stacks (burst_gap=3)
+    write_valid_jpeg_with_timestamp(&folder.join("IMG_001.jpg"), "2024:01:15 10:00:00");
+    write_valid_jpeg_with_timestamp(&folder.join("IMG_002.jpg"), "2024:01:15 11:00:00");
+    write_valid_jpeg_with_timestamp(&folder.join("IMG_003.jpg"), "2024:01:15 12:00:00");
+
+    // Register source folder and run pipeline
+    repository::add_source_folder(&h.conn, h.project_id, folder.to_str().unwrap()).unwrap();
+    let stats = h.run(vec![folder]);
+
+    assert_eq!(stats.stacks_generated, 3, "must generate 3 stacks");
+
+    // Assert: each stack has a round in the rounds table
+    let round_count: i64 = h
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM rounds WHERE project_id = ?1 AND scope = 'stack' AND state = 'open'",
+            rusqlite::params![h.project_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        round_count, 3,
+        "import must create round 1 for each of the 3 stacks, found {}",
+        round_count
+    );
+
+    // Assert: round_photos populated for each round
+    let round_photo_count: i64 = h
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM round_photos rp
+             JOIN rounds r ON r.id = rp.round_id
+             WHERE r.project_id = ?1",
+            rusqlite::params![h.project_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        round_photo_count, 3,
+        "each stack has 1 photo, so round_photos must have 3 entries total, found {}",
+        round_photo_count
+    );
+}
+
+/// Behavior 2: get_round_status returns valid round after import.
+/// After import, calling get_round_status for any stack must return round_number=1, state='open'.
+#[test]
+fn test_import_get_round_status_returns_round_1() {
+    let h = PipelineHarness::new();
+    let folder = h.create_folder("photos");
+
+    write_valid_jpeg_with_timestamp(&folder.join("IMG_001.jpg"), "2024:01:15 10:00:00");
+    write_valid_jpeg_with_timestamp(&folder.join("IMG_002.jpg"), "2024:01:15 10:00:01");
+
+    repository::add_source_folder(&h.conn, h.project_id, folder.to_str().unwrap()).unwrap();
+    let _stats = h.run(vec![folder]);
+
+    // Get the stack
+    let stacks = repository::list_stacks_summary(&h.conn, h.project_id).unwrap();
+    assert!(!stacks.is_empty(), "must have at least 1 stack");
+
+    let stack_id = stacks[0].stack_id;
+
+    // get_round_status must succeed (not error) and return round_number=1, state='open'
+    let status = crate::decisions::engine::get_round_status(&h.conn, h.project_id, stack_id)
+        .expect("get_round_status must succeed after import — round 1 should exist");
+
+    assert!(
+        status.round_id >= 1,
+        "round_id must be >= 1, got {}",
+        status.round_id
+    );
+    assert_eq!(
+        status.round_number, 1,
+        "round_number must be 1 after import, got {}",
+        status.round_number
+    );
+    assert_eq!(
+        status.state, "open",
+        "round state must be 'open' after import, got '{}'",
+        status.state
+    );
+}
+
+/// Behavior 3: list_logical_photos with valid round_id returns photos.
+/// After import with round created, querying by round_id must return the photos.
+#[test]
+fn test_list_logical_photos_with_valid_round_id() {
+    let h = PipelineHarness::new();
+    let folder = h.create_folder("photos");
+
+    write_valid_jpeg_with_timestamp(&folder.join("IMG_001.jpg"), "2024:01:15 10:00:00");
+    write_valid_jpeg_with_timestamp(&folder.join("IMG_002.jpg"), "2024:01:15 10:00:01");
+
+    repository::add_source_folder(&h.conn, h.project_id, folder.to_str().unwrap()).unwrap();
+    let _stats = h.run(vec![folder]);
+
+    let stacks = repository::list_stacks_summary(&h.conn, h.project_id).unwrap();
+    let stack_id = stacks[0].stack_id;
+
+    // Get the round_id from rounds table
+    let round_id: i64 = h
+        .conn
+        .query_row(
+            "SELECT id FROM rounds WHERE project_id = ?1 AND scope = 'stack' AND scope_id = ?2 LIMIT 1",
+            rusqlite::params![h.project_id, stack_id],
+            |row| row.get(0),
+        )
+        .expect("round must exist after import");
+
+    // list_logical_photos by round must return the photos
+    let photos = repository::query_logical_photos_by_round(&h.conn, round_id).unwrap();
+    assert_eq!(
+        photos.len(),
+        2,
+        "list_logical_photos with valid round_id must return 2 photos, got {}",
+        photos.len()
+    );
+}
+
+/// Behavior 4: list_logical_photos with invalid round_id=999 returns error.
+/// round_id is always required, and an invalid one must produce an error, not an empty list.
+#[test]
+fn test_list_logical_photos_invalid_round_id_returns_error() {
+    let h = PipelineHarness::new();
+    let folder = h.create_folder("photos");
+
+    write_valid_jpeg_with_timestamp(&folder.join("IMG_001.jpg"), "2024:01:15 10:00:00");
+    repository::add_source_folder(&h.conn, h.project_id, folder.to_str().unwrap()).unwrap();
+    let _stats = h.run(vec![folder]);
+
+    // Query with a non-existent round_id=999
+    // Current behavior: query_logical_photos_by_round returns empty Vec (no error).
+    // Required behavior: must return an error "Round 999 does not exist".
+    let result = repository::query_logical_photos_by_round(&h.conn, 999);
+
+    // The function must return an error for non-existent rounds
+    assert!(
+        result.is_err(),
+        "list_logical_photos with round_id=999 must return error, but got Ok with {} photos",
+        result.unwrap().len()
+    );
+}
+
+/// Behavior 6: Restack recreates round 1 for new stacks.
+/// After restack, new stacks must have round 1 created with round_photos populated.
+#[test]
+fn test_restack_creates_rounds_for_new_stacks() {
+    let h = PipelineHarness::new();
+    let folder = h.create_folder("photos");
+
+    // Create 4 photos: 2 close together, 2 far apart → with gap=3, 3 stacks initially
+    write_valid_jpeg_with_timestamp(&folder.join("IMG_001.jpg"), "2024:01:15 10:00:00");
+    write_valid_jpeg_with_timestamp(&folder.join("IMG_002.jpg"), "2024:01:15 10:00:01");
+    write_valid_jpeg_with_timestamp(&folder.join("IMG_003.jpg"), "2024:01:15 10:00:30");
+    write_valid_jpeg_with_timestamp(&folder.join("IMG_004.jpg"), "2024:01:15 10:00:50");
+
+    repository::add_source_folder(&h.conn, h.project_id, folder.to_str().unwrap()).unwrap();
+    let _stats = h.run(vec![folder]);
+
+    // Restack with gap=3600 → merges all into 1 stack (all within 50 seconds)
+    pipeline::restack_from_existing_photos(&h.conn, h.project_id, 3600)
+        .expect("restack must succeed");
+
+    let stacks_after = repository::list_stacks_summary(&h.conn, h.project_id).unwrap();
+    assert_eq!(
+        stacks_after.len(),
+        1,
+        "restack with gap=3600 must produce 1 stack"
+    );
+
+    // The new stack must have round 1 created
+    let new_stack_id = stacks_after[0].stack_id;
+    let round_count: i64 = h
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM rounds WHERE project_id = ?1 AND scope = 'stack' AND scope_id = ?2",
+            rusqlite::params![h.project_id, new_stack_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        round_count, 1,
+        "restack must create round 1 for the new stack, found {}",
+        round_count
+    );
+
+    // round_photos must contain all 4 logical photos
+    let round_photo_count: i64 = h
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM round_photos rp
+             JOIN rounds r ON r.id = rp.round_id
+             WHERE r.project_id = ?1 AND r.scope_id = ?2",
+            rusqlite::params![h.project_id, new_stack_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        round_photo_count, 4,
+        "restack must populate round_photos with all 4 logical photos, found {}",
+        round_photo_count
+    );
+}

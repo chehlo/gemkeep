@@ -25,7 +25,7 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
         );
 
         CREATE TABLE IF NOT EXISTS stacks (
-            id          INTEGER PRIMARY KEY,
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
             project_id  INTEGER NOT NULL REFERENCES projects(id),
             created_at  TEXT NOT NULL
         );

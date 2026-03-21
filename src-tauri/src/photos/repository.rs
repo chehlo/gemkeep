@@ -253,6 +253,16 @@ pub fn query_logical_photos_by_round(
     conn: &Connection,
     round_id: i64,
 ) -> rusqlite::Result<Vec<LogicalPhotoSummary>> {
+    // Validate that the round exists before querying
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM rounds WHERE id = ?1)",
+        params![round_id],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
+
     collect_rows(
         conn,
         "SELECT
@@ -662,6 +672,41 @@ pub fn list_photo_paths_for_project(
 
 use crate::photos::model::{MergeResult, StackTransaction};
 
+/// Create round 1 for a stack and populate round_photos with all its logical photos.
+/// Used after merge, restack, and undo operations to ensure the decision engine is ready.
+pub fn init_round_for_stack(
+    conn: &Connection,
+    project_id: i64,
+    stack_id: i64,
+) -> anyhow::Result<i64> {
+    use rusqlite::OptionalExtension;
+
+    // Idempotent: if a round already exists for this stack, return it
+    let existing: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM rounds WHERE project_id = ?1 AND scope = 'stack' AND scope_id = ?2 ORDER BY id DESC LIMIT 1",
+            params![project_id, stack_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+
+    if let Some(round_id) = existing {
+        return Ok(round_id);
+    }
+
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO rounds (project_id, round_number, state, scope, scope_id, created_at) VALUES (?1, 1, 'open', 'stack', ?2, ?3)",
+        params![project_id, stack_id, now],
+    )?;
+    let round_id = conn.last_insert_rowid();
+    conn.execute(
+        "INSERT INTO round_photos (round_id, logical_photo_id) SELECT ?1, id FROM logical_photos WHERE stack_id = ?2",
+        params![round_id, stack_id],
+    )?;
+    Ok(round_id)
+}
+
 /// Merge 2+ stacks into one new stack.
 /// Moves all logical_photos from source stacks into a new stack.
 /// Deletes source stacks. Logs transaction. Creates manual_merges record.
@@ -751,6 +796,8 @@ pub fn merge_stacks(
         conn.execute(&update_sql, update_refs.as_slice())?;
 
         // 7. DELETE FROM stacks WHERE id IN (source_ids)
+        // Rounds for source stacks become orphaned but harmless —
+        // AUTOINCREMENT on stacks table prevents ID reuse.
         let delete_sql = format!("DELETE FROM stacks WHERE id IN ({})", placeholders);
         conn.execute(&delete_sql, param_refs.as_slice())?;
 
@@ -776,6 +823,9 @@ pub fn merge_stacks(
             params![project_id, details_str, now],
         )?;
         let transaction_id = conn.last_insert_rowid();
+
+        // Create round 1 for the merged stack
+        init_round_for_stack(conn, project_id, new_stack_id)?;
 
         Ok(MergeResult {
             merged_stack_id: new_stack_id,
@@ -874,7 +924,12 @@ pub fn undo_last_merge(conn: &Connection, project_id: i64) -> anyhow::Result<()>
             )?;
         }
 
-        // 8. Log undo_merge transaction
+        // 8. Create round 1 for each restored stack
+        for &sid in &source_stack_ids {
+            init_round_for_stack(conn, project_id, sid)?;
+        }
+
+        // 9. Log undo_merge transaction
         let undo_details = serde_json::json!({
             "undone_transaction_id": tx_id,
             "source_stack_ids": source_stack_ids,
@@ -988,6 +1043,8 @@ pub fn restack_merge_aware(
         let now = chrono::Utc::now().to_rfc3339();
 
         // 7. Delete all stacks for the project (NULL out stack_id first)
+        // Rounds for old stacks become orphaned but harmless —
+        // AUTOINCREMENT on stacks table prevents ID reuse.
         conn.execute(
             "UPDATE logical_photos SET stack_id = NULL WHERE project_id = ?1",
             params![project_id],
@@ -1010,6 +1067,7 @@ pub fn restack_merge_aware(
                     params![stack_id, lp_id],
                 )?;
             }
+            init_round_for_stack(conn, project_id, stack_id)?;
         }
 
         // 9. Create stacks for each merge group
@@ -1025,6 +1083,7 @@ pub fn restack_merge_aware(
                     params![stack_id, lp_id],
                 )?;
             }
+            init_round_for_stack(conn, project_id, stack_id)?;
         }
 
         // 10. Log restack transaction
@@ -1898,8 +1957,7 @@ mod tests {
             })
             .build_db_only();
 
-        let summaries =
-            query_logical_photos_by_stack(&project.conn, project.stack_id()).unwrap();
+        let summaries = query_logical_photos_by_stack(&project.conn, project.stack_id()).unwrap();
 
         assert_eq!(summaries.len(), 1);
         let s = &summaries[0];
@@ -1928,8 +1986,7 @@ mod tests {
             })
             .build_db_only();
 
-        let summaries =
-            query_logical_photos_by_stack(&project.conn, project.stack_id()).unwrap();
+        let summaries = query_logical_photos_by_stack(&project.conn, project.stack_id()).unwrap();
 
         assert_eq!(summaries.len(), 1);
         let s = &summaries[0];
@@ -1962,8 +2019,7 @@ mod tests {
             })
             .build_db_only();
 
-        let summaries =
-            query_logical_photos_by_stack(&project.conn, project.stack_id()).unwrap();
+        let summaries = query_logical_photos_by_stack(&project.conn, project.stack_id()).unwrap();
 
         assert_eq!(summaries.len(), 1);
         let s = &summaries[0];
@@ -1990,9 +2046,13 @@ mod tests {
             .build_db_only();
 
         // Enable foreign keys (SQLite default is OFF — production may have it ON)
-        project.conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        project
+            .conn
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .unwrap();
 
-        let stack_id = project.conn
+        let stack_id = project
+            .conn
             .query_row(
                 "SELECT stack_id FROM logical_photos WHERE project_id = ?1 LIMIT 1",
                 params![project.project_id],
@@ -2003,18 +2063,24 @@ mod tests {
 
         // Create a round and a decision — this is the normal flow after user presses Y/X
         let now = chrono::Utc::now().to_rfc3339();
-        project.conn.execute(
-            "INSERT INTO rounds (project_id, scope, scope_id, round_number, state, created_at)
+        project
+            .conn
+            .execute(
+                "INSERT INTO rounds (project_id, scope, scope_id, round_number, state, created_at)
              VALUES (?1, 'stack', ?2, 1, 'open', ?3)",
-            params![project.project_id, stack_id, now],
-        ).unwrap();
+                params![project.project_id, stack_id, now],
+            )
+            .unwrap();
         let round_id = project.conn.last_insert_rowid();
 
-        project.conn.execute(
-            "INSERT INTO decisions (logical_photo_id, round_id, action, timestamp)
+        project
+            .conn
+            .execute(
+                "INSERT INTO decisions (logical_photo_id, round_id, action, timestamp)
              VALUES (?1, ?2, 'keep', ?3)",
-            params![lp_id, round_id, now],
-        ).unwrap();
+                params![lp_id, round_id, now],
+            )
+            .unwrap();
 
         // This is the re-index path — should succeed even with decisions present
         let result = clear_stacks_and_logical_photos(&project.conn, project.project_id);
@@ -2025,7 +2091,8 @@ mod tests {
         );
 
         // Verify everything was cleaned up
-        let lp_count: i64 = project.conn
+        let lp_count: i64 = project
+            .conn
             .query_row(
                 "SELECT COUNT(*) FROM logical_photos WHERE project_id = ?1",
                 params![project.project_id],
@@ -2034,9 +2101,409 @@ mod tests {
             .unwrap();
         assert_eq!(lp_count, 0, "all logical_photos should be deleted");
 
-        let decision_count: i64 = project.conn
+        let decision_count: i64 = project
+            .conn
             .query_row("SELECT COUNT(*) FROM decisions", [], |row| row.get(0))
             .unwrap();
         assert_eq!(decision_count, 0, "all decisions should be deleted");
+    }
+
+    // ── §R1 Round-creation helpers ──────────────────────────────────────────
+
+    fn count_rounds_for_stack(conn: &Connection, project_id: i64, stack_id: i64) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM rounds WHERE project_id = ?1 AND scope = 'stack' AND scope_id = ?2",
+            params![project_id, stack_id],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    fn count_round_photos(conn: &Connection, round_id: i64) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM round_photos WHERE round_id = ?1",
+            params![round_id],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    fn get_round_id_for_stack(conn: &Connection, project_id: i64, stack_id: i64) -> i64 {
+        conn.query_row(
+            "SELECT id FROM rounds WHERE project_id = ?1 AND scope = 'stack' AND scope_id = ?2 ORDER BY id DESC LIMIT 1",
+            params![project_id, stack_id],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    // ── INVARIANT: round-visible photos == stack photos after any mutation ──
+
+    /// The user-visible contract: for every stack, get_round_status returns a
+    /// round, and query_logical_photos_by_round with that round returns exactly
+    /// the logical_photos in that stack. This must hold after any operation.
+    fn assert_round_photo_invariant(conn: &Connection, project_id: i64) {
+        let stacks: Vec<(i64, i64)> = conn
+            .prepare("SELECT s.id, COUNT(lp.id) FROM stacks s LEFT JOIN logical_photos lp ON lp.stack_id = s.id WHERE s.project_id = ?1 GROUP BY s.id")
+            .unwrap()
+            .query_map(params![project_id], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+
+        for (stack_id, lp_count) in &stacks {
+            // get_round_status must succeed (round must exist)
+            let round_id = get_round_id_for_stack(conn, project_id, *stack_id);
+
+            // query_logical_photos_by_round must return exactly the stack's photos
+            let round_photos = query_logical_photos_by_round(conn, round_id).unwrap();
+            assert_eq!(
+                round_photos.len() as i64,
+                *lp_count,
+                "INVARIANT VIOLATED: stack {} has {} logical_photos but round {} returns {} photos",
+                stack_id,
+                lp_count,
+                round_id,
+                round_photos.len()
+            );
+
+            // Every returned photo must actually belong to this stack
+            for p in &round_photos {
+                let actual_stack: i64 = conn
+                    .query_row(
+                        "SELECT stack_id FROM logical_photos WHERE id = ?1",
+                        params![p.logical_photo_id],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    actual_stack, *stack_id,
+                    "INVARIANT VIOLATED: photo {} is in stack {} but round {} (for stack {}) claims it",
+                    p.logical_photo_id, actual_stack, round_id, stack_id
+                );
+            }
+        }
+    }
+
+    // ── INVARIANT: every logical_photo belongs to exactly one stack ─────────
+
+    fn assert_stack_membership_invariant(conn: &Connection, project_id: i64) {
+        // No logical_photo with NULL stack_id
+        let null_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM logical_photos WHERE project_id = ?1 AND stack_id IS NULL",
+                params![project_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            null_count, 0,
+            "INVARIANT VIOLATED: {} logical_photos have NULL stack_id",
+            null_count
+        );
+
+        // Total LPs across all stacks == total LPs for project
+        let total_lps: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM logical_photos WHERE project_id = ?1",
+                params![project_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let lps_in_stacks: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM logical_photos lp JOIN stacks s ON s.id = lp.stack_id WHERE s.project_id = ?1",
+                params![project_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            total_lps, lps_in_stacks,
+            "INVARIANT VIOLATED: {} total LPs but {} assigned to stacks",
+            total_lps, lps_in_stacks
+        );
+    }
+
+    // ── INVARIANT: current_status matches latest decision ────────────────────
+
+    fn assert_decision_status_invariant(conn: &Connection, project_id: i64) {
+        // For each LP that has decisions, current_status must match the latest one
+        let rows: Vec<(i64, String, String)> = conn
+            .prepare(
+                "SELECT lp.id, lp.current_status,
+                        COALESCE(
+                            (SELECT d.action FROM decisions d
+                             WHERE d.logical_photo_id = lp.id
+                             ORDER BY d.id DESC LIMIT 1),
+                            'undecided'
+                        ) AS derived_status
+                 FROM logical_photos lp
+                 WHERE lp.project_id = ?1",
+            )
+            .unwrap()
+            .query_map(params![project_id], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+
+        for (lp_id, current, derived) in &rows {
+            assert_eq!(
+                current, derived,
+                "INVARIANT VIOLATED: LP {} has current_status='{}' but latest decision is '{}'",
+                lp_id, current, derived
+            );
+        }
+    }
+
+    /// Assert ALL invariants at once — call after every mutation
+    fn assert_all_invariants(conn: &Connection, project_id: i64) {
+        assert_round_photo_invariant(conn, project_id);
+        assert_stack_membership_invariant(conn, project_id);
+        assert_decision_status_invariant(conn, project_id);
+    }
+
+    #[test]
+    fn test_all_invariants_survive_full_lifecycle() {
+        use crate::decisions::engine::{self, find_or_create_round, record_decision};
+        use crate::decisions::model::DecisionAction;
+
+        let (project, project_id, stacks) = setup_merge_test_db(3, &[3, 4, 2]);
+        let conn = &project.conn;
+
+        // Step 1: init rounds (simulates import)
+        for (stack_id, _) in &stacks {
+            init_round_for_stack(conn, project_id, *stack_id).unwrap();
+        }
+        assert_all_invariants(conn, project_id);
+
+        // Step 2: make decisions on stack 0
+        let (round_id, _) = find_or_create_round(conn, project_id, stacks[0].0).unwrap();
+        record_decision(conn, stacks[0].1[0], round_id, &DecisionAction::Keep).unwrap();
+        record_decision(conn, stacks[0].1[1], round_id, &DecisionAction::Eliminate).unwrap();
+        assert_all_invariants(conn, project_id);
+
+        // Step 3: undo a decision
+        engine::undo_decision(conn, stacks[0].1[1], round_id).unwrap();
+        assert_all_invariants(conn, project_id);
+
+        // Step 4: re-decide
+        record_decision(conn, stacks[0].1[1], round_id, &DecisionAction::Keep).unwrap();
+        assert_all_invariants(conn, project_id);
+
+        // Step 5: init again (double call — idempotency)
+        for (stack_id, _) in &stacks {
+            init_round_for_stack(conn, project_id, *stack_id).unwrap();
+        }
+        assert_all_invariants(conn, project_id);
+
+        // Step 6: merge stacks 0 and 1
+        let merge_ids = vec![stacks[0].0, stacks[1].0];
+        let _merge_result = merge_stacks(conn, project_id, &merge_ids).unwrap();
+        assert_all_invariants(conn, project_id);
+
+        // Step 7: undo merge
+        undo_last_merge(conn, project_id).unwrap();
+        assert_all_invariants(conn, project_id);
+
+        // Step 8: restack with a large gap (all photos → 1 stack)
+        restack_merge_aware(conn, project_id, 3600).unwrap();
+        assert_all_invariants(conn, project_id);
+
+        // Step 9: restack with tiny gap (many stacks)
+        restack_merge_aware(conn, project_id, 1).unwrap();
+        assert_all_invariants(conn, project_id);
+    }
+
+    // ── §R1 init_round_for_stack is idempotent — never creates duplicates ──
+
+    #[test]
+    fn test_init_round_for_stack_is_idempotent() {
+        let (project, project_id, stacks) = setup_merge_test_db(1, &[3]);
+        let conn = &project.conn;
+        let stack_id = stacks[0].0;
+
+        // Call init_round_for_stack twice (simulates double import or restack)
+        init_round_for_stack(conn, project_id, stack_id).unwrap();
+        init_round_for_stack(conn, project_id, stack_id).unwrap();
+
+        // Must have exactly 1 round, not 2
+        assert_eq!(
+            count_rounds_for_stack(conn, project_id, stack_id),
+            1,
+            "init_round_for_stack called twice must produce exactly 1 round, not 2"
+        );
+
+        // The round must have all 3 photos
+        let round_id = get_round_id_for_stack(conn, project_id, stack_id);
+        assert_eq!(
+            count_round_photos(conn, round_id),
+            3,
+            "round must contain all 3 logical photos"
+        );
+    }
+
+    #[test]
+    fn test_get_round_status_and_find_or_create_round_return_same_round() {
+        use crate::decisions::engine;
+
+        let (project, project_id, stacks) = setup_merge_test_db(1, &[3]);
+        let conn = &project.conn;
+        let stack_id = stacks[0].0;
+
+        init_round_for_stack(conn, project_id, stack_id).unwrap();
+
+        // get_round_status and find_or_create_round must agree on the round
+        let status = engine::get_round_status(conn, project_id, stack_id).unwrap();
+        let (fcr_round_id, _) = engine::find_or_create_round(conn, project_id, stack_id).unwrap();
+
+        assert_eq!(
+            status.round_id, fcr_round_id,
+            "get_round_status (round_id={}) and find_or_create_round (round_id={}) must return the same round",
+            status.round_id, fcr_round_id
+        );
+    }
+
+    // ── §R2 merge_stacks creates round for new stack ────────────────────────
+
+    #[test]
+    fn test_merge_stacks_creates_round_for_merged_stack() {
+        let (project, project_id, stacks) = setup_merge_test_db(2, &[3, 4]);
+        let conn = &project.conn;
+        let stack_ids: Vec<i64> = stacks.iter().map(|(id, _)| *id).collect();
+        let total_lps: usize = stacks.iter().map(|(_, lps)| lps.len()).sum();
+
+        let result = merge_stacks(conn, project_id, &stack_ids).unwrap();
+
+        // The merged stack must have round 1 auto-created
+        assert_eq!(
+            count_rounds_for_stack(conn, project_id, result.merged_stack_id),
+            1,
+            "merge_stacks must create round 1 for the merged stack"
+        );
+
+        // round_photos must contain all logical photos from both source stacks
+        let round_id = get_round_id_for_stack(conn, project_id, result.merged_stack_id);
+        assert_eq!(
+            count_round_photos(conn, round_id),
+            total_lps as i64,
+            "round_photos must contain all {} logical photos from merged stacks",
+            total_lps
+        );
+    }
+
+    // ── §R3 restack creates rounds for all new stacks ───────────────────────
+
+    #[test]
+    fn test_restack_creates_rounds_for_all_new_stacks() {
+        let (project, project_id, _stacks) = setup_merge_test_db(2, &[3, 4]);
+        let conn = &project.conn;
+
+        // Restack with a huge gap so all photos land in one stack
+        restack_merge_aware(conn, project_id, 999_999).unwrap();
+
+        // Get all stacks after restack
+        let stacks_after: Vec<(i64, i64)> = conn
+            .prepare("SELECT s.id, COUNT(lp.id) FROM stacks s JOIN logical_photos lp ON lp.stack_id = s.id WHERE s.project_id = ?1 GROUP BY s.id")
+            .unwrap()
+            .query_map(params![project_id], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+
+        assert!(
+            !stacks_after.is_empty(),
+            "restack must produce at least one stack"
+        );
+
+        for (stack_id, lp_count) in &stacks_after {
+            assert_eq!(
+                count_rounds_for_stack(conn, project_id, *stack_id),
+                1,
+                "restack must create round 1 for stack {}",
+                stack_id
+            );
+
+            let round_id = get_round_id_for_stack(conn, project_id, *stack_id);
+            assert_eq!(
+                count_round_photos(conn, round_id),
+                *lp_count,
+                "round_photos for stack {} must contain exactly {} logical photos",
+                stack_id,
+                lp_count
+            );
+        }
+    }
+
+    // ── §R4 undo_merge creates rounds for restored stacks ───────────────────
+
+    #[test]
+    fn test_undo_merge_creates_rounds_for_restored_stacks() {
+        let (project, project_id, stacks) = setup_merge_test_db(2, &[3, 4]);
+        let conn = &project.conn;
+        let stack_ids: Vec<i64> = stacks.iter().map(|(id, _)| *id).collect();
+        let lps_per_stack: Vec<(i64, usize)> =
+            stacks.iter().map(|(id, lps)| (*id, lps.len())).collect();
+
+        // Merge then undo
+        merge_stacks(conn, project_id, &stack_ids).unwrap();
+        undo_last_merge(conn, project_id).unwrap();
+
+        // Each restored stack must have round 1 with its own logical photos
+        for (stack_id, expected_lp_count) in &lps_per_stack {
+            assert_eq!(
+                count_rounds_for_stack(conn, project_id, *stack_id),
+                1,
+                "undo_merge must create round 1 for restored stack {}",
+                stack_id
+            );
+
+            let round_id = get_round_id_for_stack(conn, project_id, *stack_id);
+            assert_eq!(
+                count_round_photos(conn, round_id),
+                *expected_lp_count as i64,
+                "round_photos for restored stack {} must contain {} logical photos",
+                stack_id,
+                expected_lp_count
+            );
+        }
+    }
+
+    // NOTE: undo_merge round restoration deferred to S10 (multi-round design).
+    // Currently undo_merge creates fresh round 1 for restored stacks.
+
+    // ── §R5 list_logical_photos works after merge ───────────────────────────
+
+    #[test]
+    fn test_list_logical_photos_works_after_merge() {
+        let (project, project_id, stacks) = setup_merge_test_db(2, &[3, 4]);
+        let conn = &project.conn;
+        let stack_ids: Vec<i64> = stacks.iter().map(|(id, _)| *id).collect();
+        let all_lp_ids: Vec<i64> = stacks.iter().flat_map(|(_, lps)| lps.clone()).collect();
+
+        let result = merge_stacks(conn, project_id, &stack_ids).unwrap();
+
+        // Get the round for the merged stack
+        let round_id = get_round_id_for_stack(conn, project_id, result.merged_stack_id);
+
+        // query_logical_photos_by_round must return all photos from the merged stack
+        let photos = query_logical_photos_by_round(conn, round_id).unwrap();
+        assert_eq!(
+            photos.len(),
+            all_lp_ids.len(),
+            "query_logical_photos_by_round must return all {} photos after merge",
+            all_lp_ids.len()
+        );
+
+        // Verify the returned IDs match
+        let returned_ids: Vec<i64> = photos.iter().map(|p| p.logical_photo_id).collect();
+        for lp_id in &all_lp_ids {
+            assert!(
+                returned_ids.contains(lp_id),
+                "logical photo {} must be in query_logical_photos_by_round results",
+                lp_id
+            );
+        }
     }
 }

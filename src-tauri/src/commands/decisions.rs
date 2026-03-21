@@ -123,8 +123,8 @@ pub fn get_round_status(
 
     // Read-only: return status of most recent round, or default if none exists.
     // Do NOT auto-create rounds here — that's a side-effect in a read operation.
-    engine::get_round_status(conn, project.id, stack_id)
-        .or_else(|_| Ok(RoundStatus {
+    engine::get_round_status(conn, project.id, stack_id).or_else(|_| {
+        Ok(RoundStatus {
             round_id: 0,
             round_number: 0,
             state: "none".to_string(),
@@ -134,7 +134,8 @@ pub fn get_round_status(
             eliminated: 0,
             undecided: 0,
             committed_at: None,
-        }))
+        })
+    })
 }
 
 /// Commit (seal) the current open round for a stack.

@@ -157,6 +157,39 @@ it should be single place where it's updated for entire product."
 
 ---
 
+## ESC Key — Operation Stack (Undo Last Action, Not Always Navigate Back)
+
+**Context:** Currently ESC always navigates back (ComparisonView → StackFocus → StackOverview → ProjectList). But the user expects ESC to undo the most recent *action*, not always navigate. ESC should operate on a stack of operations.
+
+**Principle:** ESC cancels the last thing you did. Navigation is just one kind of action.
+
+### Operation stack (LIFO)
+
+ESC pops the most recent operation from the stack:
+
+| Last action | ESC does | Example |
+|-------------|----------|---------|
+| Selected photo with S key | Deselect that photo | S on photo 3 → ESC deselects photo 3 |
+| Opened help overlay (?) | Close help overlay | ? → ESC closes overlay |
+| Entered selection mode | Exit selection mode | Multiple S presses → ESC exits selection |
+| Locked comparison (L) | Unlock | L → ESC unlocks |
+| Toggled file path overlay (F) | Hide overlay | F → ESC hides path |
+| Navigated to this screen | Navigate back | Only if no other actions on the stack |
+
+### Rules
+- Navigation is always the BOTTOM of the stack — ESC navigates back only when nothing else to undo
+- The stack is per-screen — entering a new screen starts a fresh stack with "navigation" at the bottom
+- Actions that auto-clear (like a timed error message) remove themselves from the stack
+- Decisions (Y/X) are NOT on the ESC stack — they have their own undo (Ctrl+Z/U)
+
+### Implementation
+- Frontend: each screen maintains an `escStack: Array<() => void>` of undo callbacks
+- When an action is performed, push its undo function onto the stack
+- ESC handler: `if (escStack.length > 0) escStack.pop()!() else navigate.back()`
+- Shared utility: `useEscStack()` in `src/lib/utils/keyboard.ts`
+
+---
+
 ## HelpOverlay — Content Updates
 
 Once keyboard gaps above are implemented, update the shortcut lists

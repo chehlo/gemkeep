@@ -349,7 +349,10 @@ pub fn resume_indexing(slug: String, state: State<'_, AppState>) -> Result<(), S
 }
 
 #[tauri::command]
-pub fn get_indexing_status(slug: String, state: State<'_, AppState>) -> Result<IndexingStatus, String> {
+pub fn get_indexing_status(
+    slug: String,
+    state: State<'_, AppState>,
+) -> Result<IndexingStatus, String> {
     let ctx = state.get_or_create_context(&slug);
     let status_guard = ctx
         .indexing_status

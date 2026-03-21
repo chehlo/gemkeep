@@ -32,6 +32,7 @@ Most Sprint 9 features were implemented during Sprint 7/8 branch work. Remaining
 | Camera params on grid cards | ❌ Not done — SQL query needs extending |
 | get_stack_progress_batch IPC | ❌ Not done — currently N+1 queries |
 | Clippy clean | ❌ ProjectContext needs Default impl |
+| Inactive stacks (soft-delete) | ❌ Not done — design below |
 
 ---
 
@@ -259,6 +260,46 @@ No database schema changes required. All new state is frontend-only or derived f
 **E2E scope (Playwright):** 1-2 new journey tests:
 1. Full comparison workflow: enter StackFocus → select two photos → C → eliminate one → auto-fill → complete stack → advance
 2. F key: verify overlay appears and clipboard contains path
+
+---
+
+## Inactive Stacks (soft-delete)
+
+**Problem:** Stacks are currently hard-deleted (merge deletes source stacks, restack deletes all stacks). This causes:
+- SQLite reuses deleted row IDs → orphaned rounds accidentally match new stacks
+- No undo history — deleted stacks lose all round/decision data
+- Rounds reference stacks by `scope_id` — deleting stacks orphans rounds
+
+**Design: Never delete stacks — mark as inactive instead.**
+
+Schema change:
+```sql
+ALTER TABLE stacks ADD COLUMN active INTEGER NOT NULL DEFAULT 1;
+```
+
+A stack becomes inactive when:
+- **Merged** — source stacks marked `active=0`, new merged stack is `active=1`
+- **Restacked** — old stacks marked `active=0`, new stacks are `active=1`
+- **All photos eliminated** — after commit, if zero survivors, stack marked `active=0`
+
+Undo rules:
+- Undo merge reactivates source stacks (`active=1`), deactivates merged stack
+- Undo is ONLY allowed if no new rounds were created on the merged stack after the merge
+- Once a new round is created (decisions made), the merge is permanent — undo blocked
+
+Query changes:
+- All stack listing queries add `WHERE active = 1`
+- StackOverview only shows active stacks
+- Rounds stay with their stacks — no orphaning, no ID reuse problems
+- `get_round_status` and `list_logical_photos` only query active stacks
+
+Benefits:
+- Rounds always belong to their stack — no orphans
+- Full audit trail — inactive stacks preserve decision history
+- SQLite ID reuse is irrelevant — IDs are never freed
+- Undo is safe and well-defined
+
+**Current workaround:** `AUTOINCREMENT` on `stacks` table prevents SQLite ID reuse, so orphaned rounds never match new stacks. When inactive stacks are implemented (no more DELETE), revert `AUTOINCREMENT` — it's no longer needed and adds minor overhead.
 
 ---
 

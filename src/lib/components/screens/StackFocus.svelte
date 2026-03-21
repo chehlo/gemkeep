@@ -29,6 +29,7 @@
   let roundStatus = $state<RoundStatus | null>(null)
   let currentRoundId = $state(0)
   let actionError = $state<string | null>(null)
+  let roundError = $state<string | null>(null)
   const { show: showActionError, cleanup: cleanupErrorTimer } = createTimedError(3000, (v) => { actionError = v })
   let autoAdvance = $state(false)
   let filePathOverlay = $state<string | null>(null)
@@ -61,6 +62,12 @@
           }
         } catch (e) {
           console.error('getRoundStatus failed:', e)
+        }
+        // round_id=0 means no round exists — this is an error condition
+        if (currentRoundId === 0) {
+          roundError = 'No round found for this stack. Import may have failed.'
+          loading = false
+          return
         }
         photos = await listLogicalPhotos(projectSlug, stackId, currentRoundId)
         try {
@@ -368,7 +375,9 @@
   </header>
 
   <main class="flex-1 min-h-0 overflow-y-auto flex flex-col p-6 gap-6">
-    {#if loading}
+    {#if roundError}
+      <div class="text-sm text-red-400" data-testid="round-error">{roundError}</div>
+    {:else if loading}
       <div class="text-sm text-gray-500 animate-pulse" data-testid="loading-indicator">Loading...</div>
     {:else if photos.length === 0}
       <div class="text-sm text-gray-500">No photos in this stack.</div>

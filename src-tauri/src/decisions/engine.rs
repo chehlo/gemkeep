@@ -1107,7 +1107,10 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(round2_photo_count, 3, "Round 2 must have 3 survivors from Round 1");
+        assert_eq!(
+            round2_photo_count, 3,
+            "Round 2 must have 3 survivors from Round 1"
+        );
 
         // ── Round 2: keep 0; eliminate 1,2 ──
         record_decision(conn, lp_ids[0], round2_id, &DecisionAction::Keep).unwrap();
@@ -1136,7 +1139,10 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(round3_photo_count, 1, "Round 3 must have exactly 1 survivor from Round 2");
+        assert_eq!(
+            round3_photo_count, 1,
+            "Round 3 must have exactly 1 survivor from Round 2"
+        );
 
         // Verify the survivor is lp_ids[0]
         let survivor_id: i64 = conn
@@ -1153,7 +1159,10 @@ mod tests {
 
         // Verify the survivor's status is undecided
         let status = get_current_status(conn, lp_ids[0]);
-        assert_eq!(status, "undecided", "Round 3 survivor must be reset to undecided");
+        assert_eq!(
+            status, "undecided",
+            "Round 3 survivor must be reset to undecided"
+        );
 
         // Verify eliminated photos from Round 1 are NOT in Round 3
         let eliminated_in_r3: i64 = conn

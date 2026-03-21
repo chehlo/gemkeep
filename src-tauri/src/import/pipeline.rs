@@ -2,6 +2,7 @@ use crate::import::pairs::LogicalGroup;
 use crate::import::{exif, pairs, scanner, stacks, thumbnails};
 use crate::photos::model::{ImportStats, IndexingStatus, PhotoFormat, ScannedFile};
 use crate::photos::repository;
+use crate::photos::repository::init_round_for_stack;
 use rayon::prelude::*;
 use rusqlite::Connection;
 use serde::Serialize;
@@ -339,6 +340,15 @@ fn run_pipeline_inner(
         stats.skipped_existing,
         stats.errors
     );
+
+    // Create round 1 for each stack so the decision engine is ready immediately.
+    for stack_id in stack_id_map.iter().flatten() {
+        if let Err(e) = init_round_for_stack(conn, config.project_id, *stack_id) {
+            let msg = format!("pipeline: create round for stack {}: {}", stack_id, e);
+            tracing::warn!("{}", msg);
+            log_error(&mut stats, msg);
+        }
+    }
 
     // After STEP 7 (DB writes complete — stacks ready to display):
     update_status(&controls.status, |s| {
@@ -683,6 +693,15 @@ pub fn restack_from_existing_photos(
 
         if let Err(e) = repository::update_logical_photo_stack(conn, *lp_id, stack_db_id) {
             let msg = format!("restack: update lp {} stack: {}", lp_id, e);
+            tracing::warn!("{}", msg);
+            log_error(&mut stats, msg);
+        }
+    }
+
+    // Create round 1 for each new stack so the decision engine is ready.
+    for stack_id in stack_id_map.iter().flatten() {
+        if let Err(e) = init_round_for_stack(conn, project_id, *stack_id) {
+            let msg = format!("restack: create round for stack {}: {}", stack_id, e);
             tracing::warn!("{}", msg);
             log_error(&mut stats, msg);
         }

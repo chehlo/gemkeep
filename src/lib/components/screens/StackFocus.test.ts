@@ -615,7 +615,7 @@ describe('StackFocus — K2: hjkl vim navigation', () => {
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [photos8],
       get_stack_decisions: [[]],
-      get_round_status: { round_id: 0, round_number: 0, state: 'open', total_photos: 0, decided: 0, kept: 0, eliminated: 0, undecided: 0, committed_at: null },
+      get_round_status: { round_id: 1, round_number: 1, state: 'open', total_photos: 0, decided: 0, kept: 0, eliminated: 0, undecided: 0, committed_at: null },
     }))
 
     render(StackFocus)
@@ -647,7 +647,7 @@ describe('StackFocus — K2: hjkl vim navigation', () => {
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [photos8],
       get_stack_decisions: [[]],
-      get_round_status: { round_id: 0, round_number: 0, state: 'open', total_photos: 0, decided: 0, kept: 0, eliminated: 0, undecided: 0, committed_at: null },
+      get_round_status: { round_id: 1, round_number: 1, state: 'open', total_photos: 0, decided: 0, kept: 0, eliminated: 0, undecided: 0, committed_at: null },
     }))
 
     render(StackFocus)
@@ -1758,7 +1758,7 @@ describe('StackFocus — list_logical_photos includes roundId after commit', () 
     const listCalls = mockInvoke.mock.calls.filter(c => c[0] === 'list_logical_photos')
     const secondCall = listCalls[listCalls.length - 1]
     expect(secondCall[1]).toHaveProperty('roundId')
-    expect(secondCall[1].roundId).toBe(2) // new round's ID
+    expect((secondCall[1] as Record<string, unknown>).roundId).toBe(2) // new round's ID
   })
 })
 
@@ -1789,6 +1789,44 @@ describe('StackFocus — list_logical_photos includes roundId on mount', () => {
     expect(listCalls.length).toBeGreaterThanOrEqual(1)
     const firstListCall = listCalls[0]
     expect(firstListCall[1]).toHaveProperty('roundId')
-    expect(firstListCall[1].roundId).toBe(5) // from EXISTING_ROUND
+    expect((firstListCall[1] as Record<string, unknown>).roundId).toBe(5) // from EXISTING_ROUND
+  })
+})
+
+// ─── Contract: round_id=0 must be treated as error (no "no round" state) ───
+
+describe('StackFocus — rejects round_id 0 (no "no round" state)', () => {
+  it('when getRoundStatus returns round_id=0, component must show error instead of empty grid', async () => {
+    // USER MANDATE: There is NO "no round" state. Import MUST create round 1.
+    // If the backend erroneously returns round_id=0, the frontend must treat
+    // this as an error condition and show an error message, NOT silently
+    // display an empty grid or call listLogicalPhotos with roundId=0.
+    const INVALID_ROUND = {
+      round_id: 0, round_number: 0, state: 'open' as const,
+      total_photos: 0, decided: 0, kept: 0, eliminated: 0, undecided: 0, committed_at: null,
+    }
+
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_round_status') return Promise.resolve(INVALID_ROUND)
+      if (cmd === 'list_logical_photos') return Promise.resolve([])
+      if (cmd === 'get_stack_decisions') return Promise.resolve([])
+      return Promise.reject(new Error(`Unmocked: ${cmd}`))
+    })
+
+    render(StackFocus)
+
+    // The component must show an error when round_id=0 (invalid state)
+    await waitFor(() => {
+      const errorEl = screen.getByTestId('round-error')
+      expect(errorEl).toBeInTheDocument()
+    })
+
+    // listLogicalPhotos must NOT have been called with roundId=0
+    const listCalls = mockInvoke.mock.calls.filter(c => c[0] === 'list_logical_photos')
+    const callsWithZeroRound = listCalls.filter(c => {
+      const args = c[1] as Record<string, unknown>
+      return args.roundId === 0
+    })
+    expect(callsWithZeroRound).toHaveLength(0)
   })
 })

@@ -938,6 +938,77 @@ failures as "pre-existing" or "known." Green means green — no exceptions.
 **This includes unhandled errors** — the `Errors` line in Vitest output must be
 absent or show 0.
 
+### Rule 21: Lifecycle invariant tests — exercise operation sequences, not just single operations
+
+**Every test on a fresh database is lying to you.** A single import, a single merge,
+a single restack — each works fine in isolation. The bugs live in the seams between
+operations that real users perform in sequence.
+
+**Why this matters:** The round-photo bug escaped 390+ passing tests because every test
+ran one operation on a fresh DB. No test ever ran import → merge → undo → restack,
+which is what users do. SQLite reused deleted row IDs, orphaned rounds matched new
+stacks, and photos disappeared from the UI — all invisible to single-operation tests.
+
+**The pattern: define an invariant, assert it after every mutation.**
+
+An invariant is a property that must hold at ALL times, regardless of what operations
+were performed. It doesn't test a specific operation — it tests the contract between
+the system and the user.
+
+```rust
+// The invariant: photos visible through the round == photos in the stack
+fn assert_round_photo_invariant(conn: &Connection, project_id: i64) {
+    for (stack_id, lp_count) in get_all_stacks(conn, project_id) {
+        let round_id = get_round_id_for_stack(conn, project_id, stack_id);
+        let round_photos = query_logical_photos_by_round(conn, round_id);
+        assert_eq!(round_photos.len(), lp_count,
+            "INVARIANT: stack {} has {} photos but round shows {}",
+            stack_id, lp_count, round_photos.len());
+    }
+}
+
+#[test]
+fn test_invariant_survives_full_lifecycle() {
+    // Setup
+    init_stacks();
+    assert_round_photo_invariant(conn, project_id);  // after import
+
+    merge_stacks(conn, ...);
+    assert_round_photo_invariant(conn, project_id);  // after merge
+
+    undo_last_merge(conn, ...);
+    assert_round_photo_invariant(conn, project_id);  // after undo
+
+    restack(conn, ...);
+    assert_round_photo_invariant(conn, project_id);  // after restack
+}
+```
+
+**Key properties of a good invariant test:**
+1. **The invariant is a user-visible contract** — not an implementation detail.
+   "I see the photos in my stack" — not "round_photos table has N rows."
+2. **Assert after EVERY mutation** — not just at the end. The first failure
+   pinpoints which operation broke the invariant.
+3. **Exercise the realistic sequence** — import → decisions → merge → undo →
+   restack → more decisions. This is what users do.
+4. **The test doesn't know about specific bugs** — it catches ANY bug that
+   violates the invariant, including bugs that don't exist yet.
+
+**Invariants to consider for new features:**
+- Navigation: after any sequence of screen transitions, `back()` returns to
+  the correct parent screen
+- Decisions: `current_status` derived from decisions log matches what the UI shows
+- Stacks: every logical_photo belongs to exactly one active stack
+- Thumbnails: every displayed photo has a loadable thumbnail path
+- Data integrity: no orphaned foreign keys after any operation sequence
+
+**When to write lifecycle invariant tests:**
+- When a feature touches data that persists across operations (DB state, file system)
+- When multiple code paths modify the same data (import creates stacks, merge creates
+  stacks, restack creates stacks — all must maintain the same invariant)
+- When undo/redo is involved — the forward and reverse paths must both preserve invariants
+- After discovering a bug that single-operation tests missed
+
 ---
 
 ## Section 5: Test Infrastructure

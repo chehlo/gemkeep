@@ -3,49 +3,12 @@ use crate::import::pipeline;
 use crate::photos::model::{IndexingStatus, LogicalPhotoSummary, SourceFolderRow, StackSummary};
 use crate::photos::repository;
 use crate::projects::manager;
-use crate::projects::model::Project;
 use crate::state::AppState;
 use rusqlite::Connection;
 use std::sync::atomic::Ordering;
-use std::sync::MutexGuard;
 use tauri::{Manager, State};
 
-// ── Lock helpers ──────────────────────────────────────────────────────────────
-
-type ProjectGuards<'s> = (
-    MutexGuard<'s, Option<Connection>>,
-    MutexGuard<'s, Option<Project>>,
-);
-
-/// Acquire `db` and `active_project` locks in the correct order, verify that
-/// the caller-supplied `slug` matches the open project, and return guards that
-/// keep both locks alive for the duration of the caller's scope.
-///
-/// Callers obtain `&Connection` via `db_guard.as_ref().unwrap()` and
-/// `&Project` via `project_guard.as_ref().unwrap()`.
-fn with_open_project<'s>(state: &'s AppState, slug: &str) -> Result<ProjectGuards<'s>, String> {
-    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
-    if db_guard.is_none() {
-        return Err("No project open".to_string());
-    }
-
-    let project_guard = state
-        .active_project
-        .lock()
-        .map_err(|_| "lock poisoned".to_string())?;
-    let project = project_guard
-        .as_ref()
-        .ok_or_else(|| "No project open".to_string())?;
-
-    if project.slug != slug {
-        return Err(format!(
-            "Slug mismatch: expected {}, got {}",
-            project.slug, slug
-        ));
-    }
-
-    Ok((db_guard, project_guard))
-}
+use super::with_open_project;
 
 // ── Asset scope expansion ────────────────────────────────────────────────────
 
@@ -139,7 +102,8 @@ pub fn remove_source_folder(
 ) -> Result<(), String> {
     // Block while indexing
     {
-        let status = state
+        let ctx = state.get_or_create_context(&slug);
+        let status = ctx
             .indexing_status
             .lock()
             .map_err(|_| "lock poisoned".to_string())?;
@@ -191,16 +155,18 @@ pub fn list_source_folders(
 
 // ── Indexing ──────────────────────────────────────────────────────────────────
 
-/// Pre-pipeline setup for indexing: guards, config collection, state reset.
-/// Extracted from start_indexing so it can be tested without AppHandle.
-/// Returns (project_id, project_dir, folder_paths, burst_gap_secs).
-pub fn prepare_indexing(
-    state: &AppState,
-    slug: &str,
-) -> Result<(i64, std::path::PathBuf, Vec<std::path::PathBuf>, u64), String> {
+#[tauri::command]
+pub fn start_indexing(
+    slug: String,
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    // Get per-project context
+    let ctx = state.get_or_create_context(&slug);
+
     // Guard: already running?
     {
-        let status = state
+        let status = ctx
             .indexing_status
             .lock()
             .map_err(|_| "lock poisoned".to_string())?;
@@ -211,7 +177,7 @@ pub fn prepare_indexing(
 
     // Collect everything needed for the background thread while locks are held.
     let (project_id, project_dir, folder_paths, burst_gap_secs) = {
-        let (db_guard, project_guard) = with_open_project(state, slug)?;
+        let (db_guard, project_guard) = with_open_project(&state, &slug)?;
         let conn = db_guard.as_ref().unwrap();
         let project = project_guard.as_ref().unwrap();
 
@@ -229,18 +195,26 @@ pub fn prepare_indexing(
 
         let config = manager::read_config(&state.gemkeep_home).unwrap_or_default();
         let burst_gap_secs = config.burst_gap_secs;
-        let project_dir = manager::project_dir(&state.gemkeep_home, slug);
+        let project_dir = manager::project_dir(&state.gemkeep_home, &slug);
         let project_id = project.id;
 
         (project_id, project_dir, folder_paths, burst_gap_secs)
     };
 
+    // Clear stale thumbnail cache so re-index starts fresh
+    let thumb_dir = project_dir.join("cache").join("thumbnails");
+    if thumb_dir.exists() {
+        if let Err(e) = std::fs::remove_dir_all(&thumb_dir) {
+            tracing::warn!("start_indexing: cannot clear thumbnail cache: {}", e);
+        }
+    }
+
     // Reset cancel and pause flags, then mark as running
-    state.cancel_indexing.store(false, Ordering::SeqCst);
-    state.pause_indexing.store(false, Ordering::SeqCst);
-    state.thumbnails_done_counter.store(0, Ordering::SeqCst);
+    ctx.cancel_indexing.store(false, Ordering::SeqCst);
+    ctx.pause_indexing.store(false, Ordering::SeqCst);
+    ctx.thumbnails_done_counter.store(0, Ordering::SeqCst);
     {
-        let mut status = state
+        let mut status = ctx
             .indexing_status
             .lock()
             .map_err(|_| "lock poisoned".to_string())?;
@@ -258,17 +232,6 @@ pub fn prepare_indexing(
         };
     }
 
-    Ok((project_id, project_dir, folder_paths, burst_gap_secs))
-}
-
-#[tauri::command]
-pub fn start_indexing(
-    slug: String,
-    state: State<'_, AppState>,
-    app_handle: tauri::AppHandle,
-) -> Result<(), String> {
-    let (project_id, project_dir, folder_paths, burst_gap_secs) = prepare_indexing(&state, &slug)?;
-
     // Log start
     manager::append_operation_log(
         &state.gemkeep_home,
@@ -281,10 +244,10 @@ pub fn start_indexing(
     );
 
     // Clone Arcs for the background thread — no reference to AppState or State<> crosses the boundary
-    let status_arc = std::sync::Arc::clone(&state.indexing_status);
-    let cancel_arc = std::sync::Arc::clone(&state.cancel_indexing);
-    let pause_arc = std::sync::Arc::clone(&state.pause_indexing);
-    let done_counter = std::sync::Arc::clone(&state.thumbnails_done_counter);
+    let status_arc = std::sync::Arc::clone(&ctx.indexing_status);
+    let cancel_arc = std::sync::Arc::clone(&ctx.cancel_indexing);
+    let pause_arc = std::sync::Arc::clone(&ctx.pause_indexing);
+    let done_counter = std::sync::Arc::clone(&ctx.thumbnails_done_counter);
     let gemkeep_home = state.gemkeep_home.clone();
     let app_handle = app_handle.clone();
 
@@ -354,41 +317,45 @@ pub fn start_indexing(
 }
 
 #[tauri::command]
-pub fn cancel_indexing(state: State<'_, AppState>) -> Result<(), String> {
-    state.cancel_indexing.store(true, Ordering::SeqCst);
+pub fn cancel_indexing(slug: String, state: State<'_, AppState>) -> Result<(), String> {
+    let ctx = state.get_or_create_context(&slug);
+    ctx.cancel_indexing.store(true, Ordering::SeqCst);
     // Also clear pause so the thread can see the cancel signal
-    state.pause_indexing.store(false, Ordering::SeqCst);
-    tracing::info!("cancel_indexing: signal sent");
+    ctx.pause_indexing.store(false, Ordering::SeqCst);
+    tracing::info!("cancel_indexing: slug={} signal sent", slug);
     Ok(())
 }
 
 #[tauri::command]
-pub fn pause_indexing(state: State<'_, AppState>) -> Result<(), String> {
-    state.pause_indexing.store(true, Ordering::SeqCst);
-    if let Ok(mut s) = state.indexing_status.lock() {
+pub fn pause_indexing(slug: String, state: State<'_, AppState>) -> Result<(), String> {
+    let ctx = state.get_or_create_context(&slug);
+    ctx.pause_indexing.store(true, Ordering::SeqCst);
+    if let Ok(mut s) = ctx.indexing_status.lock() {
         s.paused = true;
     }
-    tracing::info!("pause_indexing: signal sent");
+    tracing::info!("pause_indexing: slug={} signal sent", slug);
     Ok(())
 }
 
 #[tauri::command]
-pub fn resume_indexing(state: State<'_, AppState>) -> Result<(), String> {
-    state.pause_indexing.store(false, Ordering::SeqCst);
-    if let Ok(mut s) = state.indexing_status.lock() {
+pub fn resume_indexing(slug: String, state: State<'_, AppState>) -> Result<(), String> {
+    let ctx = state.get_or_create_context(&slug);
+    ctx.pause_indexing.store(false, Ordering::SeqCst);
+    if let Ok(mut s) = ctx.indexing_status.lock() {
         s.paused = false;
     }
-    tracing::info!("resume_indexing: signal sent");
+    tracing::info!("resume_indexing: slug={} signal sent", slug);
     Ok(())
 }
 
 #[tauri::command]
-pub fn get_indexing_status(state: State<'_, AppState>) -> Result<IndexingStatus, String> {
-    let status_guard = state
+pub fn get_indexing_status(slug: String, state: State<'_, AppState>) -> Result<IndexingStatus, String> {
+    let ctx = state.get_or_create_context(&slug);
+    let status_guard = ctx
         .indexing_status
         .lock()
         .map_err(|_| "lock poisoned".to_string())?;
-    let done = state.thumbnails_done_counter.load(Ordering::Relaxed);
+    let done = ctx.thumbnails_done_counter.load(Ordering::Relaxed);
     let mut status = status_guard.clone();
     status.thumbnails_done = done;
     Ok(status)
@@ -424,9 +391,12 @@ pub fn resume_thumbnails(
     state: State<'_, AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
+    // Get per-project context
+    let ctx = state.get_or_create_context(&slug);
+
     // Guard: already running?
     {
-        let status = state
+        let status = ctx
             .indexing_status
             .lock()
             .map_err(|_| "lock poisoned".to_string())?;
@@ -454,7 +424,7 @@ pub fn resume_thumbnails(
 
         // Mark as running
         {
-            let mut s = state
+            let mut s = ctx
                 .indexing_status
                 .lock()
                 .map_err(|_| "lock poisoned".to_string())?;
@@ -462,8 +432,7 @@ pub fn resume_thumbnails(
             s.thumbnails_total = total_lp_count;
             s.thumbnails_done = 0;
         }
-        state
-            .thumbnails_done_counter
+        ctx.thumbnails_done_counter
             .store(existing_count, Ordering::SeqCst);
 
         (targets, cache_dir)
@@ -471,51 +440,21 @@ pub fn resume_thumbnails(
     std::fs::create_dir_all(&cache_dir).ok();
 
     // Clone Arcs for the background thread
-    let status_arc = std::sync::Arc::clone(&state.indexing_status);
-    let cancel_arc = std::sync::Arc::clone(&state.cancel_indexing);
-    let done_counter = std::sync::Arc::clone(&state.thumbnails_done_counter);
+    let status_arc = std::sync::Arc::clone(&ctx.indexing_status);
+    let cancel_arc = std::sync::Arc::clone(&ctx.cancel_indexing);
+    let done_counter = std::sync::Arc::clone(&ctx.thumbnails_done_counter);
     let app_handle = app_handle.clone();
 
     std::thread::spawn(move || {
-        use crate::import::{pipeline::ThumbnailReadyPayload, thumbnails};
-        use rayon::prelude::*;
-        use tauri::Emitter;
-
         let n_threads = crate::import::util::capped_num_threads();
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(n_threads)
-            .build()
-            .unwrap_or_else(|_| {
-                rayon::ThreadPoolBuilder::new()
-                    .num_threads(1)
-                    .build()
-                    .unwrap()
-            });
-
-        pool.install(|| {
-            lp_targets
-                .par_iter()
-                .for_each(|(lp_id, path, format, orientation)| {
-                    if !cancel_arc.load(Ordering::SeqCst)
-                        && thumbnails::generate_thumbnail(
-                            path,
-                            format,
-                            *lp_id,
-                            &cache_dir,
-                            *orientation,
-                        )
-                        .is_some()
-                    {
-                        done_counter.fetch_add(1, Ordering::Relaxed);
-                        let _ = app_handle.emit(
-                            "thumbnail-ready",
-                            ThumbnailReadyPayload {
-                                logical_photo_id: *lp_id,
-                            },
-                        );
-                    }
-                });
-        });
+        crate::import::pipeline::run_thumbnail_pool(
+            &lp_targets,
+            &cache_dir,
+            n_threads,
+            &cancel_arc,
+            &done_counter,
+            Some(&app_handle),
+        );
 
         if let Ok(mut s) = status_arc.lock() {
             s.thumbnails_running = false;
@@ -618,6 +557,7 @@ pub fn list_stacks(slug: String, state: State<'_, AppState>) -> Result<Vec<Stack
 pub fn list_logical_photos(
     slug: String,
     stack_id: i64,
+    round_id: Option<i64>,
     state: State<'_, AppState>,
 ) -> Result<Vec<LogicalPhotoSummary>, String> {
     let (db_guard, _project_guard) = with_open_project(&state, &slug)?;
@@ -627,9 +567,12 @@ pub fn list_logical_photos(
         .join("cache")
         .join("thumbnails");
 
-    // Compose pure DB query with filesystem enrichment (S3 split)
-    let mut summaries =
-        repository::query_logical_photos_by_stack(conn, stack_id).map_err(|e| e.to_string())?;
+    // If round_id is provided, query only photos in that round; otherwise all in stack
+    let mut summaries = match round_id {
+        Some(rid) => repository::query_logical_photos_by_round(conn, rid),
+        None => repository::query_logical_photos_by_stack(conn, stack_id),
+    }
+    .map_err(|e| e.to_string())?;
     repository::enrich_with_thumbnails(&mut summaries, &cache_dir);
     Ok(summaries)
 }

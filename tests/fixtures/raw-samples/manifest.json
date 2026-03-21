@@ -1,0 +1,873 @@
+{
+  "$schema_version": 2,
+  "ground_truth_tool": "exiftool 13.52 + rawler (normalize-exiftool.py)",
+  "fixtures": [
+    {
+      "id": "r1",
+      "file": "RAW_CANON_EOS7D.CR2",
+      "category": "real-raw",
+      "source": "https://raw.pixls.us/data/Canon/EOS%207D/RAW_CANON_EOS7D.CR2",
+      "gitignored": true,
+      "dimensions_covered": [
+        "format:cr2",
+        "orientation:1",
+        "time:valid",
+        "meta:all",
+        "thumb:standard",
+        "dims:landscape_3_2",
+        "rational:normal",
+        "integrity:valid",
+        "pairing:raw_only"
+      ],
+      "test_layers": [
+        "exif",
+        "thumbnail",
+        "pipeline"
+      ],
+      "expected": {
+        "make": "Canon",
+        "camera_model": "Canon EOS 7D",
+        "orientation": 1,
+        "capture_time": "2009:10:09 14:18:45",
+        "capture_time_present": true,
+        "aperture": 2.8,
+        "iso": 100,
+        "focal_length": 200.0,
+        "shutter_speed": "1/320",
+        "exposure_comp": 0.0,
+        "image_width": 5184,
+        "image_height": 3456,
+        "thumbnail_expected_width": 256,
+        "thumbnail_expected_height": 256,
+        "display_orientation": "landscape",
+        "file_valid": true,
+        "exif_parseable": true,
+        "lens": "EF70-200mm f/2.8L IS USM"
+      }
+    },
+    {
+      "id": "r2",
+      "file": "RAW_SONY_RX10.ARW",
+      "category": "real-raw",
+      "source": "https://raw.pixls.us/data/Sony/DSC-RX10/RAW_SONY_RX10.ARW",
+      "gitignored": true,
+      "dimensions_covered": [
+        "format:arw",
+        "orientation:1",
+        "time:valid",
+        "meta:all",
+        "thumb:standard",
+        "dims:landscape_3_2",
+        "rational:normal",
+        "integrity:valid",
+        "pairing:raw_only"
+      ],
+      "test_layers": [
+        "exif",
+        "thumbnail",
+        "pipeline"
+      ],
+      "expected": {
+        "make": "SONY",
+        "camera_model": "SONY DSC-RX10",
+        "orientation": 1,
+        "capture_time": "2015:12:20 14:36:22",
+        "capture_time_present": true,
+        "aperture": 3.5,
+        "iso": 125,
+        "focal_length": 18.98,
+        "shutter_speed": "1/60",
+        "exposure_comp": 0.0,
+        "image_width": 5504,
+        "image_height": 3672,
+        "thumbnail_expected_width": 256,
+        "thumbnail_expected_height": 256,
+        "display_orientation": "landscape",
+        "file_valid": true,
+        "exif_parseable": true,
+        "lens": null
+      }
+    },
+    {
+      "id": "s1",
+      "file": "orient_1_landscape.jpg",
+      "category": "synthetic-jpeg",
+      "source": "convert -size 120x80 xc:gray; exiftool -Orientation#=1 -Make=SyntheticCam -Model='TestCam L1' -DateTimeOriginal='2024:01:15 10:30:00'",
+      "dimensions_covered": [
+        "orientation:1",
+        "format:jpg",
+        "dims:landscape_3_2",
+        "meta:partial",
+        "thumb:none",
+        "integrity:valid",
+        "pairing:jpeg_only"
+      ],
+      "test_layers": [
+        "exif",
+        "thumbnail"
+      ],
+      "expected": {
+        "make": "SyntheticCam",
+        "camera_model": "SyntheticCam TestCam L1",
+        "orientation": 1,
+        "capture_time": "2024:01:15 10:30:00",
+        "capture_time_present": true,
+        "aperture": null,
+        "iso": null,
+        "focal_length": null,
+        "shutter_speed": null,
+        "exposure_comp": null,
+        "image_width": 120,
+        "image_height": 80,
+        "thumbnail_expected_width": 256,
+        "thumbnail_expected_height": 256,
+        "display_orientation": "landscape",
+        "file_valid": true,
+        "exif_parseable": true
+      }
+    },
+    {
+      "id": "s2",
+      "file": "orient_3_landscape.jpg",
+      "category": "synthetic-jpeg",
+      "source": "convert -size 120x80 xc:gray; exiftool -Orientation#=3 -Make=SyntheticCam -Model='TestCam R180' -DateTimeOriginal='2024:01:15 10:30:05'",
+      "dimensions_covered": [
+        "orientation:3",
+        "format:jpg",
+        "dims:landscape_3_2",
+        "meta:partial",
+        "thumb:none",
+        "integrity:valid",
+        "pairing:jpeg_only"
+      ],
+      "test_layers": [
+        "exif",
+        "thumbnail"
+      ],
+      "expected": {
+        "make": "SyntheticCam",
+        "camera_model": "SyntheticCam TestCam R180",
+        "orientation": 3,
+        "capture_time": "2024:01:15 10:30:05",
+        "capture_time_present": true,
+        "aperture": null,
+        "iso": null,
+        "focal_length": null,
+        "shutter_speed": null,
+        "exposure_comp": null,
+        "image_width": 120,
+        "image_height": 80,
+        "thumbnail_expected_width": 256,
+        "thumbnail_expected_height": 256,
+        "display_orientation": "landscape",
+        "file_valid": true,
+        "exif_parseable": true
+      }
+    },
+    {
+      "id": "s3",
+      "file": "orient_6_landscape.jpg",
+      "category": "synthetic-jpeg",
+      "source": "convert -size 120x80 xc:gray; exiftool -Orientation#=6 -Make=SyntheticCam -Model='TestCam P6' -DateTimeOriginal='2024:01:15 10:30:10'",
+      "dimensions_covered": [
+        "orientation:6",
+        "format:jpg",
+        "dims:portrait_via_orientation",
+        "meta:partial",
+        "thumb:none",
+        "integrity:valid",
+        "pairing:jpeg_only"
+      ],
+      "test_layers": [
+        "exif",
+        "thumbnail"
+      ],
+      "expected": {
+        "make": "SyntheticCam",
+        "camera_model": "SyntheticCam TestCam P6",
+        "orientation": 6,
+        "capture_time": "2024:01:15 10:30:10",
+        "capture_time_present": true,
+        "aperture": null,
+        "iso": null,
+        "focal_length": null,
+        "shutter_speed": null,
+        "exposure_comp": null,
+        "image_width": 120,
+        "image_height": 80,
+        "thumbnail_expected_width": 256,
+        "thumbnail_expected_height": 256,
+        "display_orientation": "portrait",
+        "file_valid": true,
+        "exif_parseable": true
+      }
+    },
+    {
+      "id": "s4",
+      "file": "orient_8_landscape.jpg",
+      "category": "synthetic-jpeg",
+      "source": "convert -size 120x80 xc:gray; exiftool -Orientation#=8 -Make=SyntheticCam -Model='TestCam P8' -DateTimeOriginal='2024:01:15 10:30:15'",
+      "dimensions_covered": [
+        "orientation:8",
+        "format:jpg",
+        "dims:landscape_3_2",
+        "meta:partial",
+        "thumb:none",
+        "integrity:valid",
+        "pairing:jpeg_only"
+      ],
+      "test_layers": [
+        "exif",
+        "thumbnail"
+      ],
+      "expected": {
+        "make": "SyntheticCam",
+        "camera_model": "SyntheticCam TestCam P8",
+        "orientation": 8,
+        "capture_time": "2024:01:15 10:30:15",
+        "capture_time_present": true,
+        "aperture": null,
+        "iso": null,
+        "focal_length": null,
+        "shutter_speed": null,
+        "exposure_comp": null,
+        "image_width": 120,
+        "image_height": 80,
+        "thumbnail_expected_width": 256,
+        "thumbnail_expected_height": 256,
+        "display_orientation": "portrait",
+        "file_valid": true,
+        "exif_parseable": true
+      }
+    },
+    {
+      "id": "s5",
+      "file": "no_exif.jpg",
+      "category": "synthetic-jpeg",
+      "source": "convert -size 100x100 xc:gray; exiftool -all=",
+      "dimensions_covered": [
+        "orientation:null",
+        "format:jpg",
+        "dims:square",
+        "meta:none",
+        "time:missing",
+        "thumb:none",
+        "integrity:valid",
+        "pairing:jpeg_only"
+      ],
+      "test_layers": [
+        "exif",
+        "thumbnail"
+      ],
+      "expected": {
+        "make": null,
+        "camera_model": null,
+        "orientation": null,
+        "capture_time": null,
+        "capture_time_present": false,
+        "aperture": null,
+        "iso": null,
+        "focal_length": null,
+        "shutter_speed": null,
+        "exposure_comp": null,
+        "image_width": 100,
+        "image_height": 100,
+        "thumbnail_expected_width": 256,
+        "thumbnail_expected_height": 256,
+        "display_orientation": "square",
+        "file_valid": true,
+        "exif_parseable": false
+      }
+    },
+    {
+      "id": "s6",
+      "file": "square.jpg",
+      "category": "synthetic-jpeg",
+      "source": "convert -size 100x100 xc:gray; exiftool -Orientation#=1 -Make=SyntheticCam -Model='TestCam SQ' -DateTimeOriginal='2024:01:15 11:00:00'",
+      "dimensions_covered": [
+        "orientation:1",
+        "format:jpg",
+        "dims:square",
+        "meta:partial",
+        "thumb:none",
+        "integrity:valid",
+        "pairing:jpeg_only"
+      ],
+      "test_layers": [
+        "exif",
+        "thumbnail",
+        "e2e"
+      ],
+      "expected": {
+        "make": "SyntheticCam",
+        "camera_model": "SyntheticCam TestCam SQ",
+        "orientation": 1,
+        "capture_time": "2024:01:15 11:00:00",
+        "capture_time_present": true,
+        "aperture": null,
+        "iso": null,
+        "focal_length": null,
+        "shutter_speed": null,
+        "exposure_comp": null,
+        "image_width": 100,
+        "image_height": 100,
+        "thumbnail_expected_width": 256,
+        "thumbnail_expected_height": 256,
+        "display_orientation": "square",
+        "file_valid": true,
+        "exif_parseable": true
+      }
+    },
+    {
+      "id": "s7",
+      "file": "panoramic.jpg",
+      "category": "synthetic-jpeg",
+      "source": "convert -size 300x60 xc:gray; exiftool -Orientation#=1 -Make=SyntheticCam -Model='TestCam Pano' -DateTimeOriginal='2024:01:15 11:05:00'",
+      "dimensions_covered": [
+        "orientation:1",
+        "format:jpg",
+        "dims:panoramic",
+        "meta:partial",
+        "thumb:none",
+        "integrity:valid",
+        "pairing:jpeg_only"
+      ],
+      "test_layers": [
+        "exif",
+        "thumbnail",
+        "e2e"
+      ],
+      "expected": {
+        "make": "SyntheticCam",
+        "camera_model": "SyntheticCam TestCam Pano",
+        "orientation": 1,
+        "capture_time": "2024:01:15 11:05:00",
+        "capture_time_present": true,
+        "aperture": null,
+        "iso": null,
+        "focal_length": null,
+        "shutter_speed": null,
+        "exposure_comp": null,
+        "image_width": 300,
+        "image_height": 60,
+        "thumbnail_expected_width": 256,
+        "thumbnail_expected_height": 256,
+        "display_orientation": "panoramic",
+        "file_valid": true,
+        "exif_parseable": true
+      }
+    },
+    {
+      "id": "s8",
+      "file": "all_metadata.jpg",
+      "category": "synthetic-jpeg",
+      "source": "convert -size 120x80 xc:gray; exiftool -Orientation#=1 -Make=Canon -Model='TestCam Full' -DateTimeOriginal='2024:01:15 12:00:00' -FNumber=2.8 -ExposureTime=1/125 -ISO=400 -FocalLength=50 -ExposureCompensation=+1.0 -LensModel='EF 50mm f/1.8 STM'",
+      "dimensions_covered": [
+        "orientation:1",
+        "format:jpg",
+        "dims:landscape_3_2",
+        "meta:all",
+        "time:valid",
+        "rational:normal",
+        "thumb:none",
+        "integrity:valid",
+        "pairing:jpeg_only"
+      ],
+      "test_layers": [
+        "exif",
+        "thumbnail",
+        "pipeline"
+      ],
+      "expected": {
+        "make": "Canon",
+        "camera_model": "Canon TestCam Full",
+        "orientation": 1,
+        "capture_time": "2024:01:15 12:00:00",
+        "capture_time_present": true,
+        "aperture": 2.8,
+        "iso": 400,
+        "focal_length": 50.0,
+        "shutter_speed": "1/125",
+        "exposure_comp": 1.0,
+        "lens": "EF 50mm f/1.8 STM",
+        "image_width": 120,
+        "image_height": 80,
+        "thumbnail_expected_width": 256,
+        "thumbnail_expected_height": 256,
+        "display_orientation": "landscape",
+        "file_valid": true,
+        "exif_parseable": true
+      }
+    },
+    {
+      "id": "s9",
+      "file": "zero_denom_fnumber.jpg",
+      "category": "synthetic-jpeg",
+      "source": "convert -size 120x80 xc:gray; exiftool -Orientation#=1 -Make=SyntheticCam -Model='TestCam ZD' -DateTimeOriginal='2024:01:15 12:30:00' -FNumber=0/0",
+      "dimensions_covered": [
+        "orientation:1",
+        "format:jpg",
+        "rational:zero_denom",
+        "meta:partial",
+        "thumb:none",
+        "integrity:valid",
+        "pairing:jpeg_only"
+      ],
+      "test_layers": [
+        "exif"
+      ],
+      "expected": {
+        "make": "SyntheticCam",
+        "camera_model": "SyntheticCam TestCam ZD",
+        "orientation": 1,
+        "capture_time": "2024:01:15 12:30:00",
+        "capture_time_present": true,
+        "aperture": null,
+        "iso": null,
+        "focal_length": null,
+        "shutter_speed": null,
+        "exposure_comp": null,
+        "image_width": 120,
+        "image_height": 80,
+        "thumbnail_expected_width": 256,
+        "thumbnail_expected_height": 256,
+        "display_orientation": "landscape",
+        "file_valid": true,
+        "exif_parseable": true
+      }
+    },
+    {
+      "id": "s10",
+      "file": "jpeg_ext.jpeg",
+      "category": "synthetic-jpeg",
+      "source": "convert -size 80x80 xc:gray; exiftool -Orientation#=1 -Make=SyntheticCam -Model='TestCam JE' -DateTimeOriginal='2024:01:15 13:00:00'",
+      "dimensions_covered": [
+        "orientation:1",
+        "format:jpeg_ext",
+        "dims:square",
+        "meta:partial",
+        "thumb:none",
+        "integrity:valid",
+        "pairing:jpeg_only"
+      ],
+      "test_layers": [
+        "exif",
+        "thumbnail"
+      ],
+      "expected": {
+        "make": "SyntheticCam",
+        "camera_model": "SyntheticCam TestCam JE",
+        "orientation": 1,
+        "capture_time": "2024:01:15 13:00:00",
+        "capture_time_present": true,
+        "aperture": null,
+        "iso": null,
+        "focal_length": null,
+        "shutter_speed": null,
+        "exposure_comp": null,
+        "image_width": 80,
+        "image_height": 80,
+        "thumbnail_expected_width": 256,
+        "thumbnail_expected_height": 256,
+        "display_orientation": "square",
+        "file_valid": true,
+        "exif_parseable": true
+      }
+    },
+    {
+      "id": "s11",
+      "file": "pair_IMG_0001.jpg",
+      "category": "synthetic-jpeg",
+      "source": "convert -size 80x60 xc:gray; exiftool -Orientation#=1 -Make=Canon -Model='TestCam Pair' -DateTimeOriginal='2024:01:15 14:00:00'",
+      "dimensions_covered": [
+        "orientation:1",
+        "format:jpg",
+        "pairing:jpeg_of_pair",
+        "time:valid",
+        "meta:partial",
+        "thumb:none",
+        "integrity:valid"
+      ],
+      "test_layers": [
+        "exif",
+        "pipeline"
+      ],
+      "expected": {
+        "make": "Canon",
+        "camera_model": "Canon TestCam Pair",
+        "orientation": 1,
+        "capture_time": "2024:01:15 14:00:00",
+        "capture_time_present": true,
+        "aperture": null,
+        "iso": null,
+        "focal_length": null,
+        "shutter_speed": null,
+        "exposure_comp": null,
+        "image_width": 80,
+        "image_height": 60,
+        "thumbnail_expected_width": 256,
+        "thumbnail_expected_height": 256,
+        "display_orientation": "landscape",
+        "file_valid": true,
+        "exif_parseable": true
+      }
+    },
+    {
+      "id": "s12",
+      "file": "pair_IMG_0001.cr2",
+      "category": "synthetic-jpeg",
+      "source": "printf 'II\\x2a\\x00\\x10\\x00\\x00\\x00CR' + 90 zero bytes (minimal fake CR2 TIFF header)",
+      "dimensions_covered": [
+        "format:cr2",
+        "pairing:raw_of_pair"
+      ],
+      "test_layers": [
+        "pipeline"
+      ],
+      "expected": {
+        "make": null,
+        "camera_model": null,
+        "orientation": null,
+        "capture_time": null,
+        "capture_time_present": false,
+        "aperture": null,
+        "iso": null,
+        "focal_length": null,
+        "shutter_speed": null,
+        "exposure_comp": null,
+        "image_width": null,
+        "image_height": null,
+        "thumbnail_expected_width": null,
+        "thumbnail_expected_height": null,
+        "display_orientation": null,
+        "file_valid": false,
+        "exif_parseable": false
+      }
+    },
+    {
+      "id": "c1",
+      "file": "truncated.jpg",
+      "category": "synthetic-corrupt",
+      "source": "head -c 100 orient_1_landscape.jpg > truncated.jpg",
+      "dimensions_covered": [
+        "integrity:truncated",
+        "orientation:null"
+      ],
+      "test_layers": [
+        "exif",
+        "thumbnail"
+      ],
+      "expected": {
+        "make": null,
+        "camera_model": null,
+        "orientation": null,
+        "capture_time": null,
+        "capture_time_present": false,
+        "aperture": null,
+        "iso": null,
+        "focal_length": null,
+        "shutter_speed": null,
+        "exposure_comp": null,
+        "image_width": null,
+        "image_height": null,
+        "thumbnail_expected_width": null,
+        "thumbnail_expected_height": null,
+        "display_orientation": null,
+        "file_valid": false,
+        "exif_parseable": false
+      }
+    },
+    {
+      "id": "c2",
+      "file": "zero_byte.jpg",
+      "category": "synthetic-corrupt",
+      "source": "truncate -s 0 zero_byte.jpg",
+      "dimensions_covered": [
+        "integrity:zero_byte",
+        "orientation:null",
+        "meta:none",
+        "time:missing"
+      ],
+      "test_layers": [
+        "exif",
+        "thumbnail"
+      ],
+      "expected": {
+        "make": null,
+        "camera_model": null,
+        "orientation": null,
+        "capture_time": null,
+        "capture_time_present": false,
+        "aperture": null,
+        "iso": null,
+        "focal_length": null,
+        "shutter_speed": null,
+        "exposure_comp": null,
+        "image_width": null,
+        "image_height": null,
+        "thumbnail_expected_width": null,
+        "thumbnail_expected_height": null,
+        "display_orientation": null,
+        "file_valid": false,
+        "exif_parseable": false
+      }
+    },
+    {
+      "id": "c3",
+      "file": "not_an_image.jpg",
+      "category": "synthetic-corrupt",
+      "source": "echo 'This is not an image file' > not_an_image.jpg",
+      "dimensions_covered": [
+        "integrity:non_image",
+        "orientation:null",
+        "meta:none",
+        "time:missing"
+      ],
+      "test_layers": [
+        "exif",
+        "thumbnail"
+      ],
+      "expected": {
+        "make": null,
+        "camera_model": null,
+        "orientation": null,
+        "capture_time": null,
+        "capture_time_present": false,
+        "aperture": null,
+        "iso": null,
+        "focal_length": null,
+        "shutter_speed": null,
+        "exposure_comp": null,
+        "image_width": null,
+        "image_height": null,
+        "thumbnail_expected_width": null,
+        "thumbnail_expected_height": null,
+        "display_orientation": null,
+        "file_valid": false,
+        "exif_parseable": false
+      }
+    },
+    {
+      "id": "c4",
+      "file": "truncated.cr2",
+      "category": "synthetic-corrupt",
+      "source": "head -c 100 RAW_CANON_EOS7D.CR2 > truncated.cr2",
+      "dimensions_covered": [
+        "integrity:truncated_raw",
+        "orientation:null",
+        "meta:none",
+        "time:missing"
+      ],
+      "test_layers": [
+        "exif",
+        "thumbnail"
+      ],
+      "expected": {
+        "make": null,
+        "camera_model": null,
+        "orientation": null,
+        "capture_time": null,
+        "capture_time_present": false,
+        "aperture": null,
+        "iso": null,
+        "focal_length": null,
+        "shutter_speed": null,
+        "exposure_comp": null,
+        "image_width": null,
+        "image_height": null,
+        "thumbnail_expected_width": null,
+        "thumbnail_expected_height": null,
+        "display_orientation": null,
+        "file_valid": false,
+        "exif_parseable": false
+      }
+    },
+    {
+      "id": "t1",
+      "file": null,
+      "category": "timing-only",
+      "source": "manifest-only, no image file",
+      "dimensions_covered": [
+        "burst:fast_burst"
+      ],
+      "test_layers": [
+        "pipeline"
+      ],
+      "expected": {
+        "capture_time": "2024:01:15 10:00:00",
+        "capture_time_present": true
+      }
+    },
+    {
+      "id": "t2",
+      "file": null,
+      "category": "timing-only",
+      "source": "manifest-only, no image file (1s gap from t1)",
+      "dimensions_covered": [
+        "burst:fast_burst"
+      ],
+      "test_layers": [
+        "pipeline"
+      ],
+      "expected": {
+        "capture_time": "2024:01:15 10:00:01",
+        "capture_time_present": true
+      }
+    },
+    {
+      "id": "t3",
+      "file": null,
+      "category": "timing-only",
+      "source": "manifest-only, no image file (3s gap from t2 = boundary)",
+      "dimensions_covered": [
+        "burst:boundary"
+      ],
+      "test_layers": [
+        "pipeline"
+      ],
+      "expected": {
+        "capture_time": "2024:01:15 10:00:04",
+        "capture_time_present": true
+      }
+    },
+    {
+      "id": "t4",
+      "file": null,
+      "category": "timing-only",
+      "source": "manifest-only, no image file (5min gap from t3 = separate)",
+      "dimensions_covered": [
+        "burst:separate"
+      ],
+      "test_layers": [
+        "pipeline"
+      ],
+      "expected": {
+        "capture_time": "2024:01:15 10:05:00",
+        "capture_time_present": true
+      }
+    },
+    {
+      "id": "r3",
+      "file": "RAW_NIKON_D850.NEF",
+      "category": "real-raw",
+      "source": "https://raw.pixls.us/data/Nikon/D850/Nikon-D850-14bit-lossless-compressed.NEF",
+      "gitignored": true,
+      "dimensions_covered": [
+        "format:nef",
+        "orientation:1",
+        "time:valid",
+        "meta:all",
+        "thumb:standard",
+        "integrity:valid",
+        "pairing:raw_only"
+      ],
+      "test_layers": [
+        "exif",
+        "thumbnail",
+        "pipeline"
+      ],
+      "expected": {
+        "make": "NIKON CORPORATION",
+        "camera_model": "NIKON D850",
+        "orientation": 1,
+        "capture_time": "2017:10:15 17:34:59",
+        "capture_time_present": true,
+        "aperture": 9.0,
+        "iso": 64,
+        "focal_length": 35.0,
+        "shutter_speed": "1/160",
+        "exposure_comp": 0.0,
+        "lens": "Sigma 35mm F1.4 DG HSM",
+        "image_width": 8288,
+        "image_height": 5520,
+        "thumbnail_expected_width": 256,
+        "thumbnail_expected_height": 256,
+        "display_orientation": "landscape",
+        "file_valid": true,
+        "exif_parseable": true
+      }
+    },
+    {
+      "id": "r4",
+      "file": "RAW_FUJIFILM_XT50.RAF",
+      "category": "real-raw",
+      "source": "https://raw.pixls.us/data/FUJIFILM/X-T50/DSCF0118.RAF",
+      "gitignored": true,
+      "dimensions_covered": [
+        "format:raf",
+        "orientation:1",
+        "time:valid",
+        "meta:all",
+        "thumb:standard",
+        "integrity:valid",
+        "pairing:raw_only"
+      ],
+      "test_layers": [
+        "exif",
+        "thumbnail",
+        "pipeline"
+      ],
+      "expected": {
+        "make": "FUJIFILM",
+        "camera_model": "FUJIFILM X-T50",
+        "orientation": 1,
+        "capture_time": "2024:06:26 07:27:39",
+        "capture_time_present": true,
+        "aperture": 5.0,
+        "iso": 250,
+        "focal_length": 35.0,
+        "shutter_speed": "1/640",
+        "exposure_comp": 0.0,
+        "lens": "XF35mmF1.4 R",
+        "image_width": 4416,
+        "image_height": 2944,
+        "thumbnail_expected_width": 256,
+        "thumbnail_expected_height": 256,
+        "display_orientation": "landscape",
+        "file_valid": true,
+        "exif_parseable": true
+      }
+    },
+    {
+      "id": "r5",
+      "file": "RAW_PANASONIC_GH6.RW2",
+      "category": "real-raw",
+      "source": "https://raw.pixls.us/data/Panasonic/DC-GH6/P1000116.RW2",
+      "gitignored": true,
+      "dimensions_covered": [
+        "format:rw2",
+        "orientation:1",
+        "time:valid",
+        "meta:all",
+        "thumb:standard",
+        "integrity:valid",
+        "pairing:raw_only"
+      ],
+      "test_layers": [
+        "exif",
+        "thumbnail",
+        "pipeline"
+      ],
+      "expected": {
+        "make": "Panasonic",
+        "camera_model": "Panasonic DC-GH6",
+        "orientation": 1,
+        "capture_time": "2022:03:19 03:43:16",
+        "capture_time_present": true,
+        "aperture": 11.0,
+        "iso": 800,
+        "focal_length": 64.0,
+        "shutter_speed": "1/800",
+        "exposure_comp": 0.0,
+        "lens": "Lumix G Vario 35-100mm F2.8 II",
+        "image_width": 11552,
+        "image_height": 8672,
+        "thumbnail_expected_width": 256,
+        "thumbnail_expected_height": 256,
+        "display_orientation": "landscape",
+        "file_valid": true,
+        "exif_parseable": true
+      }
+    }
+  ]
+}

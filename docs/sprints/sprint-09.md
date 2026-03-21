@@ -9,6 +9,32 @@
 
 ---
 
+## Status — Largely Complete
+
+Most Sprint 9 features were implemented during Sprint 7/8 branch work. Remaining items marked below.
+
+| Feature | Status |
+|---------|--------|
+| Side-by-side comparison view (C key) | ✅ Done |
+| Auto-fill on eliminate | ✅ Done |
+| Lock comparison layout (L key) | ✅ Done |
+| Undo last decision (Ctrl+Z / U) | ✅ Done |
+| Progress counter in StackFocus | ✅ Done |
+| Stack completion banner | ✅ Done |
+| Advance to next stack (↓) | ✅ Done |
+| Auto-advance toggle (A key) | ✅ Done |
+| StackOverview progress badges | ✅ Done (per-stack getRoundStatus) |
+| Click thumbnail → SingleView | ✅ Done |
+| F key file path overlay + clipboard | ✅ Done |
+| Decision borders (PhotoFrame) | ✅ Done |
+| scrollIntoView on arrow nav | ✅ Done |
+| decisions.ts shared utility | ✅ Done |
+| Camera params on grid cards | ❌ Not done — SQL query needs extending |
+| get_stack_progress_batch IPC | ❌ Not done — currently N+1 queries |
+| Clippy clean | ❌ ProjectContext needs Default impl |
+
+---
+
 ## What gets built
 
 ### Side-by-side comparison view

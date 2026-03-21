@@ -125,10 +125,12 @@ See `sprint-08.md` for details.
 
 ---
 
-## Sprint 9 — Comparison View & Stack Workflow
+## Sprint 9 — Comparison View & Stack Workflow (mostly done)
 **User Stories:** §6 (all: side-by-side comparison, auto-fill, lock), §5.6 (auto-advance toggle), §9.5 (status bar / progress indicator), §18 (visual stack progress)
 
 **Goal:** The user can compare two photos side by side — their primary decision-making view — and work through a stack systematically with progress feedback.
+
+**Status:** ~90% complete. Most features implemented during Sprint 7/8 work. Remaining: camera params on grid cards, batch stack progress IPC, clippy fix. See `sprint-09.md` for full status.
 
 ### What gets built
 - **Side-by-side comparison view:** Select two photos in Stack Focus (e.g., Shift+Arrow or click two thumbnails) and press `C` to enter comparison mode. Two photos displayed at equal size with camera parameters visible for both. The user studies the pair, then presses X on the weaker photo to eliminate it. This is the PRIMARY decision-making view for the hobbyist user — it is where learning happens ("why is this photo better than that one?").
@@ -145,11 +147,11 @@ See `sprint-08.md` for details.
 "I can compare two similar photos side by side, see their camera settings, eliminate the weaker one, and the next undecided photo automatically fills in. I can see my progress through each stack. I can undo a mistake. When a stack is done, I move to the next one."
 
 ### Deferred from this sprint
-- **Multi-round** → Sprint 9 (one round of keep/eliminate is the immediate need)
-- **Restore eliminated photos** → Sprint 9 (requires multi-round engine)
-- **GemStack (final curation)** → Sprint 10 (requires stacks to have survivors first)
+- **Multi-round** → Sprint 10 (one round of keep/eliminate is the immediate need)
+- **Restore eliminated photos** → Sprint 10 (requires multi-round engine)
+- **GemStack (final curation)** → Sprint 11 (requires stacks to have survivors first)
 - **Bulk keep/eliminate on multi-select** → Sprint 12 (edge case for hobbyist workflow)
-- **Synchronized zoom/pan in comparison** → Sprint 12 (useful but not core to decision-making)
+- **Synchronized zoom/pan in comparison** → Sprint 13 (useful but not core to decision-making)
 
 ### "Good enough" definition
 - Comparison view splits the window 50/50. Photos are fit-to-half-width. No synchronized zoom yet.
@@ -172,7 +174,7 @@ See `sprint-08.md` for details.
 
 ---
 
-## Sprint 9 — Multi-Round Engine & Restoration
+## Sprint 10 — Multi-Round Engine & Restoration
 **User Stories:** §8 (all: multi-round, immutable snapshots, overrides, restoration, round navigation, commit/finalize), §5.1 (show only active photos in current round), §14.1 (crash resilience for round decisions)
 
 **Goal:** The user can do multiple refinement passes on a stack and reconsider earlier decisions. Round history is immutable and navigable.
@@ -191,9 +193,9 @@ See `sprint-08.md` for details.
 "I can do Round 1 to make quick keep/eliminate decisions, then start Round 2 to narrow my keepers further. If I change my mind, I can restore an eliminated photo in a later round. I can look back at any past round to see what I decided. Each stack produces survivors through progressive refinement — ready to promote to the GemStack."
 
 ### Deferred from this sprint
-- **GemStack (final curation)** → Sprint 10 (stacks must produce survivors first; this sprint establishes the mechanism)
-- **Cross-stack refinement** → Sprint 10 (via GemStack)
-- **Structural changes audit log** → Sprint 12 (readable log is P2)
+- **GemStack (final curation)** → Sprint 11 (stacks must produce survivors first; this sprint establishes the mechanism)
+- **Cross-stack refinement** → Sprint 11 (via GemStack)
+- **Structural changes audit log** → Sprint 13 (readable log is P2)
 - **Visual timeline of selection evolution** → Future/P2
 
 ### "Good enough" definition
@@ -215,7 +217,7 @@ See `sprint-08.md` for details.
 
 ---
 
-## Sprint 10 — GemStack — Final Curation
+## Sprint 11 — GemStack — Final Curation
 **User Stories:** §7 (all: GemStack promotion, same round engine, provenance, re-promotion, badges), §9.2 (seamless switching between stacks and GemStack), §18.2 (overall project progress indicator)
 
 **Goal:** The user can promote stack survivors to a special GemStack, then refine the GemStack using the same round engine and keyboard workflow to arrive at the final gem set.
@@ -234,9 +236,9 @@ See `sprint-08.md` for details.
 "I can work through each stack, and when I'm happy with the survivors, press G to promote them to the GemStack. I can see which stacks I've promoted and which still need attention. Then I open the GemStack and do a final refinement pass using the same comparison workflow, arriving at my final gem set — the photos worth printing or sharing."
 
 ### Deferred from this sprint
-- **Export** → Sprint 11 (the gem set exists but no export mechanism yet)
-- **Tags/labels** → Sprint 11 (tagging is a post-selection organizational step)
-- **Filters in GemStack** → Sprint 12 (date range, camera model filters are polish)
+- **Export** → Sprint 12 (the gem set exists but no export mechanism yet)
+- **Tags/labels** → Sprint 12 (tagging is a post-selection organizational step)
+- **Filters in GemStack** → Sprint 13 (date range, camera model filters are polish)
 
 ### "Good enough" definition
 - GemStack is a flat grid of thumbnails with provenance labels (source stack name/number).
@@ -258,7 +260,7 @@ See `sprint-08.md` for details.
 
 ---
 
-## Sprint 11 — Export & Labels
+## Sprint 12 — Export & Labels
 **User Stories:** §12 (all: export GemStack survivors, pair-aware, JSON manifest, preserve filenames, non-destructive), §16 (all: custom tags, assign, manage, filter by tag)
 
 **Goal:** The user can tag their gems for organization and export them to a folder for printing, sharing, or import into Lightroom.
@@ -304,7 +306,7 @@ See `sprint-08.md` for details.
 
 ---
 
-## Sprint 12 — Zoom, Search & Polish
+## Sprint 13 — Zoom, Search & Polish
 **User Stories:** §10 (all: zoom/pan in Single View), §4.2 (RAW toggle on demand), §11 (fuzzy search, metadata filters), §3.2–3.4 (stack merge/split/undo), §9.6 (keyboard help overlay), §20 (first-use onboarding), §17 (auto-advance refinement), §13.3 (full-res RAW on zoom), §19 (quick preview in Stack Overview)
 
 **Goal:** The app is polished and fully featured. Every remaining user story is addressed.

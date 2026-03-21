@@ -2,7 +2,7 @@
 
 Single source of truth for all pending work. Items sourced from sprint-plan, screen-review-gaps, sprint-improvements, code-improvements, and test-improvements.
 
-**Last updated:** 2026-03-20 (after Sprint 7 branch work: test audit, bug fixes, Svelte refactoring, per-project indexing)
+**Last updated:** 2026-03-21 (after Sprint 7+8 squash-merge to main)
 
 ---
 
@@ -16,10 +16,10 @@ Single source of truth for all pending work. Items sourced from sprint-plan, scr
 | S4 | main | Done | Thumbnail pipeline (EXIF fast path, orientation, rayon) |
 | S5 | main | Done | Stack Overview UI, arrow navigation, scroll restore |
 | S6 | main | Done | Burst config UI, thumbnail resume, progress display |
-| S7 | sprint-7 | Done | Decision engine, SingleView, camera params, stack merge, visual feedback |
-| S8 | sprint-7 | Done | Bug fixes: viewport overflow, sticky headers, RAW preview quality |
+| S7 | main | Done | Decision engine, SingleView, camera params, stack merge, visual feedback |
+| S8 | main | Done | Bug fixes: viewport overflow, sticky headers, RAW preview quality |
 
-**Test counts (current):** 378 Rust + 470 jsdom + 25 browser = 873 total. Clippy clean.
+**Test counts (current):** 385 Rust + 452 frontend = 837 total.
 
 ---
 
@@ -156,7 +156,7 @@ See `docs/sprints/sprint-plan.md` §Sprint 8 success criteria (items 1-10).
 
 1. **Per-project context isolation** — `AppState` uses global `Arc<AtomicBool>` for indexing. Should be `HashMap<String, ProjectContext>`. P0 invariant from sprint-plan.md. [sprint-plan §Cross-Sprint Standards]
 
-2. **Shared visual components** — Decision indicators extracted (DecisionIndicator.svelte ✓), but CameraParams, FormatBadges, formatCaptureTime still duplicated across screens. [screen-review-gaps §Architecture]
+2. **Shared visual components** — PhotoFrame.svelte is the unified frame component. CameraParams, FormatBadges, formatCaptureTime still duplicated across screens. [screen-review-gaps §Architecture]
 
 ---
 

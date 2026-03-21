@@ -7,7 +7,8 @@ Sprint readiness markers:
 - **[S7]** = "Good enough" for Sprint 7 (Minimum Viable Culling)
 - **[S8]** = Sprint 8 (Comparison View & Stack Workflow)
 - **[S9]** = Sprint 9 (Multi-Round Engine)
-- **[S10]** = Sprint 10 (Session Scope & Finalists)
+- **[S10]** = Sprint 10 (Multi-Round Engine)
+- **[S11]** = Sprint 11 (GemStack — Final Curation)
 - **[S12]** = Sprint 12 (Polish)
 
 ---
@@ -237,7 +238,7 @@ Enter opens the focused stack in StackFocus.
 │  └───────────┘ └───────────┘ └───────────┘ └───────────┘           │
 │                                                                      │
 │  Arrow keys: navigate  |  Enter: open stack  |  Ctrl+B: burst gap   │
-│  F: finalists  |  ?: help                                     [S12]  │
+│  F: GemStack  |  G: promote  |  ?: help                       [S12]  │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -246,6 +247,7 @@ Enter opens the focused stack in StackFocus.
 - `[in prog]` = some decisions made (yellow dot)
 - `[3/8 ●●○]` = 3 of 8 decided, compact dots
 - `[done ✓]` = all decided / finalized (green checkmark)
+- `[promoted]` = survivors promoted to GemStack (gem icon or badge)
 
 ### 2.5 Behaviors
 
@@ -424,7 +426,7 @@ into view, matching the pattern used in StackOverview.
 ├──────────────────────────────────────────────────────────────────────┤
 │                                                                      │
 │  ┌────────────────────────────────────────────────────────────────┐  │
-│  │  Stack complete!  3 finalists.                                │  │
+│  │  Stack complete!  3 survivors.                                │  │
 │  │  Ctrl+Enter to commit round  |  Down arrow for next stack     │  │
 │  └────────────────────────────────────────────────────────────────┘  │
 │                                                                      │
@@ -739,7 +741,7 @@ All photos in the stack have been decided. Comparison exits gracefully.
 │  ┌────────────────────────────────────────────────────────────────┐  │
 │  │                                                                │  │
 │  │   All photos decided!                                          │  │
-│  │   3 finalists in this stack.                                   │  │
+│  │   3 survivors in this stack.                                   │  │
 │  │                                                                │  │
 │  │   Ctrl+Enter: commit round                                     │  │
 │  │   Esc: back to stack grid                                      │  │
@@ -752,71 +754,59 @@ All photos in the stack have been decided. Comparison exits gracefully.
 
 ---
 
-## 6. Session Finalist View **[S10]**
+## 6. GemStack View **[S11]**
 
-Grid of all stack winners, grouped by source stack. Same decision
-controls as StackFocus. This is the "gem stack" overview.
+The GemStack is a special stack containing photos promoted from regular
+stacks. It behaves identically to StackFocus — same round engine, same
+Y/X decisions, same comparison view. Each photo shows its source stack
+for provenance.
 
-### 6.1 Finalist Grid
+### 6.1 GemStack Grid
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│  <- Stack Overview  /  Iceland 2024: Finalists                  Esc  │
-│  238 finalists from 387 stacks  |  Session Round 1            [S10]  │
+│  <- Stack Overview  /  Iceland 2024: GemStack                   Esc  │
+│  238 photos from 142 stacks  |  Round 1                       [S11]  │
 │  42/238 decided . 30 kept . 12 elim . 196 remaining                  │
 ├──────────────────────────────────────────────────────────────────────┤
 │                                                                      │
-│  ── Stack #1: Iceland Sunset (3 finalists) ────────────────────────  │
-│                                                                      │
-│  ┌═══════════┐ ┌───────────┐ ┌───────────┐                         │
-│  ║ ✓ KEPT    ║ │           │ │           │                         │
-│  ║   [img]   ║ │   [img]   │ │   [img]   │                         │
-│  ║           ║ │           │ │           │                         │
-│  ║ f/2.8     ║ │ f/4.0     │ │ f/2.8     │                         │
-│  ║ 1/250s    ║ │ 1/125s    │ │ 1/500s    │                         │
-│  ║ ISO 400   ║ │ ISO 800   │ │ ISO 200   │                         │
-│  ║ 85mm      ║ │ 85mm      │ │ 85mm      │                         │
-│  └═══════════┘ └───────────┘ └───────────┘                         │
+│  ┌═══════════┐ ┌───────────┐ ┌───────────┐ ┌───────────┐           │
+│  ║ ✓ KEPT    ║ │           │ │           │ │           │           │
+│  ║   [img]   ║ │   [img]   │ │   [img]   │ │   [img]   │           │
+│  ║           ║ │           │ │           │ │           │           │
+│  ║ f/2.8     ║ │ f/4.0     │ │ f/2.8     │ │ f/1.4     │           │
+│  ║ 1/250s    ║ │ 1/125s    │ │ 1/500s    │ │ 15s       │           │
+│  ║ ISO 400   ║ │ ISO 800   │ │ ISO 200   │ │ ISO 3200  │           │
+│  ║ 85mm      ║ │ 85mm      │ │ 85mm      │ │ 14mm      │           │
+│  ║ Stack #1  ║ │ Stack #1  │ │ Stack #1  │ │ Stack #3  │           │
+│  └═══════════┘ └───────────┘ └───────────┘ └───────────┘           │
 │     ▲ focused                                                        │
-│                                                                      │
-│  ── Stack #3: Northern Lights (1 finalist) ────────────────────────  │
-│                                                                      │
-│  ┌───────────┐                                                      │
-│  │           │                                                      │
-│  │   [img]   │                                                      │
-│  │           │                                                      │
-│  │ f/1.4     │                                                      │
-│  │ 15s       │                                                      │
-│  │ ISO 3200  │                                                      │
-│  │ 14mm      │                                                      │
-│  └───────────┘                                                      │
-│                                                                      │
-│  ── Stack #5: Geysir Eruption (2 finalists) ───────────────────────  │
 │                                                                      │
 │  ┌───────────┐ ┌───────────┐                                       │
 │  │   [img]   │ │   [img]   │                                       │
 │  │ ...       │ │ ...       │                                       │
+│  │ Stack #5  │ │ Stack #5  │                                       │
 │  └───────────┘ └───────────┘                                       │
 │                                                                      │
 │  Arrows: navigate | Enter: single view | Y: keep | X: eliminate      │
-│  C: compare | Ctrl+Enter: commit session round | Esc: back          │
+│  C: compare | Ctrl+Enter: commit round | Esc: back                  │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-### 6.2 Session Finalized
+### 6.2 GemStack Finalized
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│  <- Stack Overview  /  Iceland 2024: FINAL GEM STACK            Esc  │
-│  48 gems from 387 stacks  |  SESSION FINALIZED                       │
+│  <- Stack Overview  /  Iceland 2024: GemStack FINALIZED         Esc  │
+│  48 gems from 142 stacks  |  FINALIZED                               │
 ├──────────────────────────────────────────────────────────────────────┤
 │                                                                      │
 │  ┌──────────────────────────────────────────────────────────────┐    │
-│  │  Session finalized.  48 gems ready for export.              │    │
-│  │  Press E to export  |  T to tag finalists                    │    │
+│  │  GemStack finalized.  48 gems ready for export.             │    │
+│  │  Press E to export  |  T to tag gems                        │    │
 │  └──────────────────────────────────────────────────────────────┘    │
 │                                                                      │
-│  (grid of finalized gem photos, all with green badges)               │
+│  (grid of finalized gem photos, all with green badges + provenance)  │
 │                                                                      │
 └──────────────────────────────────────────────────────────────────────┘
 ```
@@ -882,7 +872,7 @@ Content adapts to the current screen.
            ProjectList       │             │
                              ▼             ▼
                      ┌──────────────┐  ┌──────────────────┐
-                Esc  │  StackFocus  │  │ FinalistView     │
+                Esc  │  StackFocus  │  │ GemStack     │
               ┌──────│              │  │                  │ [S10]
               │      │ Photo grid   │  │ Cross-stack gems │
               │      │ Y/X decide   │  │ Same Y/X/C keys  │
@@ -890,9 +880,9 @@ Content adapts to the current screen.
               │         │        │            ▲
               ▼         │        │            │ Esc
         StackOverview   │        │            │
-                        │ Enter  │ C     FinalistView
+                        │ Enter  │ C     GemStack
                         │        │       (if entered from
-                        ▼        ▼        finalist grid)
+                        ▼        ▼        GemStack)
               ┌──────────┐  ┌───────────────┐
          Esc  │SingleView│  │ComparisonView │ [S8]
         ┌─────│          │  │               │
@@ -903,9 +893,9 @@ Content adapts to the current screen.
         │                   └───────────────┘
         ▼                         │
    StackFocus                     │ Esc
-   (or FinalistView               ▼
+   (or GemStack                   ▼
     if entered from          StackFocus
-    finalist context)        (or FinalistView)
+    GemStack context)        (or GemStack)
 ```
 
 ### 8.2 Transition Table
@@ -917,16 +907,16 @@ Content adapts to the current screen.
 │ ProjectList     │ Enter/Click   │ StackOverview     │ project slug     │
 │ StackOverview   │ Esc           │ ProjectList       │ resume project   │
 │ StackOverview   │ Enter         │ StackFocus        │ focused index    │
-│ StackOverview   │ F             │ FinalistView      │ --           [S10]│
+│ StackOverview   │ F             │ GemStack      │ --           [S10]│
 │ StackFocus      │ Esc           │ StackOverview     │ restore scroll   │
 │ StackFocus      │ Enter         │ SingleView        │ photo index      │
 │ StackFocus      │ C             │ ComparisonView    │ selected pair[S8]│
 │ SingleView      │ Esc           │ StackFocus        │ photo index      │
 │ SingleView      │ Left/Right    │ SingleView (nav)  │ within stack     │
 │ ComparisonView  │ Esc           │ StackFocus        │ decision state   │
-│ FinalistView    │ Esc           │ StackOverview     │ --               │
-│ FinalistView    │ Enter         │ SingleView        │ photo index      │
-│ FinalistView    │ C             │ ComparisonView    │ selected pair    │
+│ GemStack    │ Esc           │ StackOverview     │ --               │
+│ GemStack    │ Enter         │ SingleView        │ photo index      │
+│ GemStack    │ C             │ ComparisonView    │ selected pair    │
 │ Any screen      │ ?             │ Help overlay      │ screen unchanged │
 │ Any screen      │ Ctrl+B        │ Burst panel       │ screen unchanged │
 └─────────────────┴───────────────┴───────────────────┴──────────────────┘
@@ -946,8 +936,8 @@ Content adapts to the current screen.
    photos are kept/eliminated) always in sync. Comparison auto-fill
    changes are reflected in the grid.
 
-4. **FinalistView context:** When entering SingleView or ComparisonView
-   from FinalistView, Esc returns to FinalistView (not StackFocus).
+4. **GemStack context:** When entering SingleView or ComparisonView
+   from GemStack, Esc returns to GemStack (not StackFocus).
    The navigation stack tracks the entry point.
 
 5. **Decisions are never lost on transition.** Every Y/X is written to

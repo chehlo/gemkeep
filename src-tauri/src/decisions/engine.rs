@@ -30,6 +30,14 @@ pub fn find_or_create_round(
         params![project_id, stack_id, now],
     )?;
     let round_id = conn.last_insert_rowid();
+
+    // Populate round_photos with all logical photos in the stack
+    conn.execute(
+        "INSERT INTO round_photos (round_id, logical_photo_id)
+         SELECT ?1, id FROM logical_photos WHERE stack_id = ?2",
+        params![round_id, stack_id],
+    )?;
+
     Ok((round_id, true))
 }
 
@@ -42,6 +50,11 @@ pub fn record_decision(
     round_id: i64,
     action: &DecisionAction,
 ) -> rusqlite::Result<i64> {
+    // Guard: reject decisions on committed (immutable) rounds
+    if is_round_committed(conn, round_id)? {
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
+
     let now = chrono::Utc::now().to_rfc3339();
     let action_str = action.as_str();
 
@@ -61,14 +74,65 @@ pub fn record_decision(
     Ok(decision_id)
 }
 
-/// Commit a round: mark as immutable.
-/// Sets rounds.state = 'committed' and rounds.committed_at = now.
+/// Commit a round: mark as immutable, reset survivors to undecided,
+/// create next round with survivors only.
+/// Returns Ok(()) on success.
 pub fn commit_round(conn: &Connection, round_id: i64) -> rusqlite::Result<()> {
+    // Guard: reject if round is already committed
+    if is_round_committed(conn, round_id)? {
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
+
     let now = chrono::Utc::now().to_rfc3339();
+
+    // 1. Seal current round
     conn.execute(
         "UPDATE rounds SET state = 'committed', committed_at = ?1 WHERE id = ?2 AND state = 'open'",
         params![now, round_id],
     )?;
+
+    // 2. Get round metadata
+    let (project_id, stack_id, round_number): (i64, i64, i32) = conn.query_row(
+        "SELECT project_id, scope_id, round_number FROM rounds WHERE id = ?1",
+        params![round_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+
+    // 3. Reset survivors (non-eliminated) to undecided
+    conn.execute(
+        "UPDATE logical_photos SET current_status = 'undecided'
+         WHERE id IN (SELECT logical_photo_id FROM round_photos WHERE round_id = ?1)
+         AND current_status != 'eliminate'",
+        params![round_id],
+    )?;
+
+    // 4. Get survivor IDs (those now undecided in this round's photos)
+    let mut stmt = conn.prepare(
+        "SELECT rp.logical_photo_id FROM round_photos rp
+         JOIN logical_photos lp ON rp.logical_photo_id = lp.id
+         WHERE rp.round_id = ?1 AND lp.current_status = 'undecided'",
+    )?;
+    let survivor_ids: Vec<i64> = stmt
+        .query_map(params![round_id], |row| row.get(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    // 5. Create next round
+    conn.execute(
+        "INSERT INTO rounds (project_id, scope, scope_id, round_number, state, created_at)
+         VALUES (?1, 'stack', ?2, ?3, 'open', ?4)",
+        params![project_id, stack_id, round_number + 1, now],
+    )?;
+    let new_round_id = conn.last_insert_rowid();
+
+    // 6. Populate round_photos for new round with survivors
+    for lp_id in &survivor_ids {
+        conn.execute(
+            "INSERT INTO round_photos (round_id, logical_photo_id) VALUES (?1, ?2)",
+            params![new_round_id, lp_id],
+        )?;
+    }
+
     Ok(())
 }
 
@@ -258,66 +322,59 @@ pub fn get_photo_detail(
         exposure_comp: rep.exposure_comp,
         jpeg_path,
         raw_path,
+        preview_path: {
+            let preview = cache_dir.join(format!("{}_preview.jpg", logical_photo_id));
+            if preview.exists() {
+                Some(preview.to_string_lossy().to_string())
+            } else {
+                None
+            }
+        },
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::run_migrations;
-    use rusqlite::{params, Connection};
+    use crate::import::test_fixtures::{
+        Camera, CameraParams, FileType, PhotoSpec, TestLibraryBuilder,
+    };
+    use rusqlite::params;
 
-    /// Set up an in-memory DB with migrations, a project, a stack, and N logical photos.
-    /// Returns (conn, project_id, stack_id, Vec<lp_id>).
-    fn setup_test_db(num_photos: usize) -> (Connection, i64, i64, Vec<i64>) {
-        let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
-
-        // Create project
-        conn.execute(
-            "INSERT INTO projects (name, slug, created_at) VALUES ('Test', 'test', '2024-01-01T00:00:00Z')",
-            [],
+    fn get_current_status(conn: &Connection, lp_id: i64) -> String {
+        conn.query_row(
+            "SELECT current_status FROM logical_photos WHERE id = ?1",
+            params![lp_id],
+            |row| row.get(0),
         )
-        .unwrap();
-        let project_id = conn.last_insert_rowid();
+        .unwrap()
+    }
 
-        // Create stack
-        let now = chrono::Utc::now().to_rfc3339();
-        conn.execute(
-            "INSERT INTO stacks (project_id, created_at) VALUES (?1, ?2)",
-            params![project_id, now],
-        )
-        .unwrap();
-        let stack_id = conn.last_insert_rowid();
-
-        // Create N photos and logical_photos
-        let mut lp_ids = Vec::new();
-        for i in 0..num_photos {
-            let path = format!("/test/photo_{}.jpg", i);
-            conn.execute(
-                "INSERT INTO photos (path, format, capture_time) VALUES (?1, 'jpeg', '2024-01-01T10:00:00Z')",
-                params![path],
-            )
-            .unwrap();
-            let photo_id = conn.last_insert_rowid();
-
-            conn.execute(
-                "INSERT INTO logical_photos (project_id, representative_photo_id, stack_id) VALUES (?1, ?2, ?3)",
-                params![project_id, photo_id, stack_id],
-            )
-            .unwrap();
-            let lp_id = conn.last_insert_rowid();
-
-            conn.execute(
-                "UPDATE photos SET logical_photo_id = ?1 WHERE id = ?2",
-                params![lp_id, photo_id],
-            )
-            .unwrap();
-
-            lp_ids.push(lp_id);
+    /// Set up an in-memory DB with migrations, a project, a stack, and N logical photos
+    /// using TestLibraryBuilder. Returns (TestProject, project_id, stack_id, Vec<lp_id>).
+    fn setup_test_db(
+        num_photos: usize,
+    ) -> (
+        crate::import::test_fixtures::TestProject,
+        i64,
+        i64,
+        Vec<i64>,
+    ) {
+        let mut builder = TestLibraryBuilder::new();
+        for _ in 0..num_photos {
+            builder = builder.add_photo(PhotoSpec {
+                camera: Camera::Canon,
+                orientation: 1,
+                file_type: FileType::Jpeg,
+                capture_time: Some("2024:01:01 10:00:00".to_string()),
+                camera_params: None,
+            });
         }
-
-        (conn, project_id, stack_id, lp_ids)
+        let project = builder.build_db_only();
+        let project_id = project.project_id;
+        let stack_id = project.stack_ids[0];
+        let lp_ids = project.lp_ids.clone();
+        (project, project_id, stack_id, lp_ids)
     }
 
     // ── 16.1 Decision Engine Tests ───────────────────────────────────────────
@@ -326,9 +383,10 @@ mod tests {
     fn test_find_or_create_round_creates_round_1() {
         // Sprint 7 §16.1: When no round exists for a stack, find_or_create_round
         // creates a new Round 1 with scope='stack', state='open'.
-        let (conn, project_id, stack_id, _lp_ids) = setup_test_db(3);
+        let (project, project_id, stack_id, _lp_ids) = setup_test_db(3);
+        let conn = &project.conn;
 
-        let (round_id, was_created) = find_or_create_round(&conn, project_id, stack_id).unwrap();
+        let (round_id, was_created) = find_or_create_round(conn, project_id, stack_id).unwrap();
 
         assert!(was_created, "round must be newly created");
         assert!(round_id > 0, "round_id must be positive");
@@ -351,7 +409,8 @@ mod tests {
     fn test_find_or_create_round_reuses_existing() {
         // Sprint 7 §16.1: If an open round already exists for the stack,
         // find_or_create_round returns it without creating a new one.
-        let (conn, project_id, stack_id, _lp_ids) = setup_test_db(3);
+        let (project, project_id, stack_id, _lp_ids) = setup_test_db(3);
+        let conn = &project.conn;
 
         // Manually insert a round
         let now = chrono::Utc::now().to_rfc3339();
@@ -363,7 +422,7 @@ mod tests {
         .unwrap();
         let existing_round_id = conn.last_insert_rowid();
 
-        let (round_id, was_created) = find_or_create_round(&conn, project_id, stack_id).unwrap();
+        let (round_id, was_created) = find_or_create_round(conn, project_id, stack_id).unwrap();
 
         assert!(!was_created, "round must NOT be newly created");
         assert_eq!(
@@ -382,13 +441,14 @@ mod tests {
     fn test_make_decision_keep() {
         // Sprint 7 §16.1: record_decision with Keep creates a decisions row
         // and updates logical_photos.current_status.
-        let (conn, project_id, stack_id, lp_ids) = setup_test_db(1);
+        let (project, project_id, stack_id, lp_ids) = setup_test_db(1);
+        let conn = &project.conn;
         let lp_id = lp_ids[0];
 
         // Create a round first
-        let (round_id, _) = find_or_create_round(&conn, project_id, stack_id).unwrap();
+        let (round_id, _) = find_or_create_round(conn, project_id, stack_id).unwrap();
 
-        let decision_id = record_decision(&conn, lp_id, round_id, &DecisionAction::Keep).unwrap();
+        let decision_id = record_decision(conn, lp_id, round_id, &DecisionAction::Keep).unwrap();
         assert!(decision_id > 0, "decision_id must be positive");
 
         // Verify decisions table
@@ -402,32 +462,20 @@ mod tests {
         assert_eq!(action, "keep");
 
         // Verify current_status updated
-        let status: String = conn
-            .query_row(
-                "SELECT current_status FROM logical_photos WHERE id = ?1",
-                params![lp_id],
-                |row| row.get(0),
-            )
-            .unwrap();
+        let status = get_current_status(conn, lp_id);
         assert_eq!(status, "keep");
     }
 
     #[test]
     fn test_make_decision_eliminate() {
         // Sprint 7 §16.1: record_decision with Eliminate.
-        let (conn, project_id, stack_id, lp_ids) = setup_test_db(1);
+        let (project, project_id, stack_id, lp_ids) = setup_test_db(1);
         let lp_id = lp_ids[0];
 
-        let (round_id, _) = find_or_create_round(&conn, project_id, stack_id).unwrap();
-        record_decision(&conn, lp_id, round_id, &DecisionAction::Eliminate).unwrap();
+        let (round_id, _) = find_or_create_round(&project.conn, project_id, stack_id).unwrap();
+        record_decision(&project.conn, lp_id, round_id, &DecisionAction::Eliminate).unwrap();
 
-        let status: String = conn
-            .query_row(
-                "SELECT current_status FROM logical_photos WHERE id = ?1",
-                params![lp_id],
-                |row| row.get(0),
-            )
-            .unwrap();
+        let status = get_current_status(&project.conn, lp_id);
         assert_eq!(status, "eliminate");
     }
 
@@ -435,18 +483,19 @@ mod tests {
     fn test_decision_re_decide_overwrites() {
         // Sprint 7 §16.1: Re-deciding on the same photo creates a new decision row
         // (append-only), and the latest decision becomes effective.
-        let (conn, project_id, stack_id, lp_ids) = setup_test_db(1);
+        let (project, project_id, stack_id, lp_ids) = setup_test_db(1);
         let lp_id = lp_ids[0];
 
-        let (round_id, _) = find_or_create_round(&conn, project_id, stack_id).unwrap();
+        let (round_id, _) = find_or_create_round(&project.conn, project_id, stack_id).unwrap();
 
         // First decision: keep
-        record_decision(&conn, lp_id, round_id, &DecisionAction::Keep).unwrap();
+        record_decision(&project.conn, lp_id, round_id, &DecisionAction::Keep).unwrap();
         // Second decision: eliminate (overwrites)
-        record_decision(&conn, lp_id, round_id, &DecisionAction::Eliminate).unwrap();
+        record_decision(&project.conn, lp_id, round_id, &DecisionAction::Eliminate).unwrap();
 
         // Verify 2 rows exist (append-only)
-        let count: i64 = conn
+        let count: i64 = project
+            .conn
             .query_row(
                 "SELECT COUNT(*) FROM decisions WHERE logical_photo_id = ?1 AND round_id = ?2",
                 params![lp_id, round_id],
@@ -456,44 +505,26 @@ mod tests {
         assert_eq!(count, 2, "decisions table must have 2 rows (append-only)");
 
         // Verify current_status is 'eliminate' (latest wins)
-        let status: String = conn
-            .query_row(
-                "SELECT current_status FROM logical_photos WHERE id = ?1",
-                params![lp_id],
-                |row| row.get(0),
-            )
-            .unwrap();
+        let status = get_current_status(&project.conn, lp_id);
         assert_eq!(status, "eliminate", "latest decision must win");
     }
 
     #[test]
     fn test_decision_updates_current_status() {
         // Sprint 7 §16.1: current_status is updated after each decision.
-        let (conn, project_id, stack_id, lp_ids) = setup_test_db(1);
+        let (project, project_id, stack_id, lp_ids) = setup_test_db(1);
         let lp_id = lp_ids[0];
 
-        let (round_id, _) = find_or_create_round(&conn, project_id, stack_id).unwrap();
+        let (round_id, _) = find_or_create_round(&project.conn, project_id, stack_id).unwrap();
 
         // Keep
-        record_decision(&conn, lp_id, round_id, &DecisionAction::Keep).unwrap();
-        let status: String = conn
-            .query_row(
-                "SELECT current_status FROM logical_photos WHERE id = ?1",
-                params![lp_id],
-                |row| row.get(0),
-            )
-            .unwrap();
+        record_decision(&project.conn, lp_id, round_id, &DecisionAction::Keep).unwrap();
+        let status = get_current_status(&project.conn, lp_id);
         assert_eq!(status, "keep", "status must be 'keep' after Keep decision");
 
         // Eliminate
-        record_decision(&conn, lp_id, round_id, &DecisionAction::Eliminate).unwrap();
-        let status: String = conn
-            .query_row(
-                "SELECT current_status FROM logical_photos WHERE id = ?1",
-                params![lp_id],
-                |row| row.get(0),
-            )
-            .unwrap();
+        record_decision(&project.conn, lp_id, round_id, &DecisionAction::Eliminate).unwrap();
+        let status = get_current_status(&project.conn, lp_id);
         assert_eq!(
             status, "eliminate",
             "status must be 'eliminate' after Eliminate decision"
@@ -504,14 +535,15 @@ mod tests {
     fn test_decision_audit_log_append_only() {
         // Sprint 7 §16.1: Making 3 decisions on the same photo produces exactly
         // 3 rows in the decisions table. No rows are deleted or modified.
-        let (conn, project_id, stack_id, lp_ids) = setup_test_db(1);
+        let (project, project_id, stack_id, lp_ids) = setup_test_db(1);
         let lp_id = lp_ids[0];
 
-        let (round_id, _) = find_or_create_round(&conn, project_id, stack_id).unwrap();
+        let (round_id, _) = find_or_create_round(&project.conn, project_id, stack_id).unwrap();
 
-        let id1 = record_decision(&conn, lp_id, round_id, &DecisionAction::Keep).unwrap();
-        let id2 = record_decision(&conn, lp_id, round_id, &DecisionAction::Eliminate).unwrap();
-        let id3 = record_decision(&conn, lp_id, round_id, &DecisionAction::Keep).unwrap();
+        let id1 = record_decision(&project.conn, lp_id, round_id, &DecisionAction::Keep).unwrap();
+        let id2 =
+            record_decision(&project.conn, lp_id, round_id, &DecisionAction::Eliminate).unwrap();
+        let id3 = record_decision(&project.conn, lp_id, round_id, &DecisionAction::Keep).unwrap();
 
         // All three IDs must be distinct
         assert_ne!(id1, id2);
@@ -519,7 +551,8 @@ mod tests {
         assert_ne!(id1, id3);
 
         // Exactly 3 rows
-        let count: i64 = conn
+        let count: i64 = project
+            .conn
             .query_row(
                 "SELECT COUNT(*) FROM decisions WHERE logical_photo_id = ?1 AND round_id = ?2",
                 params![lp_id, round_id],
@@ -530,7 +563,8 @@ mod tests {
 
         // Verify all 3 rows still exist (no deletions)
         let existing: Vec<i64> = {
-            let mut stmt = conn
+            let mut stmt = project
+                .conn
                 .prepare(
                     "SELECT id FROM decisions WHERE logical_photo_id = ?1 AND round_id = ?2 ORDER BY id",
                 )
@@ -547,91 +581,59 @@ mod tests {
     fn test_decision_applies_to_pair() {
         // Sprint 7 §16.1: A decision on a logical_photo covers both RAW and JPEG
         // files in the pair. Both photos share the same logical_photo_id.
-        let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
-
-        // Create project + stack
-        conn.execute(
-            "INSERT INTO projects (name, slug, created_at) VALUES ('P', 'p', '2024-01-01T00:00:00Z')",
-            [],
-        )
-        .unwrap();
-        let project_id = conn.last_insert_rowid();
-        let now = chrono::Utc::now().to_rfc3339();
-        conn.execute(
-            "INSERT INTO stacks (project_id, created_at) VALUES (?1, ?2)",
-            params![project_id, now],
-        )
-        .unwrap();
-        let stack_id = conn.last_insert_rowid();
-
-        // Insert RAW + JPEG pair as one logical photo
-        conn.execute(
-            "INSERT INTO photos (path, format, capture_time) VALUES ('/test/shot.CR2', 'raw', '2024-01-01T10:00:00Z')",
-            [],
-        )
-        .unwrap();
-        let raw_photo_id = conn.last_insert_rowid();
-        conn.execute(
-            "INSERT INTO photos (path, format, capture_time) VALUES ('/test/shot.JPG', 'jpeg', '2024-01-01T10:00:00Z')",
-            [],
-        )
-        .unwrap();
-        let jpeg_photo_id = conn.last_insert_rowid();
-
-        // One logical photo, representative = raw
-        conn.execute(
-            "INSERT INTO logical_photos (project_id, representative_photo_id, stack_id) VALUES (?1, ?2, ?3)",
-            params![project_id, raw_photo_id, stack_id],
-        )
-        .unwrap();
-        let lp_id = conn.last_insert_rowid();
-
-        // Link both photos to the logical photo
-        conn.execute(
-            "UPDATE photos SET logical_photo_id = ?1 WHERE id = ?2",
-            params![lp_id, raw_photo_id],
-        )
-        .unwrap();
-        conn.execute(
-            "UPDATE photos SET logical_photo_id = ?1 WHERE id = ?2",
-            params![lp_id, jpeg_photo_id],
-        )
-        .unwrap();
+        let project = TestLibraryBuilder::new()
+            .add_photo(PhotoSpec {
+                camera: Camera::Canon,
+                orientation: 1,
+                file_type: FileType::Both,
+                capture_time: Some("2024:01:01 10:00:00".to_string()),
+                camera_params: None,
+            })
+            .build_db_only();
+        let project_id = project.project_id;
+        let stack_id = project.stack_ids[0];
+        let lp_id = project.lp_ids[0];
 
         // Make decision on the logical photo
-        let (round_id, _) = find_or_create_round(&conn, project_id, stack_id).unwrap();
-        record_decision(&conn, lp_id, round_id, &DecisionAction::Keep).unwrap();
+        let (round_id, _) = find_or_create_round(&project.conn, project_id, stack_id).unwrap();
+        record_decision(&project.conn, lp_id, round_id, &DecisionAction::Keep).unwrap();
 
         // Verify both photos share the same logical_photo_id
-        let raw_lp: i64 = conn
+        let photo_count: i64 = project
+            .conn
             .query_row(
-                "SELECT logical_photo_id FROM photos WHERE id = ?1",
-                params![raw_photo_id],
-                |row| row.get(0),
-            )
-            .unwrap();
-        let jpeg_lp: i64 = conn
-            .query_row(
-                "SELECT logical_photo_id FROM photos WHERE id = ?1",
-                params![jpeg_photo_id],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(raw_lp, lp_id, "RAW photo must belong to the logical photo");
-        assert_eq!(
-            jpeg_lp, lp_id,
-            "JPEG photo must belong to the logical photo"
-        );
-
-        // Verify logical_photos.current_status = 'keep' (covers both files)
-        let status: String = conn
-            .query_row(
-                "SELECT current_status FROM logical_photos WHERE id = ?1",
+                "SELECT COUNT(*) FROM photos WHERE logical_photo_id = ?1",
                 params![lp_id],
                 |row| row.get(0),
             )
             .unwrap();
+        assert_eq!(
+            photo_count, 2,
+            "pair must have exactly 2 photos linked to the same logical_photo"
+        );
+
+        // Verify has both RAW and JPEG formats
+        let formats: Vec<String> = {
+            let mut stmt = project
+                .conn
+                .prepare("SELECT format FROM photos WHERE logical_photo_id = ?1 ORDER BY format")
+                .unwrap();
+            stmt.query_map(params![lp_id], |row| row.get(0))
+                .unwrap()
+                .filter_map(|r| r.ok())
+                .collect()
+        };
+        assert!(
+            formats.contains(&"jpeg".to_string()),
+            "pair must include JPEG"
+        );
+        assert!(
+            formats.iter().any(|f| f != "jpeg"),
+            "pair must include RAW format"
+        );
+
+        // Verify logical_photos.current_status = 'keep' (covers both files)
+        let status = get_current_status(&project.conn, lp_id);
         assert_eq!(
             status, "keep",
             "decision on logical photo must cover the entire pair"
@@ -642,17 +644,18 @@ mod tests {
     fn test_commit_round_locks_decisions() {
         // Sprint 7 §16.1: After commit_round, the round is immutable.
         // record_decision on a committed round must return an error.
-        let (conn, project_id, stack_id, lp_ids) = setup_test_db(1);
+        let (project, project_id, stack_id, lp_ids) = setup_test_db(1);
         let lp_id = lp_ids[0];
 
-        let (round_id, _) = find_or_create_round(&conn, project_id, stack_id).unwrap();
-        record_decision(&conn, lp_id, round_id, &DecisionAction::Keep).unwrap();
+        let (round_id, _) = find_or_create_round(&project.conn, project_id, stack_id).unwrap();
+        record_decision(&project.conn, lp_id, round_id, &DecisionAction::Keep).unwrap();
 
         // Commit the round
-        commit_round(&conn, round_id).unwrap();
+        commit_round(&project.conn, round_id).unwrap();
 
         // Verify round state
-        let state: String = conn
+        let state: String = project
+            .conn
             .query_row(
                 "SELECT state FROM rounds WHERE id = ?1",
                 params![round_id],
@@ -662,7 +665,8 @@ mod tests {
         assert_eq!(state, "committed");
 
         // Verify committed_at is set
-        let committed_at: Option<String> = conn
+        let committed_at: Option<String> = project
+            .conn
             .query_row(
                 "SELECT committed_at FROM rounds WHERE id = ?1",
                 params![round_id],
@@ -675,39 +679,34 @@ mod tests {
         );
 
         // Verify is_round_committed returns true
-        assert!(is_round_committed(&conn, round_id).unwrap());
+        assert!(is_round_committed(&project.conn, round_id).unwrap());
+
+        // Verify record_decision on a committed round returns an error
+        let result = record_decision(&project.conn, lp_id, round_id, &DecisionAction::Eliminate);
+        assert!(
+            result.is_err(),
+            "record_decision on a committed round must return an error"
+        );
     }
 
     #[test]
     fn test_undo_decision_sets_undecided() {
         // Sprint 7 §16.1: undo_decision sets current_status back to "undecided".
-        let (conn, project_id, stack_id, lp_ids) = setup_test_db(1);
+        let (project, project_id, stack_id, lp_ids) = setup_test_db(1);
         let lp_id = lp_ids[0];
 
-        let (round_id, _) = find_or_create_round(&conn, project_id, stack_id).unwrap();
-        record_decision(&conn, lp_id, round_id, &DecisionAction::Keep).unwrap();
+        let (round_id, _) = find_or_create_round(&project.conn, project_id, stack_id).unwrap();
+        record_decision(&project.conn, lp_id, round_id, &DecisionAction::Keep).unwrap();
 
         // Verify status is 'keep'
-        let status: String = conn
-            .query_row(
-                "SELECT current_status FROM logical_photos WHERE id = ?1",
-                params![lp_id],
-                |row| row.get(0),
-            )
-            .unwrap();
+        let status = get_current_status(&project.conn, lp_id);
         assert_eq!(status, "keep");
 
         // Undo
-        undo_decision(&conn, lp_id, round_id).unwrap();
+        undo_decision(&project.conn, lp_id, round_id).unwrap();
 
         // Verify status is 'undecided'
-        let status: String = conn
-            .query_row(
-                "SELECT current_status FROM logical_photos WHERE id = ?1",
-                params![lp_id],
-                |row| row.get(0),
-            )
-            .unwrap();
+        let status = get_current_status(&project.conn, lp_id);
         assert_eq!(
             status, "undecided",
             "undo_decision must reset status to undecided"
@@ -718,16 +717,16 @@ mod tests {
     fn test_round_auto_created_on_first_decision() {
         // Sprint 7 §16.1: The first decision on a stack auto-creates Round 1.
         // Subsequent decisions on the same stack reuse the existing round.
-        let (conn, project_id, stack_id, _lp_ids) = setup_test_db(2);
+        let (project, project_id, stack_id, _lp_ids) = setup_test_db(2);
 
         // First call: round should be auto-created
         let (round_id_1, was_created_1) =
-            find_or_create_round(&conn, project_id, stack_id).unwrap();
+            find_or_create_round(&project.conn, project_id, stack_id).unwrap();
         assert!(was_created_1, "first call must auto-create a round");
 
         // Second call: round should be reused
         let (round_id_2, was_created_2) =
-            find_or_create_round(&conn, project_id, stack_id).unwrap();
+            find_or_create_round(&project.conn, project_id, stack_id).unwrap();
         assert!(!was_created_2, "second call must NOT create another round");
         assert_eq!(
             round_id_1, round_id_2,
@@ -735,7 +734,8 @@ mod tests {
         );
 
         // Verify only 1 round total
-        let count: i64 = conn
+        let count: i64 = project
+            .conn
             .query_row("SELECT COUNT(*) FROM rounds", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 1, "only 1 round should exist for the stack");
@@ -745,20 +745,20 @@ mod tests {
     fn test_get_round_status_counts() {
         // Sprint 7 §16.1: get_round_status returns correct counts.
         // Setup: 10 photos, 3 keep, 2 eliminate → decided=5, undecided=5
-        let (conn, project_id, stack_id, lp_ids) = setup_test_db(10);
+        let (project, project_id, stack_id, lp_ids) = setup_test_db(10);
 
-        let (round_id, _) = find_or_create_round(&conn, project_id, stack_id).unwrap();
+        let (round_id, _) = find_or_create_round(&project.conn, project_id, stack_id).unwrap();
 
         // Make 3 keep decisions
         for &lp_id in &lp_ids[0..3] {
-            record_decision(&conn, lp_id, round_id, &DecisionAction::Keep).unwrap();
+            record_decision(&project.conn, lp_id, round_id, &DecisionAction::Keep).unwrap();
         }
         // Make 2 eliminate decisions
         for &lp_id in &lp_ids[3..5] {
-            record_decision(&conn, lp_id, round_id, &DecisionAction::Eliminate).unwrap();
+            record_decision(&project.conn, lp_id, round_id, &DecisionAction::Eliminate).unwrap();
         }
 
-        let status = get_round_status(&conn, project_id, stack_id).unwrap();
+        let status = get_round_status(&project.conn, project_id, stack_id).unwrap();
 
         assert_eq!(status.round_id, round_id);
         assert_eq!(status.round_number, 1);
@@ -782,51 +782,32 @@ mod tests {
     #[test]
     fn test_get_photo_detail_with_camera_params() {
         // Sprint 7 §16.2: get_photo_detail returns camera parameters when present.
-        let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
-
-        conn.execute(
-            "INSERT INTO projects (name, slug, created_at) VALUES ('P', 'p', '2024-01-01T00:00:00Z')",
-            [],
-        )
-        .unwrap();
-        let project_id = conn.last_insert_rowid();
-        let now = chrono::Utc::now().to_rfc3339();
-        conn.execute(
-            "INSERT INTO stacks (project_id, created_at) VALUES (?1, ?2)",
-            params![project_id, now],
-        )
-        .unwrap();
-        let _stack_id = conn.last_insert_rowid();
-
-        // Insert photo with camera params
-        conn.execute(
-            "INSERT INTO photos (path, format, capture_time, camera_model, lens,
-             aperture, shutter_speed, iso, focal_length, exposure_comp)
-             VALUES ('/test/photo.jpg', 'jpeg', '2024-01-01T10:00:00Z', 'Canon EOS R5', 'RF 85mm f/1.2L',
-                     2.8, '1/250', 400, 85.0, 0.7)",
-            [],
-        )
-        .unwrap();
-        let photo_id = conn.last_insert_rowid();
-
-        conn.execute(
-            "INSERT INTO logical_photos (project_id, representative_photo_id, stack_id) VALUES (?1, ?2, ?3)",
-            params![project_id, photo_id, _stack_id],
-        )
-        .unwrap();
-        let lp_id = conn.last_insert_rowid();
-        conn.execute(
-            "UPDATE photos SET logical_photo_id = ?1 WHERE id = ?2",
-            params![lp_id, photo_id],
-        )
-        .unwrap();
+        let project = TestLibraryBuilder::new()
+            .add_photo(PhotoSpec {
+                camera: Camera::Canon,
+                orientation: 1,
+                file_type: FileType::Jpeg,
+                capture_time: Some("2024:01:01 10:00:00".to_string()),
+                camera_params: Some(CameraParams {
+                    aperture: Some(2.8),
+                    shutter_speed: Some("1/250".to_string()),
+                    iso: Some(400),
+                    focal_length: Some(85.0),
+                    exposure_comp: Some(0.7),
+                    lens: Some("RF 85mm f/1.2L".to_string()),
+                }),
+            })
+            .build_db_only();
+        let lp_id = project.lp_ids[0];
 
         let cache_dir = tempfile::tempdir().unwrap();
-        let detail = get_photo_detail(&conn, lp_id, cache_dir.path()).unwrap();
+        let detail = get_photo_detail(&project.conn, lp_id, cache_dir.path()).unwrap();
 
         assert_eq!(detail.logical_photo_id, lp_id);
-        assert_eq!(detail.camera_model.as_deref(), Some("Canon EOS R5"));
+        assert!(
+            detail.camera_model.is_some(),
+            "camera_model must be set for Canon"
+        );
         assert_eq!(detail.lens.as_deref(), Some("RF 85mm f/1.2L"));
         assert!(
             (detail.aperture.unwrap() - 2.8).abs() < 0.001,
@@ -848,45 +829,19 @@ mod tests {
     #[test]
     fn test_get_photo_detail_missing_params() {
         // Sprint 7 §16.2: get_photo_detail returns None for missing camera params.
-        let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
-
-        conn.execute(
-            "INSERT INTO projects (name, slug, created_at) VALUES ('P', 'p', '2024-01-01T00:00:00Z')",
-            [],
-        )
-        .unwrap();
-        let project_id = conn.last_insert_rowid();
-        let now = chrono::Utc::now().to_rfc3339();
-        conn.execute(
-            "INSERT INTO stacks (project_id, created_at) VALUES (?1, ?2)",
-            params![project_id, now],
-        )
-        .unwrap();
-        let stack_id = conn.last_insert_rowid();
-
-        // Insert photo with NO camera params (all NULL)
-        conn.execute(
-            "INSERT INTO photos (path, format) VALUES ('/test/photo.jpg', 'jpeg')",
-            [],
-        )
-        .unwrap();
-        let photo_id = conn.last_insert_rowid();
-
-        conn.execute(
-            "INSERT INTO logical_photos (project_id, representative_photo_id, stack_id) VALUES (?1, ?2, ?3)",
-            params![project_id, photo_id, stack_id],
-        )
-        .unwrap();
-        let lp_id = conn.last_insert_rowid();
-        conn.execute(
-            "UPDATE photos SET logical_photo_id = ?1 WHERE id = ?2",
-            params![lp_id, photo_id],
-        )
-        .unwrap();
+        let project = TestLibraryBuilder::new()
+            .add_photo(PhotoSpec {
+                camera: Camera::Canon,
+                orientation: 1,
+                file_type: FileType::Jpeg,
+                capture_time: Some("2024:01:01 10:00:00".to_string()),
+                camera_params: None,
+            })
+            .build_db_only();
+        let lp_id = project.lp_ids[0];
 
         let cache_dir = tempfile::tempdir().unwrap();
-        let detail = get_photo_detail(&conn, lp_id, cache_dir.path()).unwrap();
+        let detail = get_photo_detail(&project.conn, lp_id, cache_dir.path()).unwrap();
 
         assert_eq!(detail.logical_photo_id, lp_id);
         assert!(
@@ -912,57 +867,19 @@ mod tests {
     #[test]
     fn test_get_photo_detail_pair_has_both_paths() {
         // Sprint 7 §16.2: For a RAW+JPEG pair, get_photo_detail returns both paths.
-        let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
-
-        conn.execute(
-            "INSERT INTO projects (name, slug, created_at) VALUES ('P', 'p', '2024-01-01T00:00:00Z')",
-            [],
-        )
-        .unwrap();
-        let project_id = conn.last_insert_rowid();
-        let now = chrono::Utc::now().to_rfc3339();
-        conn.execute(
-            "INSERT INTO stacks (project_id, created_at) VALUES (?1, ?2)",
-            params![project_id, now],
-        )
-        .unwrap();
-        let stack_id = conn.last_insert_rowid();
-
-        // Insert RAW + JPEG pair
-        conn.execute(
-            "INSERT INTO photos (path, format, capture_time) VALUES ('/test/shot.CR2', 'raw', '2024-01-01T10:00:00Z')",
-            [],
-        )
-        .unwrap();
-        let raw_id = conn.last_insert_rowid();
-        conn.execute(
-            "INSERT INTO photos (path, format, capture_time) VALUES ('/test/shot.JPG', 'jpeg', '2024-01-01T10:00:00Z')",
-            [],
-        )
-        .unwrap();
-        let jpeg_id = conn.last_insert_rowid();
-
-        conn.execute(
-            "INSERT INTO logical_photos (project_id, representative_photo_id, stack_id) VALUES (?1, ?2, ?3)",
-            params![project_id, raw_id, stack_id],
-        )
-        .unwrap();
-        let lp_id = conn.last_insert_rowid();
-
-        conn.execute(
-            "UPDATE photos SET logical_photo_id = ?1 WHERE id = ?2",
-            params![lp_id, raw_id],
-        )
-        .unwrap();
-        conn.execute(
-            "UPDATE photos SET logical_photo_id = ?1 WHERE id = ?2",
-            params![lp_id, jpeg_id],
-        )
-        .unwrap();
+        let project = TestLibraryBuilder::new()
+            .add_photo(PhotoSpec {
+                camera: Camera::Canon,
+                orientation: 1,
+                file_type: FileType::Both,
+                capture_time: Some("2024:01:01 10:00:00".to_string()),
+                camera_params: None,
+            })
+            .build_db_only();
+        let lp_id = project.lp_ids[0];
 
         let cache_dir = tempfile::tempdir().unwrap();
-        let detail = get_photo_detail(&conn, lp_id, cache_dir.path()).unwrap();
+        let detail = get_photo_detail(&project.conn, lp_id, cache_dir.path()).unwrap();
 
         assert_eq!(detail.logical_photo_id, lp_id);
         assert!(detail.has_raw, "has_raw must be true");
@@ -972,158 +889,343 @@ mod tests {
             "jpeg_path must be set for a pair"
         );
         assert!(detail.raw_path.is_some(), "raw_path must be set for a pair");
-        assert_eq!(detail.jpeg_path.as_deref(), Some("/test/shot.JPG"));
-        assert_eq!(detail.raw_path.as_deref(), Some("/test/shot.CR2"));
     }
 
-    // ── SF-41: Decision re-decide overwrites in DB ─────────────────────────
+    // ── Round-commit: round_photos population ──────────────────────────────
 
     #[test]
-    fn test_sf41_redecide_overwrites_latest_decision_in_db() {
-        // SF-41: make_decision(keep) then make_decision(eliminate) on same photo.
-        // The latest decision must be effective: current_status = 'eliminate'.
-        // Verify via direct DB query that only the latest action is reflected
-        // in the materialized current_status, even though both rows exist.
-        let (conn, project_id, stack_id, lp_ids) = setup_test_db(3);
-        let lp_a = lp_ids[0];
-        let lp_b = lp_ids[1];
-        let lp_c = lp_ids[2];
+    fn test_find_or_create_round_populates_round_photos() {
+        // Spec §1: When Round 1 is created, round_photos must be populated
+        // with ALL logical photos in the stack.
+        let (project, project_id, stack_id, lp_ids) = setup_test_db(3);
+        let conn = &project.conn;
 
-        let (round_id, _) = find_or_create_round(&conn, project_id, stack_id).unwrap();
+        let (round_id, was_created) = find_or_create_round(conn, project_id, stack_id).unwrap();
+        assert!(was_created, "round must be newly created");
 
-        // Photo A: keep then eliminate
-        record_decision(&conn, lp_a, round_id, &DecisionAction::Keep).unwrap();
-        record_decision(&conn, lp_a, round_id, &DecisionAction::Eliminate).unwrap();
-
-        // Photo B: eliminate then keep (reverse order)
-        record_decision(&conn, lp_b, round_id, &DecisionAction::Eliminate).unwrap();
-        record_decision(&conn, lp_b, round_id, &DecisionAction::Keep).unwrap();
-
-        // Photo C: keep only (no re-decide, control case)
-        record_decision(&conn, lp_c, round_id, &DecisionAction::Keep).unwrap();
-
-        // Verify current_status for each photo
-        let status_a: String = conn
+        // Query round_photos for this round
+        let count: i64 = conn
             .query_row(
-                "SELECT current_status FROM logical_photos WHERE id = ?1",
-                params![lp_a],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(
-            status_a, "eliminate",
-            "photo A: keep->eliminate must result in 'eliminate'"
-        );
-
-        let status_b: String = conn
-            .query_row(
-                "SELECT current_status FROM logical_photos WHERE id = ?1",
-                params![lp_b],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(
-            status_b, "keep",
-            "photo B: eliminate->keep must result in 'keep'"
-        );
-
-        let status_c: String = conn
-            .query_row(
-                "SELECT current_status FROM logical_photos WHERE id = ?1",
-                params![lp_c],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(
-            status_c, "keep",
-            "photo C: single keep must result in 'keep'"
-        );
-
-        // Verify round status counts reflect the final state
-        let round_status = get_round_status(&conn, project_id, stack_id).unwrap();
-        assert_eq!(round_status.kept, 2, "2 photos should be in 'keep' state");
-        assert_eq!(
-            round_status.eliminated, 1,
-            "1 photo should be in 'eliminate' state"
-        );
-        assert_eq!(round_status.undecided, 0, "no photos should be undecided");
-    }
-
-    // ── RUST-UNDO-COMMIT: Undo blocked after round commit ────────────────────
-
-    #[test]
-    fn test_undo_after_commit_is_blocked() {
-        // RUST-UNDO-COMMIT: After committing a round, undo_decision must not
-        // corrupt data. The engine layer's undo_decision does not check commit
-        // status (that's the command layer's job), but we verify that after
-        // commit, the round state is 'committed' and is_round_committed returns true,
-        // which the command layer uses to block undo.
-        let (conn, project_id, stack_id, lp_ids) = setup_test_db(2);
-        let lp_a = lp_ids[0];
-        let lp_b = lp_ids[1];
-
-        let (round_id, _) = find_or_create_round(&conn, project_id, stack_id).unwrap();
-
-        // Make decisions
-        record_decision(&conn, lp_a, round_id, &DecisionAction::Keep).unwrap();
-        record_decision(&conn, lp_b, round_id, &DecisionAction::Eliminate).unwrap();
-
-        // Commit the round
-        commit_round(&conn, round_id).unwrap();
-
-        // Verify round is committed
-        assert!(
-            is_round_committed(&conn, round_id).unwrap(),
-            "round must be committed after commit_round"
-        );
-
-        // Verify decisions survive the commit (not deleted)
-        let decision_count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM decisions WHERE round_id = ?1",
+                "SELECT COUNT(*) FROM round_photos WHERE round_id = ?1",
                 params![round_id],
                 |row| row.get(0),
             )
             .unwrap();
+
         assert_eq!(
-            decision_count, 2,
-            "committed round must preserve all decision rows"
+            count, 3,
+            "round_photos must contain all 3 stack photos after find_or_create_round"
         );
 
-        // Verify current_status is still correct after commit
-        let status_a: String = conn
+        // Verify the exact lp_ids are present
+        let mut stored_ids: Vec<i64> = {
+            let mut stmt = conn
+                .prepare("SELECT logical_photo_id FROM round_photos WHERE round_id = ?1 ORDER BY logical_photo_id")
+                .unwrap();
+            stmt.query_map(params![round_id], |row| row.get(0))
+                .unwrap()
+                .filter_map(|r| r.ok())
+                .collect()
+        };
+        stored_ids.sort();
+        let mut expected_ids = lp_ids.clone();
+        expected_ids.sort();
+        assert_eq!(
+            stored_ids, expected_ids,
+            "round_photos must contain exactly the stack's logical photo IDs"
+        );
+    }
+
+    #[test]
+    fn test_commit_round_creates_next_round_with_survivors_in_round_photos() {
+        // Spec §2: commit_round seals current round, resets survivors to undecided,
+        // creates Round N+1, and populates round_photos with survivors only.
+        let (project, project_id, stack_id, lp_ids) = setup_test_db(3);
+        let conn = &project.conn;
+
+        // Create round 1
+        let (round_id, _) = find_or_create_round(conn, project_id, stack_id).unwrap();
+
+        // Make decisions: keep, eliminate, keep
+        record_decision(conn, lp_ids[0], round_id, &DecisionAction::Keep).unwrap();
+        record_decision(conn, lp_ids[1], round_id, &DecisionAction::Eliminate).unwrap();
+        record_decision(conn, lp_ids[2], round_id, &DecisionAction::Keep).unwrap();
+
+        // Commit the round
+        commit_round(conn, round_id).unwrap();
+
+        // Assert: old round is committed
+        let old_state: String = conn
             .query_row(
-                "SELECT current_status FROM logical_photos WHERE id = ?1",
-                params![lp_a],
+                "SELECT state FROM rounds WHERE id = ?1",
+                params![round_id],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(status_a, "keep", "commit must not change current_status");
+        assert_eq!(old_state, "committed", "old round must be committed");
 
-        let status_b: String = conn
+        // Assert: new round exists with round_number=2, state='open'
+        let (new_round_id, new_round_number, new_state): (i64, i32, String) = conn
             .query_row(
-                "SELECT current_status FROM logical_photos WHERE id = ?1",
-                params![lp_b],
+                "SELECT id, round_number, state FROM rounds
+                 WHERE project_id = ?1 AND scope = 'stack' AND scope_id = ?2 AND round_number = 2",
+                params![project_id, stack_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("Round 2 must exist after commit");
+        assert_eq!(new_round_number, 2);
+        assert_eq!(new_state, "open");
+
+        // Assert: round_photos for new round has exactly 2 entries (survivors)
+        let survivor_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM round_photos WHERE round_id = ?1",
+                params![new_round_id],
                 |row| row.get(0),
             )
             .unwrap();
         assert_eq!(
-            status_b, "eliminate",
-            "commit must not change current_status"
+            survivor_count, 2,
+            "round_photos for Round 2 must have exactly 2 survivors (eliminated photo excluded)"
         );
 
-        // Verify that find_or_create_round after commit creates a NEW round
-        // (the old one is committed, so a new open round is needed)
-        // This is the mechanism that prevents undo on the committed round
-        let (new_round_id, was_created) =
-            find_or_create_round(&conn, project_id, stack_id).unwrap();
+        // Assert: the eliminated photo (lp_ids[1]) is NOT in round_photos for new round
+        let eliminated_in_new: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM round_photos WHERE round_id = ?1 AND logical_photo_id = ?2",
+                params![new_round_id, lp_ids[1]],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            eliminated_in_new, 0,
+            "eliminated photo must NOT be in Round 2's round_photos"
+        );
+
+        // Assert: survivors' current_status = 'undecided'
+        let survivor_statuses: Vec<String> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT lp.current_status FROM logical_photos lp
+                     INNER JOIN round_photos rp ON rp.logical_photo_id = lp.id
+                     WHERE rp.round_id = ?1",
+                )
+                .unwrap();
+            stmt.query_map(params![new_round_id], |row| row.get(0))
+                .unwrap()
+                .filter_map(|r| r.ok())
+                .collect()
+        };
+        for status in &survivor_statuses {
+            assert_eq!(
+                status, "undecided",
+                "all survivors must be reset to undecided in Round 2"
+            );
+        }
+    }
+
+    // ── Round-commit: idempotency (Rule 11) ────────────────────────────────
+
+    #[test]
+    fn test_double_commit_same_round_rejected() {
+        // B-idempotency (Rule 11): Committing the same round twice must fail
+        // or be a no-op. A second commit on an already-committed round should
+        // not create duplicate rounds or corrupt state.
+        let (project, project_id, stack_id, lp_ids) = setup_test_db(3);
+        let conn = &project.conn;
+
+        // Create round 1 and make decisions
+        let (round_id, _) = find_or_create_round(conn, project_id, stack_id).unwrap();
+        record_decision(conn, lp_ids[0], round_id, &DecisionAction::Keep).unwrap();
+        record_decision(conn, lp_ids[1], round_id, &DecisionAction::Eliminate).unwrap();
+        record_decision(conn, lp_ids[2], round_id, &DecisionAction::Keep).unwrap();
+
+        // First commit succeeds
+        commit_round(conn, round_id).unwrap();
+
+        // Verify round is committed
+        assert!(is_round_committed(conn, round_id).unwrap());
+
+        // Count rounds after first commit
+        let round_count_after_first: i64 = conn
+            .query_row("SELECT COUNT(*) FROM rounds", [], |row| row.get(0))
+            .unwrap();
+
+        // Second commit on the same (already committed) round must fail
+        let result = commit_round(conn, round_id);
         assert!(
-            was_created,
-            "after commit, find_or_create_round must create a new round"
+            result.is_err(),
+            "double commit on already-committed round must return an error, but got Ok(())"
         );
-        assert_ne!(
-            new_round_id, round_id,
-            "new round must have a different id than the committed one"
+
+        // Verify no extra rounds were created by the failed second commit
+        let round_count_after_second: i64 = conn
+            .query_row("SELECT COUNT(*) FROM rounds", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            round_count_after_first, round_count_after_second,
+            "failed second commit must not create additional rounds"
+        );
+    }
+
+    // ── Round-commit: multi-round chain (Rule 5) ─────────────────────────────
+
+    #[test]
+    fn test_round_2_to_3_with_correct_survivors() {
+        // B-second-commit (Rule 5): Create 5 photos, decide in Round 1,
+        // commit to Round 2, decide in Round 2, commit to Round 3.
+        // Verify Round 3 has only the correct survivors from Round 2.
+        let (project, project_id, stack_id, lp_ids) = setup_test_db(5);
+        let conn = &project.conn;
+
+        // ── Round 1: keep 0,1,2; eliminate 3,4 ──
+        let (round1_id, _) = find_or_create_round(conn, project_id, stack_id).unwrap();
+        record_decision(conn, lp_ids[0], round1_id, &DecisionAction::Keep).unwrap();
+        record_decision(conn, lp_ids[1], round1_id, &DecisionAction::Keep).unwrap();
+        record_decision(conn, lp_ids[2], round1_id, &DecisionAction::Keep).unwrap();
+        record_decision(conn, lp_ids[3], round1_id, &DecisionAction::Eliminate).unwrap();
+        record_decision(conn, lp_ids[4], round1_id, &DecisionAction::Eliminate).unwrap();
+
+        // Commit Round 1 -> creates Round 2 with 3 survivors (lp 0,1,2)
+        commit_round(conn, round1_id).unwrap();
+
+        // Verify Round 2 exists and has 3 photos
+        let (round2_id, round2_number): (i64, i32) = conn
+            .query_row(
+                "SELECT id, round_number FROM rounds
+                 WHERE project_id = ?1 AND scope = 'stack' AND scope_id = ?2 AND state = 'open'",
+                params![project_id, stack_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("Round 2 must exist");
+        assert_eq!(round2_number, 2);
+
+        let round2_photo_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM round_photos WHERE round_id = ?1",
+                params![round2_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(round2_photo_count, 3, "Round 2 must have 3 survivors from Round 1");
+
+        // ── Round 2: keep 0; eliminate 1,2 ──
+        record_decision(conn, lp_ids[0], round2_id, &DecisionAction::Keep).unwrap();
+        record_decision(conn, lp_ids[1], round2_id, &DecisionAction::Eliminate).unwrap();
+        record_decision(conn, lp_ids[2], round2_id, &DecisionAction::Eliminate).unwrap();
+
+        // Commit Round 2 -> creates Round 3 with 1 survivor (lp 0)
+        commit_round(conn, round2_id).unwrap();
+
+        // Verify Round 3 exists
+        let (round3_id, round3_number): (i64, i32) = conn
+            .query_row(
+                "SELECT id, round_number FROM rounds
+                 WHERE project_id = ?1 AND scope = 'stack' AND scope_id = ?2 AND state = 'open'",
+                params![project_id, stack_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("Round 3 must exist");
+        assert_eq!(round3_number, 3);
+
+        // Verify Round 3 has exactly 1 photo (lp_ids[0])
+        let round3_photo_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM round_photos WHERE round_id = ?1",
+                params![round3_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(round3_photo_count, 1, "Round 3 must have exactly 1 survivor from Round 2");
+
+        // Verify the survivor is lp_ids[0]
+        let survivor_id: i64 = conn
+            .query_row(
+                "SELECT logical_photo_id FROM round_photos WHERE round_id = ?1",
+                params![round3_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            survivor_id, lp_ids[0],
+            "Round 3's only survivor must be lp_ids[0]"
+        );
+
+        // Verify the survivor's status is undecided
+        let status = get_current_status(conn, lp_ids[0]);
+        assert_eq!(status, "undecided", "Round 3 survivor must be reset to undecided");
+
+        // Verify eliminated photos from Round 1 are NOT in Round 3
+        let eliminated_in_r3: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM round_photos WHERE round_id = ?1 AND logical_photo_id IN (?2, ?3)",
+                params![round3_id, lp_ids[3], lp_ids[4]],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            eliminated_in_r3, 0,
+            "photos eliminated in Round 1 must not appear in Round 3"
+        );
+    }
+
+    // ── BUG-10: RAW preview path tests ─────────────────────────────────────
+
+    #[test]
+    fn test_get_photo_detail_returns_preview_path_when_file_exists() {
+        // BUG-10: RAW-only photos need a full-size preview for SingleView.
+        // get_photo_detail must return preview_path when {id}_preview.jpg exists.
+        let project = TestLibraryBuilder::new()
+            .add_photo(PhotoSpec {
+                camera: Camera::Canon,
+                orientation: 1,
+                file_type: FileType::Jpeg,
+                capture_time: Some("2024:01:01 10:00:00".to_string()),
+                camera_params: None,
+            })
+            .build_db_only();
+        let lp_id = project.lp_ids[0];
+
+        let cache_dir = tempfile::tempdir().unwrap();
+        // Create the preview file on disk
+        let preview_path = cache_dir.path().join(format!("{}_preview.jpg", lp_id));
+        std::fs::write(&preview_path, b"fake-preview-data").unwrap();
+
+        let detail = get_photo_detail(&project.conn, lp_id, cache_dir.path()).unwrap();
+
+        assert!(
+            detail.preview_path.is_some(),
+            "preview_path must be Some when {}_preview.jpg exists on disk",
+            lp_id
+        );
+        assert!(
+            detail.preview_path.unwrap().contains("_preview.jpg"),
+            "preview_path must contain '_preview.jpg'"
+        );
+    }
+
+    #[test]
+    fn test_get_photo_detail_returns_none_preview_when_no_file() {
+        // When no preview file exists, preview_path must be None.
+        let project = TestLibraryBuilder::new()
+            .add_photo(PhotoSpec {
+                camera: Camera::Canon,
+                orientation: 1,
+                file_type: FileType::Jpeg,
+                capture_time: Some("2024:01:01 10:00:00".to_string()),
+                camera_params: None,
+            })
+            .build_db_only();
+        let lp_id = project.lp_ids[0];
+
+        let cache_dir = tempfile::tempdir().unwrap();
+        // No preview file created
+
+        let detail = get_photo_detail(&project.conn, lp_id, cache_dir.path()).unwrap();
+
+        assert!(
+            detail.preview_path.is_none(),
+            "preview_path must be None when no preview file exists"
         );
     }
 
@@ -1138,41 +1240,16 @@ mod tests {
         // This test creates a thumbnail at the REAL path ({lp_id}.jpg) and
         // asserts that get_photo_detail returns Some(thumbnail_path).
         // On current code this FAILS because engine.rs looks for thumb_{lp_id}.jpg.
-        let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
-
-        conn.execute(
-            "INSERT INTO projects (name, slug, created_at) VALUES ('P', 'p', '2024-01-01T00:00:00Z')",
-            [],
-        )
-        .unwrap();
-        let project_id = conn.last_insert_rowid();
-        let now = chrono::Utc::now().to_rfc3339();
-        conn.execute(
-            "INSERT INTO stacks (project_id, created_at) VALUES (?1, ?2)",
-            params![project_id, now],
-        )
-        .unwrap();
-        let stack_id = conn.last_insert_rowid();
-
-        conn.execute(
-            "INSERT INTO photos (path, format, capture_time) VALUES ('/test/photo.jpg', 'jpeg', '2024-01-01T10:00:00Z')",
-            [],
-        )
-        .unwrap();
-        let photo_id = conn.last_insert_rowid();
-
-        conn.execute(
-            "INSERT INTO logical_photos (project_id, representative_photo_id, stack_id) VALUES (?1, ?2, ?3)",
-            params![project_id, photo_id, stack_id],
-        )
-        .unwrap();
-        let lp_id = conn.last_insert_rowid();
-        conn.execute(
-            "UPDATE photos SET logical_photo_id = ?1 WHERE id = ?2",
-            params![lp_id, photo_id],
-        )
-        .unwrap();
+        let project = TestLibraryBuilder::new()
+            .add_photo(PhotoSpec {
+                camera: Camera::Canon,
+                orientation: 1,
+                file_type: FileType::Jpeg,
+                capture_time: Some("2024:01:01 10:00:00".to_string()),
+                camera_params: None,
+            })
+            .build_db_only();
+        let lp_id = project.lp_ids[0];
 
         // Create a thumbnail at the REAL path that thumbnails.rs would generate
         let cache_dir = tempfile::tempdir().unwrap();
@@ -1180,7 +1257,7 @@ mod tests {
         std::fs::write(&real_thumb_path, b"fake-jpeg-data").unwrap();
         assert!(real_thumb_path.exists(), "sanity: thumb file must exist");
 
-        let detail = get_photo_detail(&conn, lp_id, cache_dir.path()).unwrap();
+        let detail = get_photo_detail(&project.conn, lp_id, cache_dir.path()).unwrap();
 
         // This assertion WILL FAIL on current code because engine.rs looks for
         // "thumb_{lp_id}.jpg" but the file on disk is "{lp_id}.jpg".

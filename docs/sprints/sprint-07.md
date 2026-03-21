@@ -35,7 +35,7 @@ All code in this sprint is designed for future extension without rewriting:
 
 - **Decision engine** as a standalone Rust module `src-tauri/src/decisions/` —
   not coupled to UI or specific views. The same module will serve stack-scope,
-  session-scope, and comparison-view decisions in future sprints.
+  GemStack-scope, and comparison-view decisions in future sprints.
 - **Stack operations** as composable repository functions in `src-tauri/src/photos/repository.rs` —
   merge, restack, undo are independent functions that can be composed for future
   split, drag-and-drop merge, and batch operations.
@@ -44,7 +44,7 @@ All code in this sprint is designed for future extension without rewriting:
   same mechanism. The table schema is action-agnostic (JSON details).
 - **Frontend components** accept data via props, not hardcoded to specific views —
   the camera parameters overlay, decision badges, and status bar are reusable across
-  SingleView, ComparisonView (Sprint 8), and FinalistView (Sprint 10).
+  SingleView, ComparisonView (Sprint 8), and GemStack (Sprint 11).
 
 ### Module Structure (new files)
 
@@ -92,7 +92,7 @@ pub struct ProjectContext {
     pub cancel_indexing: Arc<AtomicBool>,  // move from global
     pub pause_indexing: Arc<AtomicBool>,   // move from global
     pub indexing_status: Arc<Mutex<IndexingStatus>>,  // move from global
-    // Future sprints add: comparison_state, session_state, etc.
+    // Future sprints add: comparison_state, gemstack_state, etc.
 }
 
 pub struct AppState {

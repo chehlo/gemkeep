@@ -76,7 +76,7 @@ The main navigation hub. Grid of stack cards with arrow-key focus.
 | `Space` | Quick preview of focused stack | S12 | Large thumbnail overlay, dismiss with any key |
 | `i` | Start indexing | Done | Only when source folders exist and not already indexing |
 | `r` | Re-index photos | Done | Only when stacks exist and not already indexing |
-| `F` | Open Finalist View | S10 | Shows all stack winners for cross-stack refinement |
+| `F` | Jump to GemStack | S11 | Navigates to the GemStack in StackOverview (or opens it directly) |
 | `Ctrl+B` | Open burst gap config | Done | Overlay panel for burst threshold |
 | `Esc` | Back to ProjectList | Done | Preserves resume-project state |
 | `?` | Keyboard help overlay | S12 | Shows StackOverview-specific shortcuts |
@@ -107,8 +107,9 @@ parameters. This is where most decisions begin.
 | `Tab` | Jump to next undecided photo | S7 | Skips kept and eliminated photos |
 | `Shift+Tab` | Jump to previous undecided photo | S7 | Reverse |
 | `A` | Toggle auto-advance | S8 | When ON, Y/X auto-advances to next undecided. Shows `[AUTO >>]` indicator. Default OFF. |
+| `G` | Promote survivors to GemStack | S11 | Promotes all current-round survivors to GemStack. Re-pressing replaces previous promotions from this stack. |
 | `Ctrl+Enter` | Commit current round | S7 | Seals the round. Decisions become read-only. Non-reversible. |
-| `Ctrl+Shift+Enter` | Finalize stack | S9 | Marks stack as done. Finalist(s) locked. Shows confirmation inline. |
+| `Ctrl+Shift+Enter` | Finalize stack | S9 | Marks stack as done. Survivors locked. Shows confirmation inline. |
 | `[` | Previous round | S9 | Navigate to earlier round snapshot (read-only) |
 | `]` | Next round / current round | S9 | Navigate forward through rounds |
 | `R` | Restore eliminated photo | S9 | Only in round-history view on a dimmed photo. Creates a keep in the current round. |
@@ -173,27 +174,28 @@ This is the PRIMARY decision-making view for the hobbyist user.
 
 ---
 
-## Session Finalist Shortcuts
+## GemStack Shortcuts
 
-Same as StackFocus but operating on the cross-stack finalist pool.
-Keyboard behavior is identical to ensure seamless scope switching.
+The GemStack behaves identically to a regular stack — same round engine,
+same keyboard shortcuts. These are listed for completeness; they mirror
+StackFocus exactly.
 
 | Key | Action | Sprint | Notes |
 |---|---|---|---|
-| `Arrow keys` / `hjkl` | Navigate finalist grid | S10 | Same as StackFocus |
-| `Enter` or `E` | Open finalist in SingleView | S10 | |
-| `Y` | Keep finalist | S10 | Session-level decision |
-| `X` | Eliminate finalist | S10 | |
-| `U` | Undo last session decision | S10 | |
-| `C` | Compare two finalists | S10 | Opens comparison view with session-scope photo pool |
-| `Tab` | Next undecided finalist | S10 | |
-| `A` | Toggle auto-advance | S10 | |
-| `Ctrl+Enter` | Commit session round | S10 | |
-| `Ctrl+Shift+Enter` | Finalize session | S10 | Locks the gem stack |
-| `[` / `]` | Navigate session rounds | S10 | |
-| `E` | Export finalists | S11 | Opens export dialog after session finalization |
-| `T` | Tag management | S11 | Opens tag assignment panel |
-| `Esc` | Back to StackOverview | S10 | |
+| `Arrow keys` / `hjkl` | Navigate GemStack grid | S11 | Same as StackFocus |
+| `Enter` or `E` | Open photo in SingleView | S11 | |
+| `Y` | Keep photo | S11 | GemStack-level decision |
+| `X` | Eliminate photo | S11 | |
+| `U` | Undo last decision | S11 | |
+| `C` | Compare two photos | S11 | Opens comparison view within GemStack pool |
+| `Tab` | Next undecided photo | S11 | |
+| `A` | Toggle auto-advance | S11 | |
+| `Ctrl+Enter` | Commit GemStack round | S11 | |
+| `Ctrl+Shift+Enter` | Finalize GemStack | S11 | Locks the gem set — survivors are final gems |
+| `[` / `]` | Navigate GemStack rounds | S11 | |
+| `E` | Export gems | S12 | Opens export dialog after GemStack finalization |
+| `T` | Tag management | S12 | Opens tag assignment panel |
+| `Esc` | Back to StackOverview | S11 | |
 | `?` | Keyboard help overlay | S12 | |
 
 ---
@@ -277,7 +279,7 @@ Photo A (active) vs Photo B
 
 Compact lookup table. Sorted by key.
 
-| Key | Action | StackOverview | StackFocus | SingleView | Comparison | Finalists |
+| Key | Action | StackOverview | StackFocus | SingleView | Comparison | GemStack |
 |---|---|---|---|---|---|---|
 | `Arrow keys` | Navigate | Grid focus | Grid focus | Prev/Next photo | Replace active photo | Grid focus |
 | `hjkl` | Vim navigate | Grid focus | Grid focus | Prev/Next photo | -- | Grid focus |
@@ -288,13 +290,14 @@ Compact lookup table. Sorted by key.
 | `X` | Eliminate | -- | Elim focused | Elim current | Elim active | Elim focused |
 | `U` | Undo decision | -- | Undo last | Undo last | Undo last | Undo last |
 | `C` | Compare view | -- | Open compare | Open compare | -- | Open compare |
+| `G` | Promote to GemStack | -- | Promote survivors | -- | -- | -- |
 | `Tab` | Next undecided | Next unfinished stack | Next undecided photo | Next undecided | Switch active side | Next undecided |
 | `Shift+Tab` | Prev undecided | Prev unfinished | Prev undecided | Prev undecided | -- | Prev undecided |
 | `A` | Auto-advance toggle | -- | Toggle | Toggle | Toggle | Toggle |
 | `L` | Lock comparison | -- | -- | -- | Toggle lock | -- |
 | `I` | Toggle info panel | -- | -- | Toggle EXIF | Toggle EXIF | -- |
 | `R` | Restore / RAW toggle | Re-index | Restore photo | RAW toggle | -- | -- |
-| `F` | Finalist view | Open finalists | -- | -- | -- | -- |
+| `F` | Jump to GemStack | Jump to GemStack | -- | -- | -- | -- |
 | `T` | Tag management | -- | -- | -- | -- | Open tags |
 | `Space` | Quick preview | Preview stack | -- | -- | -- | -- |
 | `/` | Search | Open search | -- | -- | -- | -- |
@@ -303,14 +306,14 @@ Compact lookup table. Sorted by key.
 | `1` | 100% zoom | -- | -- | Zoom 100% | -- | -- |
 | `+` / `=` | Zoom in | -- | -- | Zoom in | -- | -- |
 | `-` | Zoom out | -- | -- | Zoom out | -- | -- |
-| `Home` | First item | First stack | First photo | First photo | -- | First finalist |
-| `End` | Last item | Last stack | Last photo | Last photo | -- | Last finalist |
+| `Home` | First item | First stack | First photo | First photo | -- | First photo |
+| `End` | Last item | Last stack | Last photo | Last photo | -- | Last photo |
 | `[` | Previous round | -- | Prev round | Prev round | -- | Prev round |
 | `]` | Next round | -- | Next round | Next round | -- | Next round |
 | `Ctrl+B` | Burst config | Open panel | Open panel | Open panel | Open panel | Open panel |
 | `Ctrl+Z` | Undo | -- | Undo last | Undo last | Undo last | Undo last |
 | `Ctrl+Enter` | Commit round | -- | Commit | Commit | Commit | Commit |
-| `Ctrl+Shift+Enter` | Finalize | -- | Finalize stack | -- | -- | Finalize session |
+| `Ctrl+Shift+Enter` | Finalize | -- | Finalize stack | -- | -- | Finalize GemStack |
 
 ---
 
@@ -320,8 +323,8 @@ Compact lookup table. Sorted by key.
 |---|---|---|
 | `R` | Re-index (StackOverview) vs RAW toggle (SingleView) vs Restore (StackFocus round history) | Context-dependent: each only available in its specific screen. No ambiguity because screens are mutually exclusive. |
 | `I` | Start indexing (StackOverview) vs Info toggle (SingleView) | `i` starts indexing only when source folders exist and no stacks are present. In all other contexts, `I` toggles info. |
-| `E` | Enter single view vs Export | `E` = single view in StackFocus/Finalists. Export uses `E` only in finalized Finalist view (different context). |
-| `F` | Finalist view vs Filter | `F` = finalists from StackOverview. `/` opens the filter/search bar. No overlap. |
+| `E` | Enter single view vs Export | `E` = single view in StackFocus/GemStack. Export uses `E` only in finalized GemStack (different context). |
+| `F` | Jump to GemStack vs Filter | `F` = jump to GemStack from StackOverview. `/` opens the filter/search bar. No overlap. |
 | `Tab` | Next undecided (most screens) vs Switch active side (Comparison) | In Comparison, Tab switches sides because "next undecided" is handled by auto-fill. Semantically consistent: Tab always means "move attention to the other thing." |
 | `C` | Compare view vs Copy (in some apps) | GemKeep does not have a copy action during culling. No conflict. |
 
@@ -353,12 +356,13 @@ Compact lookup table. Sorted by key.
 - R (restore eliminated photo)
 - Ctrl+Shift+Enter (finalize stack)
 
-**Sprint 10 (Session Scope):**
-- F (finalist view from StackOverview)
-- All StackFocus shortcuts replicated in Finalist view
-- Ctrl+Shift+Enter (finalize session)
+**Sprint 11 (GemStack):**
+- G (promote survivors to GemStack from StackFocus)
+- F (jump to GemStack from StackOverview)
+- All StackFocus shortcuts work identically in GemStack
+- Ctrl+Shift+Enter (finalize GemStack)
 
-**Sprint 11 (Export & Labels):**
+**Sprint 12 (Export & Labels):**
 - T (tag management)
 - E (export, in finalized context)
 

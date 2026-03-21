@@ -19,7 +19,7 @@ Goal: Extremely fast, keyboard-first discovery and keeping of the best photos fr
   - Restoration = new keep decision in a later round
 - Two working scopes (same round engine & UX)
   - Stack Scope: refinement inside one stack
-  - Session Scope: refinement across all stack finalists
+  - GemStack Scope: refinement across all promoted photos (the GemStack is a special stack)
 
 ## 2. Project Layer (Top-Level Isolation)
 
@@ -100,7 +100,7 @@ Goal: Extremely fast, keyboard-first discovery and keeping of the best photos fr
 
 - **photos**: path, format, pair linkage, stack membership, current status, metadata
 - **stacks**: grouping container, created from burst detection
-- **rounds**: linear progression, scope (stack or session), commit state
+- **rounds**: linear progression, scope (stack or GemStack), commit state
 - **decisions**: audit log of keep/eliminate actions per round
 - **merges**: stack merge history for undo
 - **projects**: metadata, settings, source folders

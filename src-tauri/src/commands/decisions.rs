@@ -2,38 +2,12 @@ use crate::decisions::engine;
 use crate::decisions::model::{
     DecisionAction, DecisionResult, PhotoDecisionStatus, PhotoDetail, RoundStatus,
 };
-use crate::photos::repository;
 use crate::projects::manager;
 use crate::state::AppState;
-use rusqlite::{Connection, OptionalExtension};
-use std::sync::MutexGuard;
+use rusqlite::OptionalExtension;
 use tauri::State;
 
-type ProjectGuards<'s> = (
-    MutexGuard<'s, Option<Connection>>,
-    MutexGuard<'s, Option<crate::projects::model::Project>>,
-);
-
-fn with_open_project<'s>(state: &'s AppState, slug: &str) -> Result<ProjectGuards<'s>, String> {
-    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
-    if db_guard.is_none() {
-        return Err("No project open".to_string());
-    }
-    let project_guard = state
-        .active_project
-        .lock()
-        .map_err(|_| "lock poisoned".to_string())?;
-    let project = project_guard
-        .as_ref()
-        .ok_or_else(|| "No project open".to_string())?;
-    if project.slug != slug {
-        return Err(format!(
-            "Slug mismatch: expected {}, got {}",
-            project.slug, slug
-        ));
-    }
-    Ok((db_guard, project_guard))
-}
+use super::with_open_project;
 
 /// Record a keep or eliminate decision for a logical photo.
 /// Auto-creates Round 1 if no open round exists.
@@ -147,10 +121,20 @@ pub fn get_round_status(
     let conn = db_guard.as_ref().unwrap();
     let project = project_guard.as_ref().unwrap();
 
-    // Ensure a round exists (auto-create if needed)
-    engine::find_or_create_round(conn, project.id, stack_id).map_err(|e| e.to_string())?;
-
-    engine::get_round_status(conn, project.id, stack_id).map_err(|e| e.to_string())
+    // Read-only: return status of most recent round, or default if none exists.
+    // Do NOT auto-create rounds here — that's a side-effect in a read operation.
+    engine::get_round_status(conn, project.id, stack_id)
+        .or_else(|_| Ok(RoundStatus {
+            round_id: 0,
+            round_number: 0,
+            state: "none".to_string(),
+            total_photos: 0,
+            decided: 0,
+            kept: 0,
+            eliminated: 0,
+            undecided: 0,
+            committed_at: None,
+        }))
 }
 
 /// Commit (seal) the current open round for a stack.
@@ -193,21 +177,24 @@ pub fn get_stack_decisions(
     let (db_guard, _project_guard) = with_open_project(&state, &slug)?;
     let conn = db_guard.as_ref().unwrap();
 
-    // Query all logical_photos in the stack and return their current_status
-    let photos =
-        repository::query_logical_photos_by_stack(conn, stack_id).map_err(|e| e.to_string())?;
+    // Single query: fetch id + current_status for all photos in the stack
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, COALESCE(current_status, 'undecided') as current_status \
+             FROM logical_photos WHERE stack_id = ?1 ORDER BY id ASC",
+        )
+        .map_err(|e| e.to_string())?;
 
-    Ok(photos
-        .into_iter()
-        .map(|lp| PhotoDecisionStatus {
-            logical_photo_id: lp.logical_photo_id,
-            current_status: conn
-                .query_row(
-                    "SELECT current_status FROM logical_photos WHERE id = ?1",
-                    rusqlite::params![lp.logical_photo_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .unwrap_or_else(|_| "undecided".to_string()),
+    let results = stmt
+        .query_map(rusqlite::params![stack_id], |row| {
+            Ok(PhotoDecisionStatus {
+                logical_photo_id: row.get(0)?,
+                current_status: row.get(1)?,
+            })
         })
-        .collect())
+        .map_err(|e| e.to_string())?;
+
+    results
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
 }

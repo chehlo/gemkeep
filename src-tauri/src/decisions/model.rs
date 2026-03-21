@@ -63,8 +63,9 @@ pub struct PhotoDetail {
     pub focal_length: Option<f64>,  // mm
     pub exposure_comp: Option<f64>, // EV
     // File paths for asset protocol display
-    pub jpeg_path: Option<String>, // path to JPEG file (for display)
-    pub raw_path: Option<String>,  // path to RAW file (for future toggle)
+    pub jpeg_path: Option<String>,    // path to JPEG file (for display)
+    pub raw_path: Option<String>,     // path to RAW file (for future toggle)
+    pub preview_path: Option<String>, // full-size RAW embedded preview (SingleView fallback)
 }
 
 /// Decision status for a single logical photo within a stack.

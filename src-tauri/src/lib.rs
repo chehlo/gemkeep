@@ -10,6 +10,15 @@ pub mod state;
 use projects::manager;
 use state::AppState;
 
+#[tauri::command]
+fn toggle_devtools(window: tauri::WebviewWindow) {
+    if window.is_devtools_open() {
+        window.close_devtools();
+    } else {
+        window.open_devtools();
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tracing_subscriber::fmt::init();
@@ -19,6 +28,7 @@ pub fn run() {
         .manage(AppState::new(home))
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
+            toggle_devtools,
             commands::projects::suggest_slug,
             commands::projects::create_project,
             commands::projects::list_projects,

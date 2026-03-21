@@ -1,22 +1,18 @@
-export type DecisionStatus = 'keep' | 'eliminate' | 'undecided'
+import type { DecisionStatus } from '$lib/api/index.js'
+export type { DecisionStatus }
 
 export const DECISION_CLASSES = {
   keep: 'decision-keep',
   eliminate: 'decision-eliminate',
 } as const
 
-export const DECISION_BORDERS = {
-  keep: 'border-4 border-green-500',
-  eliminate: 'border-4 border-red-500',
-} as const
-
-export const DECISION_TEXT: Record<string, string> = {
+export const DECISION_TEXT: Record<DecisionStatus, string> = {
   keep: 'KEPT',
   eliminate: 'ELIMINATED',
   undecided: 'UNDECIDED',
 }
 
-export const DECISION_TEXT_COLORS: Record<string, string> = {
+export const DECISION_TEXT_COLORS: Record<DecisionStatus, string> = {
   keep: 'text-green-400',
   eliminate: 'text-red-400',
   undecided: 'text-gray-400',

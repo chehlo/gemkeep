@@ -5,6 +5,7 @@ import { userEvent } from '@testing-library/user-event'
 import { invoke } from '@tauri-apps/api/core'
 import { navigate, navigation } from '$lib/stores/navigation.svelte.js'
 import type { Project } from '$lib/api/index.js'
+import { resetInvokeMock } from '$test/helpers'
 import ProjectList from './ProjectList.svelte'
 
 const mockInvoke = vi.mocked(invoke)
@@ -24,12 +25,7 @@ const WEDDING: Project = {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  // Reset mock queue (unconsumed mockResolvedValueOnce values from previous tests) and
-  // reinstall the Rule 9 throwing default so under-mocked commands fail loudly.
-  mockInvoke.mockReset()
-  mockInvoke.mockImplementation((cmd: string) => {
-    throw new Error(`Unmocked invoke("${cmd}"). Add mockInvoke.mockResolvedValueOnce(...) before this call.`)
-  })
+  resetInvokeMock()
   navigate({ kind: 'project-list' })
 })
 
@@ -330,6 +326,11 @@ describe('ProjectList — Cancel button and Esc key (FIX-1.2.1)', () => {
 
     // Form should be hidden
     expect(screen.queryByPlaceholderText('Iceland 2024')).not.toBeInTheDocument()
+
+    // Name promises "and clears the name input" — reopen and verify input is empty
+    await user.click(screen.getByText('New Project'))
+    const reopenedInput = screen.getByPlaceholderText('Iceland 2024') as HTMLInputElement
+    expect(reopenedInput.value).toBe('')
   })
 
   it('Cancel button is visible when the form is open', async () => {
@@ -555,7 +556,7 @@ describe('ProjectList — Delete flow (PL-19, PL-20, PL-21, PL-22)', () => {
 })
 
 describe('ProjectList — error display (PL-27)', () => {
-  it('shows red error banner when get_last_project fails', async () => {
+  it('shows error banner text when get_last_project fails', async () => {
     mockInvoke.mockRejectedValueOnce(new Error('Database locked')) // get_last_project fails
     render(ProjectList)
     await waitFor(() => {
@@ -563,7 +564,7 @@ describe('ProjectList — error display (PL-27)', () => {
     })
   })
 
-  it('shows red error banner when open_project fails', async () => {
+  it('shows error banner text when open_project fails', async () => {
     await renderWithProjects()
     const user = userEvent.setup()
 

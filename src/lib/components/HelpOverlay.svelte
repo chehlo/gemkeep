@@ -79,10 +79,28 @@
       { key: 'Y', description: 'Keep photo' },
       { key: 'X', description: 'Eliminate photo' },
       { key: 'U', description: 'Undo decision' },
-      { key: 'Ctrl+Enter', description: 'Commit round' },
     ]},
     { title: 'DISPLAY', shortcuts: [
       { key: 'I', description: 'Toggle camera params' },
+    ]},
+  ]
+
+  const COMPARISON_VIEW: ShortcutGroup[] = [
+    { title: 'NAVIGATION', shortcuts: [
+      { key: 'Left / Right', description: 'Switch focus between panels' },
+      { key: 'Up / Down', description: 'Cycle photo in focused panel' },
+      { key: 'Enter', description: 'Open in single view' },
+      ...GLOBAL,
+    ]},
+    { title: 'DECISIONS', shortcuts: [
+      { key: 'Y', description: 'Keep focused photo' },
+      { key: 'X', description: 'Eliminate (auto-fills next)' },
+      { key: 'U', description: 'Undo decision' },
+    ]},
+    { title: 'DISPLAY', shortcuts: [
+      { key: 'L', description: 'Lock / unlock auto-fill' },
+      { key: 'I', description: 'Toggle camera params' },
+      { key: 'F', description: 'Show file path' },
     ]},
   ]
 
@@ -91,6 +109,7 @@
     'stack-overview': STACK_OVERVIEW,
     'stack-focus': STACK_FOCUS,
     'single-view': SINGLE_VIEW,
+    'comparison-view': COMPARISON_VIEW,
   }
 
   const SCREEN_TITLES: Record<string, string> = {
@@ -98,6 +117,7 @@
     'stack-overview': 'Stack Overview',
     'stack-focus': 'Stack Focus',
     'single-view': 'Single View',
+    'comparison-view': 'Comparison View',
   }
 
   const groups = $derived(SCREEN_SHORTCUTS[navigation.current.kind] ?? PROJECT_LIST)

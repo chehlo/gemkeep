@@ -6,6 +6,8 @@ import { listen } from '@tauri-apps/api/event'
 import { open } from '@tauri-apps/plugin-dialog'
 import { navigate, navigation } from '$lib/stores/navigation.svelte.js'
 import type { SourceFolder, IndexingStatus, StackSummary } from '$lib/api/index.js'
+import { IDLE_STATUS, makeStack } from '$test/fixtures'
+import { mockStackOverviewRouter } from '$test/helpers'
 import StackOverview from './StackOverview.svelte'
 
 const mockOpen = vi.mocked(open)
@@ -14,11 +16,6 @@ const mockListen = vi.mocked(listen)
 
 const FOLDER_A: SourceFolder = { id: 1, path: '/home/user/Photos/Iceland' }
 const FOLDER_B: SourceFolder = { id: 2, path: '/home/user/Photos/Drone' }
-
-const IDLE_STATUS: IndexingStatus = {
-  running: false, thumbnails_running: false, total: 0, processed: 0, errors: 0, cancelled: false, paused: false, last_stats: null,
-  thumbnails_total: 0, thumbnails_done: 0
-}
 
 const RUNNING_STATUS: IndexingStatus = {
   running: true, thumbnails_running: false, total: 1290, processed: 340, errors: 0, cancelled: false, paused: false, last_stats: null,
@@ -40,75 +37,17 @@ const THUMBNAIL_RUNNING_STATUS: IndexingStatus = {
   thumbnails_total: 0, thumbnails_done: 0
 }
 
-const STACK_1: StackSummary = {
-  stack_id: 1, logical_photo_count: 6, earliest_capture: '2024-03-15T10:00:00Z',
-  has_raw: true, has_jpeg: true, thumbnail_path: null
-}
-const STACK_2: StackSummary = {
-  stack_id: 2, logical_photo_count: 4, earliest_capture: '2024-03-15T11:00:00Z',
-  has_raw: false, has_jpeg: true, thumbnail_path: null
-}
-const STACK_3: StackSummary = {
-  stack_id: 3, logical_photo_count: 1, earliest_capture: null,
-  has_raw: true, has_jpeg: false, thumbnail_path: null
-}
+const STACK_1: StackSummary = makeStack({ stack_id: 1, logical_photo_count: 6 })
+const STACK_2: StackSummary = makeStack({ stack_id: 2, logical_photo_count: 4, earliest_capture: '2024-03-15T11:00:00Z', has_raw: false })
+const STACK_3: StackSummary = makeStack({ stack_id: 3, logical_photo_count: 1, earliest_capture: null, has_jpeg: false })
 
-const STACK_WITH_THUMB: StackSummary = {
-  stack_id: 4, logical_photo_count: 3, earliest_capture: '2024-03-15T12:00:00Z',
-  has_raw: true, has_jpeg: true,
+const STACK_WITH_THUMB: StackSummary = makeStack({
+  stack_id: 4, earliest_capture: '2024-03-15T12:00:00Z',
   thumbnail_path: '/home/user/.gem-keep/projects/iceland-2024/cache/thumbnails/4.jpg'
-}
+})
 
 function setupNav() {
   navigate({ kind: 'stack-overview', projectSlug: 'iceland-2024', projectName: 'Iceland 2024' })
-}
-
-/**
- * Render StackOverview with sensible mock defaults.
- *
- * Sets up the initial loadAll() invoke chain (list_source_folders, list_stacks,
- * get_indexing_status) and automatically adds the follow-up mocks that loadAll()
- * triggers based on state (auto-start indexing, resume thumbnails, or polling).
- *
- * Tests only override what they need. Tests requiring specific mockResolvedValueOnce
- * chains (e.g. polling sequences, burst gap panel) should add those AFTER calling
- * this helper.
- */
-function renderStackOverview(overrides?: Partial<{
-  folders: SourceFolder[],
-  stacks: StackSummary[],
-  status: IndexingStatus,
-  burstGap: number,
-}>) {
-  const folders = overrides?.folders ?? []
-  const stacks = overrides?.stacks ?? []
-  const status = overrides?.status ?? IDLE_STATUS
-
-  // loadAll() core: list_source_folders, list_stacks, get_indexing_status
-  // (expand_source_scopes is handled by the default mockImplementation in beforeEach)
-  mockInvoke.mockResolvedValueOnce(folders)
-  mockInvoke.mockResolvedValueOnce(stacks)
-  mockInvoke.mockResolvedValueOnce(status)
-
-  // loadAll() follow-up mocks based on derived state:
-  if (status.running || status.thumbnails_running) {
-    // Path A: startPolling() fires immediately
-    mockInvoke.mockResolvedValueOnce(IDLE_STATUS)  // poll: get_indexing_status (terminal)
-    mockInvoke.mockResolvedValueOnce(stacks)       // poll: list_stacks (stops polling)
-  } else if (folders.length > 0 && stacks.length === 0) {
-    // Path B: auto-start indexing -> start_indexing + startPolling()
-    mockInvoke.mockResolvedValueOnce(undefined)    // start_indexing
-    mockInvoke.mockResolvedValueOnce(IDLE_STATUS)  // poll: get_indexing_status (terminal)
-    mockInvoke.mockResolvedValueOnce(stacks)       // poll: list_stacks (stops polling)
-  } else if (stacks.length > 0 && stacks.some(s => s.thumbnail_path === null)) {
-    // Path C: resume thumbnails -> resume_thumbnails + startPolling()
-    mockInvoke.mockResolvedValueOnce(undefined)    // resume_thumbnails
-    mockInvoke.mockResolvedValueOnce(IDLE_STATUS)  // poll: get_indexing_status (terminal)
-    mockInvoke.mockResolvedValueOnce(stacks)       // poll: list_stacks (stops polling)
-  }
-  // Path D: all thumbs present, idle -> no follow-up mocks needed
-
-  return render(StackOverview)
 }
 
 afterEach(() => {
@@ -117,21 +56,14 @@ afterEach(() => {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  // Reset invoke mock to clear any unconsumed mockResolvedValueOnce queue,
-  // then restore the Rule 9 throwing default.
-  mockInvoke.mockReset()
-  mockInvoke.mockImplementation((cmd: string) => {
-    // expand_source_scopes is fire-and-forget in loadAll(); silently resolve it
-    if (cmd === 'expand_source_scopes') return Promise.resolve(undefined)
-    throw new Error(`Unmocked invoke("${cmd}"). Add mockInvoke.mockResolvedValueOnce(...) before this call.`)
-  })
+  mockInvoke.mockImplementation(mockStackOverviewRouter())
   setupNav()
   navigation.stackOverviewFocusIndex = null
 })
 
 describe('StackOverview — state 1: no source folders', () => {
   it('renders no-folders state when source_folders is empty', async () => {
-    renderStackOverview()
+    render(StackOverview)
 
     await waitFor(() => {
       expect(screen.getByText('No source folders attached.')).toBeInTheDocument()
@@ -144,7 +76,11 @@ describe('StackOverview — state 1: no source folders', () => {
 
 describe('StackOverview — state 2: folders attached, auto-starts indexing', () => {
   it('auto-starts indexing and shows folder paths during indexing', async () => {
-    renderStackOverview({ folders: [FOLDER_A, FOLDER_B] })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A, FOLDER_B]],
+    }))
+
+    render(StackOverview)
 
     await waitFor(() => {
       expect(screen.getByText('/home/user/Photos/Iceland')).toBeInTheDocument()
@@ -157,7 +93,11 @@ describe('StackOverview — state 2: folders attached, auto-starts indexing', ()
   })
 
   it('calls start_indexing automatically when folders present but no stacks', async () => {
-    renderStackOverview({ folders: [FOLDER_A] })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+    }))
+
+    render(StackOverview)
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith('start_indexing', { slug: 'iceland-2024' })
@@ -165,14 +105,24 @@ describe('StackOverview — state 2: folders attached, auto-starts indexing', ()
   })
 
   it('does NOT auto-start when stacks already exist (re-open scenario)', async () => {
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1] })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1]],
+    }))
+
+    render(StackOverview)
 
     await waitFor(() => expect(screen.getByText('Index complete.')).toBeInTheDocument())
     expect(mockInvoke).not.toHaveBeenCalledWith('start_indexing', expect.anything())
   })
 
   it('does NOT auto-start when thumbnails_running=true even if stacks are empty', async () => {
-    renderStackOverview({ folders: [FOLDER_A], status: THUMBNAIL_RUNNING_STATUS })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      get_indexing_status: THUMBNAIL_RUNNING_STATUS,
+    }))
+
+    render(StackOverview)
 
     await new Promise(resolve => setTimeout(resolve, 50))
     expect(mockInvoke).not.toHaveBeenCalledWith('start_indexing', expect.anything())
@@ -181,12 +131,11 @@ describe('StackOverview — state 2: folders attached, auto-starts indexing', ()
 
 describe('StackOverview — state 3: indexing in progress', () => {
   it('renders progress bar and cancel button during EXIF scan phase', async () => {
-    // Custom mocks: keep RUNNING_STATUS in poll so "Indexing..." stays visible during assertion
-    mockInvoke.mockResolvedValueOnce([FOLDER_A])    // list_source_folders
-    mockInvoke.mockResolvedValueOnce([])            // list_stacks
-    mockInvoke.mockResolvedValueOnce(RUNNING_STATUS) // get_indexing_status (status.running=true)
-    mockInvoke.mockResolvedValueOnce(RUNNING_STATUS) // poll: get_indexing_status (still running)
-    mockInvoke.mockResolvedValueOnce([])            // poll: list_stacks (running -> reload stacks)
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[]],
+      get_indexing_status: [RUNNING_STATUS, RUNNING_STATUS, DONE_STATUS],
+    }))
 
     render(StackOverview)
 
@@ -204,12 +153,12 @@ describe('StackOverview — state 3: indexing in progress', () => {
 
 describe('StackOverview — state 4 with thumbnails_running', () => {
   it('renders stacks grid and "Generating thumbnails…" when running=false and thumbnails_running=true', async () => {
-    // Custom mocks: keep THUMBNAIL_RUNNING_STATUS in poll so banner stays visible during assertion
-    mockInvoke.mockResolvedValueOnce([FOLDER_A])                    // list_source_folders
-    mockInvoke.mockResolvedValueOnce([STACK_1, STACK_2, STACK_3])   // list_stacks
-    mockInvoke.mockResolvedValueOnce(THUMBNAIL_RUNNING_STATUS)      // get_indexing_status
-    mockInvoke.mockResolvedValueOnce(THUMBNAIL_RUNNING_STATUS)      // poll: get_indexing_status (still running)
-    mockInvoke.mockResolvedValueOnce([STACK_1, STACK_2, STACK_3])   // poll: list_stacks
+    const stacks = [STACK_1, STACK_2, STACK_3]
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [stacks],
+      get_indexing_status: [THUMBNAIL_RUNNING_STATUS, THUMBNAIL_RUNNING_STATUS, DONE_STATUS],
+    }))
 
     render(StackOverview)
 
@@ -230,7 +179,13 @@ describe('StackOverview — state 4 with thumbnails_running', () => {
 
 describe('StackOverview — state 4: indexed, stacks visible', () => {
   it('renders stack grid after indexing completes', async () => {
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2, STACK_3], status: DONE_STATUS })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1, STACK_2, STACK_3]],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
 
     await waitFor(() => {
       expect(screen.getByText('Index complete.')).toBeInTheDocument()
@@ -247,7 +202,13 @@ describe('StackOverview — state 4: indexed, stacks visible', () => {
   })
 
   it('renders placeholder icon for stacks without thumbnail', async () => {
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_3], status: DONE_STATUS })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_3]],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
 
     await waitFor(() => {
       expect(screen.getByText('Stack #1')).toBeInTheDocument()
@@ -259,7 +220,13 @@ describe('StackOverview — state 4: indexed, stacks visible', () => {
   })
 
   it('renders Re-index button in state 4', async () => {
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2], status: DONE_STATUS })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1, STACK_2]],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
 
     await waitFor(() => {
       expect(screen.getByText('Re-index')).toBeInTheDocument()
@@ -270,7 +237,13 @@ describe('StackOverview — state 4: indexed, stacks visible', () => {
     const thumbPath = STACK_WITH_THUMB.thumbnail_path!
     vi.mocked(convertFileSrc).mockImplementation((p) => `asset://localhost${p}`)
 
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_WITH_THUMB], status: DONE_STATUS })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_WITH_THUMB]],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
 
     await waitFor(() => expect(screen.getByText('Stack #1')).toBeInTheDocument())
 
@@ -283,7 +256,13 @@ describe('StackOverview — state 4: indexed, stacks visible', () => {
   it('does not render img element when thumbnail_path is null', async () => {
     vi.mocked(convertFileSrc).mockImplementation((p) => `asset://localhost${p}`)
 
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_3], status: DONE_STATUS })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_3]],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
 
     await waitFor(() => expect(screen.getByText('Stack #1')).toBeInTheDocument())
     expect(screen.queryByRole('img')).not.toBeInTheDocument()
@@ -293,14 +272,15 @@ describe('StackOverview — state 4: indexed, stacks visible', () => {
 
 describe('StackOverview — reindex shortcuts (state 4)', () => {
   it('r key triggers re-index when stacks present', async () => {
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1], status: DONE_STATUS })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1]],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
 
     await waitFor(() => expect(screen.getByText('Index complete.')).toBeInTheDocument())
-
-    mockInvoke.mockClear()
-    mockInvoke.mockResolvedValueOnce(undefined)   // start_indexing
-    mockInvoke.mockResolvedValueOnce(IDLE_STATUS) // get_indexing_status (immediate poll from startPolling)
-    mockInvoke.mockResolvedValueOnce([STACK_1])   // list_stacks (poll reload when both flags false)
 
     fireEvent.keyDown(document, { key: 'r' })
 
@@ -308,14 +288,15 @@ describe('StackOverview — reindex shortcuts (state 4)', () => {
   })
 
   it('i key triggers re-index when stacks already exist', async () => {
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1], status: DONE_STATUS })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1]],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
 
     await waitFor(() => expect(screen.getByText('Index complete.')).toBeInTheDocument())
-
-    mockInvoke.mockClear()
-    mockInvoke.mockResolvedValueOnce(undefined)   // start_indexing
-    mockInvoke.mockResolvedValueOnce(IDLE_STATUS) // get_indexing_status (immediate poll from startPolling)
-    mockInvoke.mockResolvedValueOnce([STACK_1])   // list_stacks (poll reload when both flags false)
 
     fireEvent.keyDown(document, { key: 'i' })
 
@@ -326,16 +307,23 @@ describe('StackOverview — reindex shortcuts (state 4)', () => {
 describe("StackOverview — add-folder workflow gap", () => {
   it("after adding a folder, indexing starts automatically", async () => {
     // Initial state: no folders, no stacks
-    renderStackOverview()
+    // After add_source_folder, the component refreshes folders and auto-starts indexing
+    let folderCallCount = 0
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: () => {
+        folderCallCount++
+        // First call: no folders (initial load). Second call: folder added.
+        if (folderCallCount <= 1) return []
+        return [{ id: 1, path: "/home/user/Photos/NewAlbum" }]
+      },
+      add_source_folder: undefined,
+    }))
+
+    render(StackOverview)
     await waitFor(() => expect(screen.getByText("No source folders attached.")).toBeInTheDocument())
 
-    // Setup mocks for after-add calls
+    // Setup mock for open dialog
     mockOpen.mockResolvedValueOnce("/home/user/Photos/NewAlbum")
-    mockInvoke.mockResolvedValueOnce(undefined)    // add_source_folder
-    mockInvoke.mockResolvedValueOnce([{ id: 1, path: "/home/user/Photos/NewAlbum" }]) // list_source_folders refresh
-    mockInvoke.mockResolvedValueOnce(undefined)    // start_indexing (expected auto-start)
-    mockInvoke.mockResolvedValueOnce(IDLE_STATUS)  // get_indexing_status (poll)
-    mockInvoke.mockResolvedValueOnce([])           // list_stacks (poll)
 
     // Click "Add Folder"
     await fireEvent.click(screen.getByText("+ Add Folder"))
@@ -348,7 +336,7 @@ describe("StackOverview — add-folder workflow gap", () => {
 })
 
 describe('StackOverview — scroll position restore', () => {
-  it('restores focused card index when returning from StackFocus', async () => {
+  it('returning from StackFocus applies border-blue-500 class to previously focused card', async () => {
     const STACK_COUNT = 8
     const mockStacks: StackSummary[] = Array.from({ length: STACK_COUNT }, (_, i) => ({
       stack_id: i + 1,
@@ -362,7 +350,13 @@ describe('StackOverview — scroll position restore', () => {
     // Pre-set the saved focus index (simulating return from StackFocus)
     navigation.stackOverviewFocusIndex = 5
 
-    renderStackOverview({ folders: [FOLDER_A], stacks: mockStacks, status: DONE_STATUS })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [mockStacks],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
 
     await waitFor(() => {
       const cards = document.querySelectorAll('[data-stack-card]')
@@ -381,7 +375,13 @@ describe('StackOverview — scroll position restore', () => {
 
 describe('StackOverview — thumbnail-ready event (Part C)', () => {
   it('C2: registers listen("thumbnail-ready") on mount', async () => {
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1], status: DONE_STATUS })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1]],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
 
     await waitFor(() => expect(screen.getByText('Stack #1')).toBeInTheDocument())
 
@@ -392,7 +392,13 @@ describe('StackOverview — thumbnail-ready event (Part C)', () => {
     const mockUnlisten = vi.fn()
     mockListen.mockResolvedValueOnce(mockUnlisten as any)
 
-    const { unmount } = renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1], status: DONE_STATUS })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1]],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    const { unmount } = render(StackOverview)
 
     // Wait until listen has been called (meaning unlistenThumbnail is set)
     await waitFor(() => expect(mockListen).toHaveBeenCalledWith('thumbnail-ready', expect.any(Function)))
@@ -416,7 +422,12 @@ const STACK_WITHOUT_THUMB: StackSummary = {
 
 describe('StackOverview — P2 resume thumbnails', () => {
   it('P2-07: calls resume_thumbnails when stacks exist with null thumbnail_path and idle status', async () => {
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_WITHOUT_THUMB] })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_WITHOUT_THUMB]],
+    }))
+
+    render(StackOverview)
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith('resume_thumbnails', { slug: 'iceland-2024' })
@@ -424,21 +435,36 @@ describe('StackOverview — P2 resume thumbnails', () => {
   })
 
   it('P2-08: does NOT call resume_thumbnails when all stacks have thumbnail_path', async () => {
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_WITH_THUMB] })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_WITH_THUMB]],
+    }))
+
+    render(StackOverview)
 
     await waitFor(() => expect(screen.getByText('Index complete.')).toBeInTheDocument())
     expect(mockInvoke).not.toHaveBeenCalledWith('resume_thumbnails', expect.anything())
   })
 
   it('P2-09: does NOT call resume_thumbnails when stacks array is empty', async () => {
-    renderStackOverview({ folders: [FOLDER_A] })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+    }))
+
+    render(StackOverview)
 
     await new Promise(resolve => setTimeout(resolve, 50))
     expect(mockInvoke).not.toHaveBeenCalledWith('resume_thumbnails', expect.anything())
   })
 
   it('P2-10: does NOT call resume_thumbnails when thumbnails_running is already true', async () => {
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_WITHOUT_THUMB], status: THUMBNAIL_RUNNING_STATUS })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_WITHOUT_THUMB]],
+      get_indexing_status: THUMBNAIL_RUNNING_STATUS,
+    }))
+
+    render(StackOverview)
 
     await new Promise(resolve => setTimeout(resolve, 50))
     expect(mockInvoke).not.toHaveBeenCalledWith('resume_thumbnails', expect.anything())
@@ -447,12 +473,11 @@ describe('StackOverview — P2 resume thumbnails', () => {
 
 describe('StackOverview — P1 thumbnail progress bar', () => {
   it('P1-06: renders determinate progress bar when thumbnails_total > 0', async () => {
-    // Custom mocks: keep PROGRESS_STATUS in poll so progress bar stays visible
-    mockInvoke.mockResolvedValueOnce([FOLDER_A])    // list_source_folders
-    mockInvoke.mockResolvedValueOnce([STACK_1, STACK_2]) // list_stacks
-    mockInvoke.mockResolvedValueOnce(PROGRESS_STATUS)    // get_indexing_status
-    mockInvoke.mockResolvedValueOnce(PROGRESS_STATUS)    // poll: get_indexing_status (still running)
-    mockInvoke.mockResolvedValueOnce([STACK_1, STACK_2]) // poll: list_stacks
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1, STACK_2]],
+      get_indexing_status: [PROGRESS_STATUS, PROGRESS_STATUS, DONE_STATUS],
+    }))
 
     const { container } = render(StackOverview)
 
@@ -465,13 +490,12 @@ describe('StackOverview — P1 thumbnail progress bar', () => {
     expect(container.querySelector('.animate-spin')).not.toBeInTheDocument()
   })
 
-  it('P1-07: renders spinner when thumbnails_total is 0 (pre-total window)', async () => {
-    // Custom mocks: keep THUMBNAIL_RUNNING_STATUS in poll so spinner stays visible
-    mockInvoke.mockResolvedValueOnce([FOLDER_A])
-    mockInvoke.mockResolvedValueOnce([STACK_1])
-    mockInvoke.mockResolvedValueOnce(THUMBNAIL_RUNNING_STATUS)  // thumbnails_total: 0
-    mockInvoke.mockResolvedValueOnce(THUMBNAIL_RUNNING_STATUS)  // poll: get_indexing_status (still running)
-    mockInvoke.mockResolvedValueOnce([STACK_1])                 // poll: list_stacks
+  it('P1-07: applies animate-spin class when thumbnails_total is 0 (pre-total window)', async () => {
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1]],
+      get_indexing_status: [THUMBNAIL_RUNNING_STATUS, THUMBNAIL_RUNNING_STATUS, DONE_STATUS],
+    }))
 
     const { container } = render(StackOverview)
 
@@ -480,13 +504,12 @@ describe('StackOverview — P1 thumbnail progress bar', () => {
     expect(screen.queryByText(/%/)).not.toBeInTheDocument()
   })
 
-  it('P1-08: thumbnail progress indicator is never a static full-width pulsing bar', async () => {
-    // Custom mocks: keep THUMBNAIL_RUNNING_STATUS in poll
-    mockInvoke.mockResolvedValueOnce([FOLDER_A])
-    mockInvoke.mockResolvedValueOnce([STACK_1])
-    mockInvoke.mockResolvedValueOnce(THUMBNAIL_RUNNING_STATUS)
-    mockInvoke.mockResolvedValueOnce(THUMBNAIL_RUNNING_STATUS)  // poll: get_indexing_status
-    mockInvoke.mockResolvedValueOnce([STACK_1])                 // poll: list_stacks
+  it('P1-08: thumbnail progress does not apply animate-pulse class', async () => {
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1]],
+      get_indexing_status: [THUMBNAIL_RUNNING_STATUS, THUMBNAIL_RUNNING_STATUS, DONE_STATUS],
+    }))
 
     const { container } = render(StackOverview)
 
@@ -500,14 +523,17 @@ describe('StackOverview — P1 thumbnail progress bar', () => {
 
 describe('StackOverview — burst gap panel (BT-07..BT-11)', () => {
   async function setupWithStacks() {
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2] })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1, STACK_2]],
+    }))
+    render(StackOverview)
     await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(2))
   }
 
   // BT-07
   it('test_ctrl_b_opens_burst_gap_panel', async () => {
     await setupWithStacks()
-    mockInvoke.mockResolvedValueOnce(3)  // get_burst_gap
     await fireEvent.keyDown(document, { key: 'b', ctrlKey: true })
     await waitFor(() => {
       expect(screen.getByText(/burst gap/i)).toBeInTheDocument()
@@ -516,9 +542,15 @@ describe('StackOverview — burst gap panel (BT-07..BT-11)', () => {
 
   // BT-07b
   it('test_ctrl_b_opens_panel_even_when_get_burst_gap_fails', async () => {
-    await setupWithStacks()
-    // getBurstGap rejects — panel must still open with default value
-    mockInvoke.mockRejectedValueOnce(new Error('command not found'))
+    // Override get_burst_gap to reject
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1, STACK_2]],
+      get_burst_gap: () => { throw new Error('command not found') },
+    }))
+    render(StackOverview)
+    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(2))
+
     await fireEvent.keyDown(document, { key: 'b', ctrlKey: true })
     await waitFor(() => {
       expect(screen.getByText(/burst gap/i)).toBeInTheDocument()
@@ -531,10 +563,6 @@ describe('StackOverview — burst gap panel (BT-07..BT-11)', () => {
   // BT-08
   it('test_save_burst_gap_calls_set_burst_gap', async () => {
     await setupWithStacks()
-    mockInvoke.mockResolvedValueOnce(3)                   // get_burst_gap (on panel open)
-    mockInvoke.mockResolvedValueOnce(undefined)           // set_burst_gap
-    mockInvoke.mockResolvedValueOnce(undefined)           // restack
-    mockInvoke.mockResolvedValueOnce([STACK_1, STACK_2])  // list_stacks (after restack)
 
     await fireEvent.keyDown(document, { key: 'b', ctrlKey: true })
     await waitFor(() => screen.getByText(/burst gap/i))
@@ -552,10 +580,6 @@ describe('StackOverview — burst gap panel (BT-07..BT-11)', () => {
   // BT-09
   it('test_save_burst_gap_calls_restack', async () => {
     await setupWithStacks()
-    mockInvoke.mockResolvedValueOnce(3)                   // get_burst_gap
-    mockInvoke.mockResolvedValueOnce(undefined)           // set_burst_gap
-    mockInvoke.mockResolvedValueOnce(undefined)           // restack
-    mockInvoke.mockResolvedValueOnce([STACK_1, STACK_2])  // list_stacks
 
     await fireEvent.keyDown(document, { key: 'b', ctrlKey: true })
     await waitFor(() => screen.getByText(/burst gap/i))
@@ -569,10 +593,6 @@ describe('StackOverview — burst gap panel (BT-07..BT-11)', () => {
   // BT-10
   it('test_panel_closes_after_restack', async () => {
     await setupWithStacks()
-    mockInvoke.mockResolvedValueOnce(3)
-    mockInvoke.mockResolvedValueOnce(undefined)           // set_burst_gap
-    mockInvoke.mockResolvedValueOnce(undefined)           // restack
-    mockInvoke.mockResolvedValueOnce([STACK_1, STACK_2])  // list_stacks
 
     await fireEvent.keyDown(document, { key: 'b', ctrlKey: true })
     await waitFor(() => screen.getByText(/burst gap/i))
@@ -586,7 +606,6 @@ describe('StackOverview — burst gap panel (BT-07..BT-11)', () => {
   // BT-11
   it('test_cancel_closes_panel_without_restack', async () => {
     await setupWithStacks()
-    mockInvoke.mockResolvedValueOnce(3)  // get_burst_gap
 
     await fireEvent.keyDown(document, { key: 'b', ctrlKey: true })
     await waitFor(() => screen.getByText(/burst gap/i))
@@ -622,11 +641,13 @@ const THUMBS_DONE_STATUS: IndexingStatus = {
 describe('StackOverview — thumbnail auto-resume (TH-D1..TH-D3)', () => {
   // TH-D1
   it('TH-D1: no auto-resume when all stacks have thumbnails', async () => {
-    renderStackOverview({
-      folders: [{ id: 1, path: '/photos' }],
-      stacks: [STACK_A_WITH_THUMB, STACK_B_WITH_THUMB],
-      status: THUMBS_DONE_STATUS,
-    })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[{ id: 1, path: '/photos' }]],
+      list_stacks: [[STACK_A_WITH_THUMB, STACK_B_WITH_THUMB]],
+      get_indexing_status: THUMBS_DONE_STATUS,
+    }))
+
+    render(StackOverview)
 
     // Wait until stacks are visible
     await waitFor(() => {
@@ -644,11 +665,13 @@ describe('StackOverview — thumbnail auto-resume (TH-D1..TH-D3)', () => {
 
   // TH-D2
   it('TH-D2: auto-resume called when any stack is missing thumbnail', async () => {
-    renderStackOverview({
-      folders: [{ id: 1, path: '/photos' }],
-      stacks: [STACK_A_WITH_THUMB, STACK_B_NO_THUMB],
-      status: THUMBS_DONE_STATUS,
-    })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[{ id: 1, path: '/photos' }]],
+      list_stacks: [[STACK_A_WITH_THUMB, STACK_B_NO_THUMB]],
+      get_indexing_status: THUMBS_DONE_STATUS,
+    }))
+
+    render(StackOverview)
 
     // Wait until resume_thumbnails is called
     await waitFor(() => {
@@ -663,22 +686,20 @@ describe('StackOverview — thumbnail auto-resume (TH-D1..TH-D3)', () => {
     // Mount with stacks that already have thumbnails (all non-null) — no resume on mount
     const STACK_WITH_THUMB_LOCAL = { ...STACK_1, thumbnail_path: '/cache/1.jpg' } as StackSummary
     const STACK_WITH_THUMB_2 = { ...STACK_2, thumbnail_path: '/cache/2.jpg' } as StackSummary
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_WITH_THUMB_LOCAL, STACK_WITH_THUMB_2] })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_WITH_THUMB_LOCAL, STACK_WITH_THUMB_2]],
+    }))
+
+    render(StackOverview)
     await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(2))
 
     // Confirm resume_thumbnails was NOT called on mount (all have thumbnails)
     expect(mockInvoke.mock.calls.map(c => c[0])).not.toContain('resume_thumbnails')
 
     // Open burst gap panel
-    mockInvoke.mockResolvedValueOnce(3) // get_burst_gap
     await fireEvent.keyDown(document, { key: 'b', ctrlKey: true })
     await waitFor(() => expect(screen.getByText(/burst gap/i)).toBeInTheDocument())
-
-    // saveBurstGap flow: setBurstGap -> restack -> listStacks (no resume_thumbnails)
-    // Backend preserves thumbnails, so list_stacks returns stacks WITH thumbnails.
-    mockInvoke.mockResolvedValueOnce(undefined)                                       // set_burst_gap
-    mockInvoke.mockResolvedValueOnce(undefined)                                       // restack
-    mockInvoke.mockResolvedValueOnce([STACK_WITH_THUMB_LOCAL, STACK_WITH_THUMB_2])    // list_stacks (thumbnails preserved)
 
     // Click Save
     await fireEvent.click(screen.getByRole('button', { name: /save/i }))
@@ -699,16 +720,11 @@ describe('StackOverview — thumbnail auto-resume (TH-D1..TH-D3)', () => {
   // TH-D3b: When thumbnails are already being extracted (thumbnails_running=true),
   // saveBurstGap must NOT call resume_thumbnails (would restart/duplicate extraction).
   it('TH-D3b: saveBurstGap during thumbnail extraction does not restart extraction', async () => {
-    // Mount with thumbnail-running status — stacks have null thumbnails (still generating)
-    mockInvoke.mockReset()
-
-    // Manual mount with THUMBNAIL_RUNNING_STATUS to keep thumbnails_running=true visible
-    mockInvoke.mockResolvedValueOnce([FOLDER_A])                    // list_source_folders
-    mockInvoke.mockResolvedValueOnce([STACK_1, STACK_2])            // list_stacks
-    mockInvoke.mockResolvedValueOnce(THUMBNAIL_RUNNING_STATUS)      // get_indexing_status
-    // Poll cycle: keep thumbnails_running so status stays active through burst panel interaction
-    mockInvoke.mockResolvedValueOnce(THUMBNAIL_RUNNING_STATUS)      // poll: get_indexing_status (still running)
-    mockInvoke.mockResolvedValueOnce([STACK_1, STACK_2])            // poll: list_stacks
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1, STACK_2]],
+      get_indexing_status: [THUMBNAIL_RUNNING_STATUS, THUMBNAIL_RUNNING_STATUS, DONE_STATUS],
+    }))
 
     render(StackOverview)
 
@@ -720,14 +736,8 @@ describe('StackOverview — thumbnail auto-resume (TH-D1..TH-D3)', () => {
     expect(mockInvoke.mock.calls.map(c => c[0])).not.toContain('resume_thumbnails')
 
     // Open burst gap panel
-    mockInvoke.mockResolvedValueOnce(3) // get_burst_gap
     await fireEvent.keyDown(document, { key: 'b', ctrlKey: true })
     await waitFor(() => expect(screen.getByText(/burst gap/i)).toBeInTheDocument())
-
-    // saveBurstGap flow: setBurstGap -> restack -> listStacks (no resume_thumbnails)
-    mockInvoke.mockResolvedValueOnce(undefined)           // set_burst_gap
-    mockInvoke.mockResolvedValueOnce(undefined)           // restack
-    mockInvoke.mockResolvedValueOnce([STACK_1, STACK_2])  // list_stacks
 
     // Click Save
     await fireEvent.click(screen.getByRole('button', { name: /save/i }))
@@ -751,8 +761,14 @@ describe('StackOverview — thumbnail auto-resume (TH-D1..TH-D3)', () => {
 })
 
 describe('StackOverview — Sprint 7: multi-select and merge', () => {
-  it('Shift+ArrowRight selects multiple stacks', async () => {
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2, STACK_3], status: DONE_STATUS })
+  it('Shift+ArrowRight adds selection ring classes to stacks', async () => {
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1, STACK_2, STACK_3]],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
     await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(3))
 
     await fireEvent.keyDown(document, { key: 'ArrowRight', shiftKey: true })
@@ -765,18 +781,21 @@ describe('StackOverview — Sprint 7: multi-select and merge', () => {
   })
 
   it('M key merges selected stacks', async () => {
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2, STACK_3], status: DONE_STATUS })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1, STACK_2, STACK_3]],
+      get_indexing_status: DONE_STATUS,
+      merge_stacks: {
+        merged_stack_id: 10, logical_photos_moved: 10,
+        source_stack_ids: [1, 2], transaction_id: 1,
+      },
+    }))
+
+    render(StackOverview)
     await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(3))
 
     // Select 2 stacks
     await fireEvent.keyDown(document, { key: 'ArrowRight', shiftKey: true })
-
-    // Mock merge response
-    mockInvoke.mockResolvedValueOnce({
-      merged_stack_id: 10, logical_photos_moved: 10,
-      source_stack_ids: [1, 2], transaction_id: 1,
-    })  // merge_stacks
-    mockInvoke.mockResolvedValueOnce([STACK_3])  // list_stacks (after merge)
 
     await fireEvent.keyDown(document, { key: 'm' })
 
@@ -788,11 +807,14 @@ describe('StackOverview — Sprint 7: multi-select and merge', () => {
   })
 
   it('Ctrl+Z undoes last merge', async () => {
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2], status: DONE_STATUS })
-    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(2))
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1, STACK_2]],
+      get_indexing_status: DONE_STATUS,
+    }))
 
-    mockInvoke.mockResolvedValueOnce(undefined)              // undo_last_merge
-    mockInvoke.mockResolvedValueOnce([STACK_1, STACK_2, STACK_3])  // list_stacks (after undo)
+    render(StackOverview)
+    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(2))
 
     await fireEvent.keyDown(document, { key: 'z', ctrlKey: true })
 
@@ -802,7 +824,13 @@ describe('StackOverview — Sprint 7: multi-select and merge', () => {
   })
 
   it('M key with only 1 stack selected does NOT call merge', async () => {
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2], status: DONE_STATUS })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1, STACK_2]],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
     await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(2))
 
     // No shift-select, just press M with focus on 1 stack
@@ -812,19 +840,22 @@ describe('StackOverview — Sprint 7: multi-select and merge', () => {
     expect(mockInvoke).not.toHaveBeenCalledWith('merge_stacks', expect.anything())
   })
 
-  it('selection cleared after successful merge', async () => {
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2, STACK_3], status: DONE_STATUS })
+  it('successful merge removes selection ring classes from stacks', async () => {
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1, STACK_2, STACK_3]],
+      get_indexing_status: DONE_STATUS,
+      merge_stacks: {
+        merged_stack_id: 10, logical_photos_moved: 10,
+        source_stack_ids: [1, 2], transaction_id: 1,
+      },
+    }))
+
+    render(StackOverview)
     await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(3))
 
     // Select 2 stacks
     await fireEvent.keyDown(document, { key: 'ArrowRight', shiftKey: true })
-
-    // Mock merge
-    mockInvoke.mockResolvedValueOnce({
-      merged_stack_id: 10, logical_photos_moved: 10,
-      source_stack_ids: [1, 2], transaction_id: 1,
-    })
-    mockInvoke.mockResolvedValueOnce([{ ...STACK_3, stack_id: 10 }])  // list_stacks
 
     await fireEvent.keyDown(document, { key: 'm' })
 
@@ -839,7 +870,13 @@ describe('StackOverview — Sprint 7: multi-select and merge', () => {
 
   it('ArrowDown scrolls focused card into view', async () => {
     const scrollSpy = vi.spyOn(Element.prototype, 'scrollIntoView')
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2, STACK_3], status: DONE_STATUS })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1, STACK_2, STACK_3]],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
     await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(3))
 
     // Clear mount-related scrollIntoView calls
@@ -855,12 +892,18 @@ describe('StackOverview — Sprint 7: multi-select and merge', () => {
     scrollSpy.mockRestore()
   })
 
-  it('Arrow without Shift clears selection', async () => {
+  it('Arrow without Shift preserves selection (moves focus only)', async () => {
     const STACK_4: StackSummary = {
       stack_id: 4, logical_photo_count: 2, earliest_capture: null,
       has_raw: false, has_jpeg: true, thumbnail_path: null
     }
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2, STACK_3, STACK_4], status: DONE_STATUS })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1, STACK_2, STACK_3, STACK_4]],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
     await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(4))
 
     // Shift+ArrowRight to select stacks
@@ -877,41 +920,42 @@ describe('StackOverview — Sprint 7: multi-select and merge', () => {
     // Press ArrowRight WITHOUT Shift
     await fireEvent.keyDown(document, { key: 'ArrowRight' })
 
-    // Verify selection is cleared
+    // Selection should persist — arrow only moves focus, not clears selection
     cards = document.querySelectorAll('[data-stack-card]')
     selectedCards = Array.from(cards).filter(c =>
       c.className.includes('ring-yellow') || c.className.includes('border-yellow')
     )
-    expect(selectedCards.length).toBe(0)
+    expect(selectedCards.length).toBeGreaterThanOrEqual(2)
   })
 
-  it('After merge, focusedIndex moves to merged stack', async () => {
+  it('after merge, border-blue-500 class moves to merged stack position', async () => {
     const STACK_4: StackSummary = {
       stack_id: 4, logical_photo_count: 2, earliest_capture: null,
       has_raw: false, has_jpeg: true, thumbnail_path: null
     }
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2, STACK_3, STACK_4], status: DONE_STATUS })
-    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(4))
-
-    // Select stacks 1 and 2 via Shift+Arrow
-    await fireEvent.keyDown(document, { key: 'ArrowRight', shiftKey: true })
-
-    // Mock merge: returns merged_stack_id = 99
-    mockInvoke.mockResolvedValueOnce({
-      merged_stack_id: 99, logical_photos_moved: 10,
-      source_stack_ids: [1, 2], transaction_id: 1,
-    })
-    // Updated stacks: merged stack replaces originals
     const MERGED_STACK: StackSummary = {
       stack_id: 99, logical_photo_count: 10, earliest_capture: '2024-03-15T10:00:00Z',
       has_raw: true, has_jpeg: true, thumbnail_path: null
     }
-    mockInvoke.mockResolvedValueOnce([MERGED_STACK, STACK_3, STACK_4])  // list_stacks
+    // list_stacks returns initial stacks first, then post-merge stacks
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [
+        [STACK_1, STACK_2, STACK_3, STACK_4],
+        [MERGED_STACK, STACK_3, STACK_4],
+      ],
+      get_indexing_status: DONE_STATUS,
+      merge_stacks: {
+        merged_stack_id: 99, logical_photos_moved: 10,
+        source_stack_ids: [1, 2], transaction_id: 1,
+      },
+    }))
 
-    // Resume thumbnails triggered because MERGED_STACK has null thumbnail
-    mockInvoke.mockResolvedValueOnce(undefined)    // resume_thumbnails
-    mockInvoke.mockResolvedValueOnce(IDLE_STATUS)  // poll: get_indexing_status
-    mockInvoke.mockResolvedValueOnce([MERGED_STACK, STACK_3, STACK_4])  // poll: list_stacks
+    render(StackOverview)
+    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(4))
+
+    // Select stacks 1 and 2 via Shift+Arrow
+    await fireEvent.keyDown(document, { key: 'ArrowRight', shiftKey: true })
 
     await fireEvent.keyDown(document, { key: 'm' })
 
@@ -931,10 +975,15 @@ describe('StackOverview — SO-01: loading spinner', () => {
   it('shows "Loading…" text during initial load and disappears after loadAll', async () => {
     // Phase 1: use a deferred promise so loadAll() hangs at list_source_folders
     let resolveFolders!: (value: SourceFolder[]) => void
-    mockInvoke.mockReturnValueOnce(new Promise<SourceFolder[]>(r => { resolveFolders = r }))
-    // Pre-queue the remaining loadAll() chain that fires once folders resolve:
-    mockInvoke.mockResolvedValueOnce([])           // list_stacks
-    mockInvoke.mockResolvedValueOnce(IDLE_STATUS)  // get_indexing_status
+    const deferredFolders = new Promise<SourceFolder[]>(r => { resolveFolders = r })
+    let folderCallCount = 0
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: () => {
+        folderCallCount++
+        if (folderCallCount === 1) return deferredFolders
+        return []
+      },
+    }))
 
     const { unmount } = render(StackOverview)
 
@@ -963,7 +1012,13 @@ describe('StackOverview — SO-01: loading spinner', () => {
 
 describe('StackOverview — SO-02: topbar breadcrumb', () => {
   it('renders breadcrumb with back arrow, project name, and Esc hint', async () => {
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1], status: DONE_STATUS })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1]],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
 
     await waitFor(() => expect(screen.getByText('Index complete.')).toBeInTheDocument())
 
@@ -981,12 +1036,11 @@ describe('StackOverview — SO-02: topbar breadcrumb', () => {
 
 describe('StackOverview — SO-10: pause/resume buttons', () => {
   it('shows Pause button during active indexing (not paused)', async () => {
-    // Custom mocks: keep RUNNING_STATUS in poll so Pause button stays visible
-    mockInvoke.mockResolvedValueOnce([FOLDER_A])       // list_source_folders
-    mockInvoke.mockResolvedValueOnce([])               // list_stacks
-    mockInvoke.mockResolvedValueOnce(RUNNING_STATUS)   // get_indexing_status (running=true, paused=false)
-    mockInvoke.mockResolvedValueOnce(RUNNING_STATUS)   // poll: get_indexing_status (still running)
-    mockInvoke.mockResolvedValueOnce([])               // poll: list_stacks
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[]],
+      get_indexing_status: [RUNNING_STATUS, RUNNING_STATUS, DONE_STATUS],
+    }))
 
     render(StackOverview)
 
@@ -998,22 +1052,20 @@ describe('StackOverview — SO-10: pause/resume buttons', () => {
   })
 
   it('clicking Pause calls pause_indexing', async () => {
-    mockInvoke.mockResolvedValueOnce([FOLDER_A])       // list_source_folders
-    mockInvoke.mockResolvedValueOnce([])               // list_stacks
-    mockInvoke.mockResolvedValueOnce(RUNNING_STATUS)   // get_indexing_status
-    mockInvoke.mockResolvedValueOnce(RUNNING_STATUS)   // poll: get_indexing_status
-    mockInvoke.mockResolvedValueOnce([])               // poll: list_stacks
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[]],
+      get_indexing_status: [RUNNING_STATUS, RUNNING_STATUS, DONE_STATUS],
+    }))
 
     render(StackOverview)
 
     await waitFor(() => expect(screen.getByText('Pause')).toBeInTheDocument())
 
-    mockInvoke.mockResolvedValueOnce(undefined)  // pause_indexing
-
     await fireEvent.click(screen.getByText('Pause'))
 
     await waitFor(() => {
-      expect(mockInvoke).toHaveBeenCalledWith('pause_indexing')
+      expect(mockInvoke).toHaveBeenCalledWith('pause_indexing', { slug: 'iceland-2024' })
     })
   })
 
@@ -1022,11 +1074,11 @@ describe('StackOverview — SO-10: pause/resume buttons', () => {
       ...RUNNING_STATUS, paused: true
     }
 
-    mockInvoke.mockResolvedValueOnce([FOLDER_A])      // list_source_folders
-    mockInvoke.mockResolvedValueOnce([])              // list_stacks
-    mockInvoke.mockResolvedValueOnce(PAUSED_STATUS)   // get_indexing_status (running=true, paused=true)
-    mockInvoke.mockResolvedValueOnce(PAUSED_STATUS)   // poll: get_indexing_status (still paused)
-    mockInvoke.mockResolvedValueOnce([])              // poll: list_stacks
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[]],
+      get_indexing_status: [PAUSED_STATUS, PAUSED_STATUS, DONE_STATUS],
+    }))
 
     render(StackOverview)
 
@@ -1042,22 +1094,20 @@ describe('StackOverview — SO-10: pause/resume buttons', () => {
       ...RUNNING_STATUS, paused: true
     }
 
-    mockInvoke.mockResolvedValueOnce([FOLDER_A])      // list_source_folders
-    mockInvoke.mockResolvedValueOnce([])              // list_stacks
-    mockInvoke.mockResolvedValueOnce(PAUSED_STATUS)   // get_indexing_status
-    mockInvoke.mockResolvedValueOnce(PAUSED_STATUS)   // poll: get_indexing_status
-    mockInvoke.mockResolvedValueOnce([])              // poll: list_stacks
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[]],
+      get_indexing_status: [PAUSED_STATUS, PAUSED_STATUS, DONE_STATUS],
+    }))
 
     render(StackOverview)
 
     await waitFor(() => expect(screen.getByText('Resume')).toBeInTheDocument())
 
-    mockInvoke.mockResolvedValueOnce(undefined)  // resume_indexing
-
     await fireEvent.click(screen.getByText('Resume'))
 
     await waitFor(() => {
-      expect(mockInvoke).toHaveBeenCalledWith('resume_indexing')
+      expect(mockInvoke).toHaveBeenCalledWith('resume_indexing', { slug: 'iceland-2024' })
     })
   })
 })
@@ -1065,8 +1115,14 @@ describe('StackOverview — SO-10: pause/resume buttons', () => {
 // ── SO-22: Arrow Left moves focus left (stops at first) ──────────────────────
 
 describe('StackOverview — SO-22: ArrowLeft navigation', () => {
-  it('ArrowLeft moves focus left by one card', async () => {
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2, STACK_3], status: DONE_STATUS })
+  it('ArrowLeft moves border-blue-500 class to previous card', async () => {
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1, STACK_2, STACK_3]],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
     await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(3))
 
     // Move right first so we're at index 1
@@ -1081,8 +1137,14 @@ describe('StackOverview — SO-22: ArrowLeft navigation', () => {
     expect(cards[1].className).not.toContain('border-blue-500')
   })
 
-  it('ArrowLeft stops at index 0 (does not wrap or go negative)', async () => {
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2, STACK_3], status: DONE_STATUS })
+  it('ArrowLeft keeps border-blue-500 class on first card at boundary', async () => {
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1, STACK_2, STACK_3]],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
     await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(3))
 
     // We start at index 0; pressing ArrowLeft should stay at 0
@@ -1097,7 +1159,7 @@ describe('StackOverview — SO-22: ArrowLeft navigation', () => {
 // ── SO-24: Arrow Up moves focus up (-4 cols) ────────────────────────────────
 
 describe('StackOverview — SO-24: ArrowUp navigation', () => {
-  it('ArrowUp moves focus up by 4 (one row of 4 columns)', async () => {
+  it('ArrowUp moves border-blue-500 class up by 4 positions', async () => {
     // Need at least 5 stacks to span 2 rows in a 4-col grid
     const manyStacks: StackSummary[] = Array.from({ length: 8 }, (_, i) => ({
       stack_id: i + 1,
@@ -1108,7 +1170,13 @@ describe('StackOverview — SO-24: ArrowUp navigation', () => {
       thumbnail_path: null,
     }))
 
-    renderStackOverview({ folders: [FOLDER_A], stacks: manyStacks, status: DONE_STATUS })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [manyStacks],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
     await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(8))
 
     // Navigate to row 2, card 5 (index 4) using ArrowDown from index 0
@@ -1123,8 +1191,14 @@ describe('StackOverview — SO-24: ArrowUp navigation', () => {
     expect(cards[4].className).not.toContain('border-blue-500')
   })
 
-  it('ArrowUp stops at row 0 (clamps to 0)', async () => {
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2, STACK_3], status: DONE_STATUS })
+  it('ArrowUp keeps border-blue-500 class on first row at boundary', async () => {
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1, STACK_2, STACK_3]],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
     await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(3))
 
     // Already at index 0; ArrowUp should stay at 0 (Math.max(0 - 4, 0) = 0)
@@ -1139,7 +1213,13 @@ describe('StackOverview — SO-24: ArrowUp navigation', () => {
 
 describe('StackOverview — SO-25: Enter opens focused stack', () => {
   it('Enter key navigates to StackFocus for the focused stack', async () => {
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2, STACK_3], status: DONE_STATUS })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1, STACK_2, STACK_3]],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
     await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(3))
 
     // Move to second stack
@@ -1158,7 +1238,13 @@ describe('StackOverview — SO-25: Enter opens focused stack', () => {
   })
 
   it('Enter saves focusedIndex before navigating', async () => {
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2, STACK_3], status: DONE_STATUS })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1, STACK_2, STACK_3]],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
     await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(3))
 
     // Move to third stack (index 2)
@@ -1186,7 +1272,13 @@ describe('StackOverview — SO-25: Enter opens focused stack', () => {
 
 describe('StackOverview — SO-26: click on stack card', () => {
   it('clicking a stack card navigates to StackFocus', async () => {
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2], status: DONE_STATUS })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1, STACK_2]],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
     await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(2))
 
     // Click the second stack card (Stack #2)
@@ -1206,7 +1298,13 @@ describe('StackOverview — SO-26: click on stack card', () => {
 
 describe('StackOverview — SO-27: Esc back to ProjectList', () => {
   it('Esc key navigates back to project-list', async () => {
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1], status: DONE_STATUS })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1]],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
     await waitFor(() => expect(screen.getByText('Index complete.')).toBeInTheDocument())
 
     await fireEvent.keyDown(document, { key: 'Escape' })
@@ -1215,7 +1313,13 @@ describe('StackOverview — SO-27: Esc back to ProjectList', () => {
   })
 
   it('Esc sets skipAutoOpen and resumeProject on the project-list screen', async () => {
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1], status: DONE_STATUS })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1]],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
     await waitFor(() => expect(screen.getByText('Index complete.')).toBeInTheDocument())
 
     await fireEvent.keyDown(document, { key: 'Escape' })
@@ -1232,11 +1336,16 @@ describe('StackOverview — SO-27: Esc back to ProjectList', () => {
 
 describe('StackOverview — B4: Esc closes burst panel instead of navigating away', () => {
   it('Escape closes burst panel without navigating away from StackOverview', async () => {
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2], status: DONE_STATUS })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1, STACK_2]],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
     await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(2))
 
     // Open burst panel via Ctrl+B
-    mockInvoke.mockResolvedValueOnce(3)  // get_burst_gap
     await fireEvent.keyDown(document, { key: 'b', ctrlKey: true })
 
     // Verify the burst panel is visible (the modal overlay with "Burst gap" heading)
@@ -1264,17 +1373,18 @@ describe('StackOverview — B4: Esc closes burst panel instead of navigating awa
 
 describe('StackOverview — SO-36: burst gap recalculating message', () => {
   it('shows "Recalculating stacks…" during saveBurstGap', async () => {
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2] })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1, STACK_2]],
+      restack: () => new Promise(() => {}), // restack never resolves
+    }))
+
+    render(StackOverview)
     await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(2))
 
     // Open burst panel
-    mockInvoke.mockResolvedValueOnce(3) // get_burst_gap
     await fireEvent.keyDown(document, { key: 'b', ctrlKey: true })
     await waitFor(() => screen.getByText(/burst gap/i))
-
-    // Make saveBurstGap slow: set_burst_gap resolves, restack hangs
-    mockInvoke.mockResolvedValueOnce(undefined) // set_burst_gap
-    mockInvoke.mockReturnValueOnce(new Promise(() => {})) // restack (never resolves)
 
     await fireEvent.click(screen.getByRole('button', { name: /save/i }))
 
@@ -1307,8 +1417,13 @@ describe('StackOverview — SO-37: collapsible error log', () => {
   const STACK_B_T: StackSummary = { ...STACK_2, thumbnail_path: '/cache/2.jpg' }
 
   it('renders "Show N errors" toggle when last_stats has errors', async () => {
-    // Path D: all thumbs present, idle — no follow-up mocks, status preserved
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_A_T, STACK_B_T], status: STATUS_WITH_ERRORS })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_A_T, STACK_B_T]],
+      get_indexing_status: STATUS_WITH_ERRORS,
+    }))
+
+    render(StackOverview)
 
     await waitFor(() => {
       expect(screen.getByText(/Show 2 errors/)).toBeInTheDocument()
@@ -1316,7 +1431,13 @@ describe('StackOverview — SO-37: collapsible error log', () => {
   })
 
   it('clicking "Show N errors" reveals error details', async () => {
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_A_T, STACK_B_T], status: STATUS_WITH_ERRORS })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_A_T, STACK_B_T]],
+      get_indexing_status: STATUS_WITH_ERRORS,
+    }))
+
+    render(StackOverview)
 
     await waitFor(() => expect(screen.getByText(/Show 2 errors/)).toBeInTheDocument())
 
@@ -1333,7 +1454,13 @@ describe('StackOverview — SO-37: collapsible error log', () => {
   })
 
   it('does NOT render error toggle when last_stats has 0 errors', async () => {
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1], status: DONE_STATUS })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1]],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
 
     await waitFor(() => expect(screen.getByText('Index complete.')).toBeInTheDocument())
     expect(screen.queryByText(/Show.*error/)).not.toBeInTheDocument()
@@ -1348,11 +1475,11 @@ describe('StackOverview — SO-38: error count during indexing', () => {
       ...RUNNING_STATUS, errors: 5
     }
 
-    mockInvoke.mockResolvedValueOnce([FOLDER_A])            // list_source_folders
-    mockInvoke.mockResolvedValueOnce([])                    // list_stacks
-    mockInvoke.mockResolvedValueOnce(RUNNING_WITH_ERRORS)   // get_indexing_status
-    mockInvoke.mockResolvedValueOnce(RUNNING_WITH_ERRORS)   // poll: get_indexing_status (still running)
-    mockInvoke.mockResolvedValueOnce([])                    // poll: list_stacks
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[]],
+      get_indexing_status: [RUNNING_WITH_ERRORS, RUNNING_WITH_ERRORS, DONE_STATUS],
+    }))
 
     render(StackOverview)
 
@@ -1367,11 +1494,11 @@ describe('StackOverview — SO-38: error count during indexing', () => {
       ...RUNNING_STATUS, errors: 1
     }
 
-    mockInvoke.mockResolvedValueOnce([FOLDER_A])              // list_source_folders
-    mockInvoke.mockResolvedValueOnce([])                      // list_stacks
-    mockInvoke.mockResolvedValueOnce(RUNNING_WITH_1_ERROR)    // get_indexing_status
-    mockInvoke.mockResolvedValueOnce(RUNNING_WITH_1_ERROR)    // poll: get_indexing_status
-    mockInvoke.mockResolvedValueOnce([])                      // poll: list_stacks
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[]],
+      get_indexing_status: [RUNNING_WITH_1_ERROR, RUNNING_WITH_1_ERROR, DONE_STATUS],
+    }))
 
     render(StackOverview)
 
@@ -1387,7 +1514,13 @@ describe('StackOverview — SO-38: error count during indexing', () => {
 
 describe('StackOverview — SO-61: date formatting', () => {
   it('renders formatted date on stack card when earliest_capture is set', async () => {
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1], status: DONE_STATUS })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1]],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
 
     await waitFor(() => expect(screen.getByText('Stack #1')).toBeInTheDocument())
 
@@ -1397,7 +1530,13 @@ describe('StackOverview — SO-61: date formatting', () => {
   })
 
   it('renders fallback "(no EXIF)" when earliest_capture is null', async () => {
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_3], status: DONE_STATUS })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_3]],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
 
     await waitFor(() => expect(screen.getByText('Stack #1')).toBeInTheDocument())
 
@@ -1410,7 +1549,13 @@ describe('StackOverview — SO-61: date formatting', () => {
 
 describe('StackOverview — SO-62: photo count per card', () => {
   it('renders "N photos" on stack card (plural)', async () => {
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1], status: DONE_STATUS })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1]],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
 
     await waitFor(() => expect(screen.getByText('Stack #1')).toBeInTheDocument())
 
@@ -1419,7 +1564,13 @@ describe('StackOverview — SO-62: photo count per card', () => {
   })
 
   it('renders "1 photo" (singular) when count is 1', async () => {
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_3], status: DONE_STATUS })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_3]],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
 
     await waitFor(() => expect(screen.getByText('Stack #1')).toBeInTheDocument())
 
@@ -1440,8 +1591,14 @@ describe('StackOverview — SO-63/64/65: Shift+Arrow multi-select directions', (
     thumbnail_path: null,
   }))
 
-  it('SO-63: Shift+ArrowLeft selects current and previous stacks', async () => {
-    renderStackOverview({ folders: [FOLDER_A], stacks: MANY_STACKS, status: DONE_STATUS })
+  it('SO-63: Shift+ArrowLeft adds selection ring classes to current and previous stacks', async () => {
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [MANY_STACKS],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
     await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(8))
 
     // Move to index 2 first
@@ -1461,8 +1618,14 @@ describe('StackOverview — SO-63/64/65: Shift+Arrow multi-select directions', (
     expect(cards[2].className).toMatch(/ring-yellow|border-yellow/)
   })
 
-  it('SO-64: Shift+ArrowDown selects current and stack 4 positions down', async () => {
-    renderStackOverview({ folders: [FOLDER_A], stacks: MANY_STACKS, status: DONE_STATUS })
+  it('SO-64: Shift+ArrowDown adds selection ring classes to current and stack 4 below', async () => {
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [MANY_STACKS],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
     await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(8))
 
     // Focus is at index 0; Shift+ArrowDown should select index 0 and move to index 4
@@ -1474,8 +1637,14 @@ describe('StackOverview — SO-63/64/65: Shift+Arrow multi-select directions', (
     expect(cards[4].className).toMatch(/ring-yellow|border-yellow/)
   })
 
-  it('SO-65: Shift+ArrowUp selects current and stack 4 positions up', async () => {
-    renderStackOverview({ folders: [FOLDER_A], stacks: MANY_STACKS, status: DONE_STATUS })
+  it('SO-65: Shift+ArrowUp adds selection ring classes to current and stack 4 above', async () => {
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [MANY_STACKS],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
     await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(8))
 
     // Move to index 5 (row 2, col 2) first
@@ -1496,14 +1665,18 @@ describe('StackOverview — SO-63/64/65: Shift+Arrow multi-select directions', (
 describe('StackOverview — M3: mergeStacks error shows visible feedback', () => {
   it('merge_stacks rejection shows error banner', async () => {
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2, STACK_3], status: DONE_STATUS })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1, STACK_2, STACK_3]],
+      get_indexing_status: DONE_STATUS,
+      merge_stacks: () => { throw new Error('Cannot merge') },
+    }))
+
+    render(StackOverview)
     await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(3))
 
     // Select 2 stacks via Shift+Arrow
     await fireEvent.keyDown(document, { key: 'ArrowRight', shiftKey: true })
-
-    // Mock merge_stacks rejection
-    mockInvoke.mockRejectedValueOnce(new Error('Cannot merge'))
 
     await fireEvent.keyDown(document, { key: 'm' })
 
@@ -1521,11 +1694,15 @@ describe('StackOverview — M3: mergeStacks error shows visible feedback', () =>
 describe('StackOverview — M4: undoLastMerge error shows visible feedback', () => {
   it('undo_last_merge rejection shows error banner', async () => {
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2], status: DONE_STATUS })
-    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(2))
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1, STACK_2]],
+      get_indexing_status: DONE_STATUS,
+      undo_last_merge: () => { throw new Error('Nothing to undo') },
+    }))
 
-    // Mock undo_last_merge rejection
-    mockInvoke.mockRejectedValueOnce(new Error('Nothing to undo'))
+    render(StackOverview)
+    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(2))
 
     await fireEvent.keyDown(document, { key: 'z', ctrlKey: true })
 
@@ -1544,15 +1721,12 @@ describe('StackOverview — M5: startIndexing failure resets UI', () => {
   it('start_indexing rejection resets status back to idle, shows error', async () => {
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
 
-    // Initial state: folders present, no stacks -> auto-start indexing path
-    // But we override to control the mock chain manually
-    mockInvoke.mockResolvedValueOnce([FOLDER_A])    // list_source_folders
-    mockInvoke.mockResolvedValueOnce([])             // list_stacks
-    mockInvoke.mockResolvedValueOnce(IDLE_STATUS)    // get_indexing_status
-    // loadAll sees folders.length > 0 && stacks.length === 0 -> auto-start
-    mockInvoke.mockRejectedValueOnce(new Error('Permission denied'))  // start_indexing FAILS
-    mockInvoke.mockResolvedValueOnce(IDLE_STATUS)    // get_indexing_status (recovery fetch)
-    mockInvoke.mockResolvedValueOnce([])             // list_stacks (recovery fetch)
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[]],
+      get_indexing_status: IDLE_STATUS,
+      start_indexing: () => { throw new Error('Permission denied') },
+    }))
 
     render(StackOverview)
 
@@ -1571,13 +1745,18 @@ describe('StackOverview — M5: startIndexing failure resets UI', () => {
   it('start_indexing failure with get_indexing_status also failing resets running flag', async () => {
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
 
-    mockInvoke.mockResolvedValueOnce([FOLDER_A])    // list_source_folders
-    mockInvoke.mockResolvedValueOnce([])             // list_stacks
-    mockInvoke.mockResolvedValueOnce(IDLE_STATUS)    // get_indexing_status
-    // Auto-start path:
-    mockInvoke.mockRejectedValueOnce(new Error('Permission denied'))  // start_indexing FAILS
-    mockInvoke.mockRejectedValueOnce(new Error('DB error'))           // get_indexing_status ALSO FAILS
-    mockInvoke.mockResolvedValueOnce([])             // list_stacks (recovery)
+    let statusCallCount = 0
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[]],
+      get_indexing_status: () => {
+        statusCallCount++
+        // First call: initial loadAll (returns IDLE). Second call: recovery after start_indexing failure (throws).
+        if (statusCallCount <= 1) return IDLE_STATUS
+        throw new Error('DB error')
+      },
+      start_indexing: () => { throw new Error('Permission denied') },
+    }))
 
     render(StackOverview)
 
@@ -1598,12 +1777,11 @@ describe('StackOverview — M5: startIndexing failure resets UI', () => {
 describe('StackOverview — M7: polling cleanup on unmount', () => {
   it('unmount during active polling clears interval cleanly', async () => {
     // Mount with running status to trigger polling
-    mockInvoke.mockResolvedValueOnce([FOLDER_A])        // list_source_folders
-    mockInvoke.mockResolvedValueOnce([])                // list_stacks
-    mockInvoke.mockResolvedValueOnce(RUNNING_STATUS)    // get_indexing_status (running=true -> startPolling)
-    // First poll cycle: keep running so polling stays active
-    mockInvoke.mockResolvedValueOnce(RUNNING_STATUS)    // poll: get_indexing_status (still running)
-    mockInvoke.mockResolvedValueOnce([])                // poll: list_stacks
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[]],
+      get_indexing_status: [RUNNING_STATUS, RUNNING_STATUS, DONE_STATUS],
+    }))
 
     const { unmount } = render(StackOverview)
 
@@ -1628,8 +1806,9 @@ describe('StackOverview — M10: loadAll failure during mount', () => {
   it('list_source_folders rejection shows empty state (not stuck loading)', async () => {
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
 
-    // list_source_folders rejects — loadAll fails at the first await
-    mockInvoke.mockRejectedValueOnce(new Error('DB not found'))
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: () => { throw new Error('DB not found') },
+    }))
 
     render(StackOverview)
 
@@ -1644,8 +1823,10 @@ describe('StackOverview — M10: loadAll failure during mount', () => {
   it('list_stacks rejection shows empty state (not stuck loading)', async () => {
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
 
-    mockInvoke.mockResolvedValueOnce([FOLDER_A])           // list_source_folders OK
-    mockInvoke.mockRejectedValueOnce(new Error('DB locked'))  // list_stacks FAILS
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: () => { throw new Error('DB locked') },
+    }))
 
     render(StackOverview)
 
@@ -1684,18 +1865,20 @@ describe('StackOverview — Bug 4: thumbnail-ready debounce', () => {
     })
 
     // Render with stacks visible (state 4, DONE_STATUS, all thumbs present = no resume)
-    renderStackOverview({
-      folders: [FOLDER_A],
-      stacks: [STACK_WITH_THUMB],
-      status: DONE_STATUS,
-    })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_WITH_THUMB]],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
 
     await waitFor(() => expect(screen.getByText('Index complete.')).toBeInTheDocument())
     expect(thumbnailCallback).not.toBeNull()
 
     // Clear mock call history so we only count calls from thumbnail-ready events
     mockInvoke.mockClear()
-    // Reset the throwing default, then mock unlimited list_stacks responses
+    // Reset to router that handles list_stacks
     mockInvoke.mockImplementation((cmd: string, _args?: any) => {
       if (cmd === 'list_stacks') {
         return Promise.resolve([STACK_WITH_THUMB])
@@ -1724,8 +1907,14 @@ describe('StackOverview — Bug 4: thumbnail-ready debounce', () => {
 // ── K1: hjkl vim navigation in StackOverview ─────────────────────────────
 
 describe('StackOverview — K1: hjkl vim navigation', () => {
-  it('l key moves focus right (same as ArrowRight)', async () => {
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2, STACK_3], status: DONE_STATUS })
+  it('l key moves border-blue-500 class to next card', async () => {
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1, STACK_2, STACK_3]],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
     await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(3))
 
     // Focus starts at index 0
@@ -1740,8 +1929,14 @@ describe('StackOverview — K1: hjkl vim navigation', () => {
     expect(cards[0].className).not.toContain('border-blue-500')
   })
 
-  it('h key moves focus left (same as ArrowLeft)', async () => {
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2, STACK_3], status: DONE_STATUS })
+  it('h key moves border-blue-500 class to previous card', async () => {
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1, STACK_2, STACK_3]],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
     await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(3))
 
     // Move right first
@@ -1757,13 +1952,19 @@ describe('StackOverview — K1: hjkl vim navigation', () => {
     expect(cards[1].className).not.toContain('border-blue-500')
   })
 
-  it('j key moves focus down (same as ArrowDown)', async () => {
+  it('j key moves border-blue-500 class down by 4 positions', async () => {
     const manyStacks: StackSummary[] = Array.from({ length: 8 }, (_, i) => ({
       stack_id: i + 1, logical_photo_count: 1, earliest_capture: null,
       has_raw: false, has_jpeg: true, thumbnail_path: null,
     }))
 
-    renderStackOverview({ folders: [FOLDER_A], stacks: manyStacks, status: DONE_STATUS })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [manyStacks],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
     await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(8))
 
     // Press 'j' to move down (4 cols)
@@ -1774,13 +1975,19 @@ describe('StackOverview — K1: hjkl vim navigation', () => {
     expect(cards[0].className).not.toContain('border-blue-500')
   })
 
-  it('k key moves focus up (same as ArrowUp)', async () => {
+  it('k key moves border-blue-500 class up by 4 positions', async () => {
     const manyStacks: StackSummary[] = Array.from({ length: 8 }, (_, i) => ({
       stack_id: i + 1, logical_photo_count: 1, earliest_capture: null,
       has_raw: false, has_jpeg: true, thumbnail_path: null,
     }))
 
-    renderStackOverview({ folders: [FOLDER_A], stacks: manyStacks, status: DONE_STATUS })
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [manyStacks],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
     await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(8))
 
     // Move down first to index 4
@@ -1796,8 +2003,14 @@ describe('StackOverview — K1: hjkl vim navigation', () => {
     expect(cards[4].className).not.toContain('border-blue-500')
   })
 
-  it('Ctrl+h does NOT trigger navigation (modifier guard)', async () => {
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2, STACK_3], status: DONE_STATUS })
+  it('Ctrl+h does not move border-blue-500 class (modifier guard)', async () => {
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1, STACK_2, STACK_3]],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
     await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(3))
 
     // Move right first so we can detect unwanted left movement
@@ -1812,8 +2025,14 @@ describe('StackOverview — K1: hjkl vim navigation', () => {
     expect(cards[1].className).toContain('border-blue-500')
   })
 
-  it('Shift+h does NOT trigger navigation (modifier guard)', async () => {
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2, STACK_3], status: DONE_STATUS })
+  it('Shift+h does not move border-blue-500 class (modifier guard)', async () => {
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1, STACK_2, STACK_3]],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
     await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(3))
 
     // Move right first
@@ -1832,8 +2051,14 @@ describe('StackOverview — K1: hjkl vim navigation', () => {
 // ── K3: Home/End in StackOverview ────────────────────────────────────────
 
 describe('StackOverview — K3: Home/End navigation', () => {
-  it('Home key jumps to first stack', async () => {
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2, STACK_3], status: DONE_STATUS })
+  it('Home key moves border-blue-500 class to first card', async () => {
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1, STACK_2, STACK_3]],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
     await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(3))
 
     // Move to last stack
@@ -1850,8 +2075,14 @@ describe('StackOverview — K3: Home/End navigation', () => {
     expect(cards[2].className).not.toContain('border-blue-500')
   })
 
-  it('End key jumps to last stack', async () => {
-    renderStackOverview({ folders: [FOLDER_A], stacks: [STACK_1, STACK_2, STACK_3], status: DONE_STATUS })
+  it('End key moves border-blue-500 class to last card', async () => {
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1, STACK_2, STACK_3]],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
     await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(3))
 
     // Focus starts at index 0
@@ -1864,5 +2095,157 @@ describe('StackOverview — K3: Home/End navigation', () => {
     cards = document.querySelectorAll('[data-stack-card]')
     expect(cards[2].className).toContain('border-blue-500')
     expect(cards[0].className).not.toContain('border-blue-500')
+  })
+})
+
+describe('StackOverview — S-key selection persists across navigation', () => {
+  it('S-key selection persists when navigating with arrow keys', async () => {
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1, STACK_2, STACK_3]],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
+    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(3))
+
+    // Select card 0 with S
+    await fireEvent.keyDown(document, { key: 's' })
+    let cards = document.querySelectorAll('[data-stack-card]')
+    expect(cards[0].className).toMatch(/ring-yellow|border-yellow/)
+
+    // Move focus to card 1 with ArrowRight
+    await fireEvent.keyDown(document, { key: 'ArrowRight' })
+
+    // Card 0 should STILL be selected (S-key selection is sticky)
+    cards = document.querySelectorAll('[data-stack-card]')
+    expect(cards[0].className).toMatch(/ring-yellow|border-yellow/)
+    // Card 1 should have focus (blue) but not selection (yellow)
+    expect(cards[1].className).toContain('border-blue-500')
+  })
+
+  it('S-key selection on multiple stacks persists across navigation', async () => {
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1, STACK_2, STACK_3]],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
+    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(3))
+
+    // Select card 0 with S
+    await fireEvent.keyDown(document, { key: 's' })
+    // Move to card 2 and select it
+    await fireEvent.keyDown(document, { key: 'ArrowRight' })
+    await fireEvent.keyDown(document, { key: 'ArrowRight' })
+    await fireEvent.keyDown(document, { key: 's' })
+
+    // Both card 0 and card 2 should be selected
+    let cards = document.querySelectorAll('[data-stack-card]')
+    expect(cards[0].className).toMatch(/ring-yellow|border-yellow/)
+    expect(cards[2].className).toMatch(/ring-yellow|border-yellow/)
+
+    // Navigate back to card 0
+    await fireEvent.keyDown(document, { key: 'ArrowLeft' })
+    await fireEvent.keyDown(document, { key: 'ArrowLeft' })
+
+    // Both selections should still be present
+    cards = document.querySelectorAll('[data-stack-card]')
+    expect(cards[0].className).toMatch(/ring-yellow|border-yellow/)
+    expect(cards[2].className).toMatch(/ring-yellow|border-yellow/)
+  })
+})
+
+describe('StackOverview — click behavior with selection', () => {
+  it('click with active selection toggles selection instead of entering stack', async () => {
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1, STACK_2, STACK_3]],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
+    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(3))
+
+    // Select card 0 with S
+    await fireEvent.keyDown(document, { key: 's' })
+
+    // Click card 1 — should select it (not enter stack), because selection is active
+    const cards = document.querySelectorAll('[data-stack-card]')
+    await fireEvent.click(cards[1])
+
+    // Should NOT navigate away
+    expect(navigation.current.kind).toBe('stack-overview')
+    // Card 1 should now be selected too
+    const updatedCards = document.querySelectorAll('[data-stack-card]')
+    expect(updatedCards[1].className).toMatch(/ring-yellow|border-yellow/)
+  })
+
+  it('click with no selection enters stack (default behavior)', async () => {
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1, STACK_2]],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
+    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(2))
+
+    // Click card 1 with no selection active — should enter stack
+    const cards = document.querySelectorAll('[data-stack-card]')
+    await fireEvent.click(cards[1])
+
+    expect(navigation.current.kind).toBe('stack-focus')
+  })
+
+  it('double-click always enters stack regardless of selection', async () => {
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1, STACK_2, STACK_3]],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
+    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(3))
+
+    // Select card 0 with S (activate selection mode)
+    await fireEvent.keyDown(document, { key: 's' })
+
+    // Double-click card 1 — should enter stack even though selection is active
+    const cards = document.querySelectorAll('[data-stack-card]')
+    await fireEvent.dblClick(cards[1])
+
+    expect(navigation.current.kind).toBe('stack-focus')
+    if (navigation.current.kind === 'stack-focus') {
+      expect(navigation.current.stackId).toBe(STACK_2.stack_id)
+    }
+  })
+})
+
+describe('StackOverview — S key toggle select', () => {
+  it('S key toggles selection ring classes on focused stack', async () => {
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_1, STACK_2, STACK_3]],
+      get_indexing_status: DONE_STATUS,
+    }))
+
+    render(StackOverview)
+    await waitFor(() => expect(document.querySelectorAll('[data-stack-card]')).toHaveLength(3))
+
+    // Focus starts at card 0. Press S to select the focused stack.
+    await fireEvent.keyDown(document, { key: 's' })
+
+    let cards = document.querySelectorAll('[data-stack-card]')
+    // Focused card (index 0) should now have a yellow selection indicator
+    expect(cards[0].className).toMatch(/ring-yellow|border-yellow/)
+
+    // Press S again to deselect the focused stack
+    await fireEvent.keyDown(document, { key: 's' })
+
+    cards = document.querySelectorAll('[data-stack-card]')
+    // Selection indicator should be removed
+    expect(cards[0].className).not.toMatch(/ring-yellow|border-yellow/)
   })
 })

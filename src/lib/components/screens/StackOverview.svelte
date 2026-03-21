@@ -8,11 +8,16 @@
     startIndexing, cancelIndexing, pauseIndexing, resumeIndexing,
     getIndexingStatus, listStacks, getThumbnailUrl, resumeThumbnails,
     getBurstGap, setBurstGap, restack, mergeStacks, undoLastMerge,
-    expandSourceScopes,
-    type SourceFolder, type IndexingStatus, type StackSummary
+    expandSourceScopes, getRoundStatus,
+    type SourceFolder, type IndexingStatus, type StackSummary, type RoundStatus
   } from '$lib/api/index.js'
   import { formatDate } from '$lib/utils/date.js'
   import { createTimedError } from '$lib/utils/errors.js'
+  import { mapVimKey, gridNavigate } from '$lib/utils/keyboard.js'
+  import { createSelection, toggleSelect, extendSelection, clearSelection, getSelectedIds, type SelectionState } from '$lib/utils/selection.js'
+  import ThumbnailProgress from '$lib/components/ThumbnailProgress.svelte'
+  import BurstGapModal from '$lib/components/BurstGapModal.svelte'
+  import IndexingPanel from '$lib/components/IndexingPanel.svelte'
 
   // Derive project info from navigation state
   const projectSlug = $derived(
@@ -32,12 +37,25 @@
   let showErrors = $state(false)
   let unlistenThumbnail: (() => void) | null = null
   let showBurstPanel = $state(false)
-  let burstGapInput = $state(3)
   let burstRestacking = $state(false)
-  let selectedStacks = $state<Set<number>>(new Set())
+  let burstGapValue = $state(3)
+  let selection = $state<SelectionState>(createSelection())
   let actionError = $state<string | null>(null)
   let thumbnailDebounceTimer: ReturnType<typeof setTimeout> | null = null
   const { show: showActionError, cleanup: cleanupErrorTimer } = createTimedError(5000, (v) => { actionError = v })
+  let stackProgress = $state<Map<number, RoundStatus>>(new Map())
+
+  async function loadStackProgress() {
+    if (!projectSlug || stacks.length === 0) return
+    const progress = new Map<number, RoundStatus>()
+    for (const stack of stacks) {
+      try {
+        const rs = await getRoundStatus(projectSlug, stack.stack_id)
+        if (rs && rs.decided > 0) progress.set(stack.stack_id, rs)
+      } catch { /* no round yet — untouched stack */ }
+    }
+    stackProgress = progress
+  }
 
   // Load initial state
   onMount(async () => {
@@ -68,6 +86,8 @@
     }
     // Expand asset protocol scope for source folders (fire-and-forget, non-blocking)
     if (projectSlug) expandSourceScopes(projectSlug).catch(() => {})
+    // Load stack progress badges (fire-and-forget)
+    loadStackProgress().catch(() => {})
   })
 
   onDestroy(() => {
@@ -95,7 +115,7 @@
       }
     }
 
-    status = await getIndexingStatus()
+    status = await getIndexingStatus(projectSlug)
     if (status.running || status.thumbnails_running) {
       startPolling()
     } else if (sourceFolders.length > 0 && stacks.length === 0) {
@@ -112,7 +132,7 @@
   function startPolling() {
     if (pollInterval) return
     const poll = async () => {
-      const newStatus = await getIndexingStatus()
+      const newStatus = await getIndexingStatus(projectSlug)
       if (newStatus == null) return
       status = newStatus
       if (status.running || status.thumbnails_running) {
@@ -153,7 +173,7 @@
       startPolling()
     } catch (e) {
       console.error("startIndexing failed:", e)
-      try { status = await getIndexingStatus() } catch {
+      try { status = await getIndexingStatus(projectSlug) } catch {
         status = { ...status, running: false, thumbnails_running: false }
       }
       try { stacks = await listStacks(projectSlug) } catch {}
@@ -172,41 +192,37 @@
   }
 
   async function handleCancel() {
-    await cancelIndexing()
+    await cancelIndexing(projectSlug)
   }
 
   async function handlePause() {
-    await pauseIndexing()
+    await pauseIndexing(projectSlug)
   }
 
   async function handleResume() {
-    await resumeIndexing()
+    await resumeIndexing(projectSlug)
   }
 
   async function openBurstPanel() {
     try {
-      burstGapInput = await getBurstGap()
+      burstGapValue = await getBurstGap()
     } catch (e) {
       console.warn('getBurstGap failed, using default:', e)
-      burstGapInput = 3
+      burstGapValue = 3
     }
     showBurstPanel = true
   }
 
-  async function saveBurstGap() {
+  async function saveBurstGap(gap: number) {
     burstRestacking = true
     try {
-      await setBurstGap(Number(burstGapInput))
+      await setBurstGap(gap)
       await restack(projectSlug)
       stacks = await listStacks(projectSlug)
       showBurstPanel = false
     } finally {
       burstRestacking = false
     }
-  }
-
-  function cancelBurstPanel() {
-    showBurstPanel = false
   }
 
   function handleKey(e: KeyboardEvent) {
@@ -217,37 +233,32 @@
     if (e.key === 'i' && sourceFolders.length > 0 && !status.running) { handleIndex(); return }
     if (e.key === 'r' && stacks.length > 0 && !status.running) { handleIndex(); return }
     if ((e.key === 'm' || e.key === 'M') && stacks.length > 0 && !status.running) { handleMerge(); return }
+    if (e.key === 's' && stacks.length > 0 && !status.running) {
+      selection = toggleSelect(selection, stacks[focusedIndex].stack_id, null)
+      return
+    }
     if (stacks.length > 0 && !status.running) {
       const cols = 4
-
-      // Map hjkl to arrow equivalents (only when no Ctrl/Shift/Alt modifier)
-      let mappedKey = e.key
-      if (!e.ctrlKey && !e.shiftKey && !e.altKey) {
-        if (e.key === 'l') mappedKey = 'ArrowRight'
-        if (e.key === 'h') mappedKey = 'ArrowLeft'
-        if (e.key === 'j') mappedKey = 'ArrowDown'
-        if (e.key === 'k') mappedKey = 'ArrowUp'
-      }
+      const mappedKey = mapVimKey(e)
 
       // Shift+Arrow: multi-select stacks in all 4 directions
       if (e.shiftKey && ['ArrowRight', 'ArrowLeft', 'ArrowDown', 'ArrowUp'].includes(e.key)) {
-        selectedStacks.add(stacks[focusedIndex].stack_id)
-        if (e.key === 'ArrowRight') focusedIndex = Math.min(focusedIndex + 1, stacks.length - 1)
-        if (e.key === 'ArrowLeft')  focusedIndex = Math.max(focusedIndex - 1, 0)
-        if (e.key === 'ArrowDown')  focusedIndex = Math.min(focusedIndex + cols, stacks.length - 1)
-        if (e.key === 'ArrowUp')    focusedIndex = Math.max(focusedIndex - cols, 0)
-        selectedStacks.add(stacks[focusedIndex].stack_id)
-        selectedStacks = new Set(selectedStacks) // trigger reactivity
+        const fromId = stacks[focusedIndex].stack_id
+        const newIdx = gridNavigate(e.key, focusedIndex, stacks.length, cols)
+        if (newIdx !== null) focusedIndex = newIdx
+        selection = extendSelection(selection, fromId, stacks[focusedIndex].stack_id, null)
         e.preventDefault()
         scrollFocusedCardIntoView()
         return
       }
-      if (mappedKey === 'ArrowRight') { selectedStacks = new Set(); focusedIndex = Math.min(focusedIndex + 1, stacks.length - 1); e.preventDefault(); scrollFocusedCardIntoView() }
-      if (mappedKey === 'ArrowLeft') { selectedStacks = new Set(); focusedIndex = Math.max(focusedIndex - 1, 0); e.preventDefault(); scrollFocusedCardIntoView() }
-      if (mappedKey === 'ArrowDown') { selectedStacks = new Set(); focusedIndex = Math.min(focusedIndex + cols, stacks.length - 1); e.preventDefault(); scrollFocusedCardIntoView() }
-      if (mappedKey === 'ArrowUp') { selectedStacks = new Set(); focusedIndex = Math.max(focusedIndex - cols, 0); e.preventDefault(); scrollFocusedCardIntoView() }
-      if (mappedKey === 'Home') { selectedStacks = new Set(); focusedIndex = 0; e.preventDefault(); scrollFocusedCardIntoView() }
-      if (mappedKey === 'End') { selectedStacks = new Set(); focusedIndex = stacks.length - 1; e.preventDefault(); scrollFocusedCardIntoView() }
+
+      const newIdx = gridNavigate(mappedKey, focusedIndex, stacks.length, cols)
+      if (newIdx !== null) {
+        focusedIndex = newIdx
+        e.preventDefault()
+        scrollFocusedCardIntoView()
+      }
+
       if (e.key === 'Enter' && !(e.target instanceof HTMLInputElement)) {
         const stack = stacks[focusedIndex]
         navigation.stackOverviewFocusIndex = focusedIndex
@@ -264,11 +275,12 @@
   }
 
   async function handleMerge() {
-    if (selectedStacks.size < 2) return
+    const selectedIds = getSelectedIds(selection)
+    if (selectedIds.length < 2) return
     try {
-      const result = await mergeStacks(projectSlug, [...selectedStacks])
+      const result = await mergeStacks(projectSlug, selectedIds)
       stacks = await listStacks(projectSlug)
-      selectedStacks = new Set()
+      selection = clearSelection()
       // Focus on the merged stack
       const mergedIdx = stacks.findIndex(s => s.stack_id === result.merged_stack_id)
       focusedIndex = mergedIdx >= 0 ? mergedIdx : 0
@@ -326,9 +338,9 @@
   </ul>
 {/snippet}
 
-<div class="min-h-screen bg-gray-950 text-gray-100 flex flex-col">
+<div class="h-screen bg-gray-950 text-gray-100 flex flex-col overflow-hidden">
   <!-- Topbar navigation -->
-  <header class="flex items-center gap-3 px-4 py-3 border-b border-gray-800 bg-gray-900">
+  <header class="sticky top-0 z-10 flex items-center gap-3 px-4 py-3 border-b border-gray-800 bg-gray-900">
     <button
       class="flex items-center gap-1.5 text-sm text-gray-400 hover:text-gray-200 transition-colors"
       onclick={back}
@@ -342,129 +354,27 @@
     <span class="ml-auto text-xs text-gray-600">Esc</span>
   </header>
 
-  <main class="flex-1 flex flex-col p-6 gap-6">
+  <main class="flex-1 min-h-0 flex flex-col p-6 gap-6 overflow-hidden">
 
     {#if initialLoading}
       <div class="text-sm text-gray-500 animate-pulse">Loading…</div>
     {:else}
 
-    {#if sourceFolders.length === 0 && !status.running}
-      <!-- STATE 1: No source folders -->
-      <div class="flex flex-col items-start gap-4">
-        <p class="text-gray-400 text-sm">No source folders attached.</p>
-        <button
-          class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded transition-colors"
-          onclick={handleAddFolder}
-        >
-          + Add Folder
-        </button>
-      </div>
-
-    {:else if sourceFolders.length > 0 && !status.running && stacks.length === 0}
-      <!-- STATE 2: Folders attached, not yet indexed -->
-      <div class="flex flex-col gap-3">
-        {@render folderList(true)}
-        <button
-          class="self-start px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm rounded transition-colors"
-          onclick={handleAddFolder}
-        >
-          + Add Folder
-        </button>
-      </div>
-
-      <hr class="border-gray-800" />
-
-      <div class="flex items-center gap-3">
-        <button
-          class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded transition-colors"
-          onclick={handleIndex}
-        >
-          Index Photos
-        </button>
-        <span class="text-xs text-gray-600">or press <kbd class="font-mono bg-gray-800 px-1 rounded">i</kbd></span>
-      </div>
-
-    {:else if status.running}
-      <!-- STATE 3: Indexing in progress -->
-      <div class="flex flex-col gap-3">
-        {@render folderList(false)}
-      </div>
-
-      <hr class="border-gray-800" />
-
-      <div class="flex flex-col gap-3 max-w-lg">
-        {#if isGeneratingThumbnails}
-          <div class="flex flex-col gap-2 max-w-lg">
-            <div class="text-sm text-gray-300 font-medium">Generating thumbnails…</div>
-            {#if status.thumbnails_total > 0}
-              <!-- Determinate progress bar -->
-              <div class="w-full bg-gray-800 rounded-full h-2">
-                <div
-                  class="bg-blue-500 h-2 rounded-full transition-all duration-300"
-                  style="width: {thumbnailPct()}%"
-                ></div>
-              </div>
-              <div class="text-xs text-gray-500">
-                {status.thumbnails_done.toLocaleString()} / {status.thumbnails_total.toLocaleString()} thumbnails
-                ({thumbnailPct()}%)
-                {#if status.errors > 0}
-                  <span class="text-red-400 ml-2">{status.errors} error{status.errors === 1 ? '' : 's'}</span>
-                {/if}
-              </div>
-            {:else}
-              <!-- Indeterminate spinner (before thumbnails_total is populated) -->
-              <div class="flex items-center gap-2">
-                <div class="w-4 h-4 rounded-full border-2 border-blue-500 border-t-transparent animate-spin flex-shrink-0"></div>
-                <div class="text-xs text-gray-500">
-                  {status.total.toLocaleString()} files indexed
-                  {#if status.errors > 0}
-                    <span class="text-red-400 ml-2">{status.errors} error{status.errors === 1 ? '' : 's'}</span>
-                  {/if}
-                </div>
-              </div>
-            {/if}
-          </div>
-        {:else}
-          <!-- EXIF / scan phase -->
-          <div class="text-sm text-gray-300 font-medium">Indexing…</div>
-          <div class="w-full bg-gray-800 rounded-full h-2">
-            <div
-              class="bg-blue-500 h-2 rounded-full transition-all duration-300"
-              style="width: {progressPct()}%"
-            ></div>
-          </div>
-          <div class="text-xs text-gray-500">
-            {status.processed.toLocaleString()} / {status.total.toLocaleString()} files
-            {#if status.errors > 0}
-              <span class="text-red-400 ml-2">{status.errors} error{status.errors === 1 ? '' : 's'}</span>
-            {/if}
-          </div>
-        {/if}
-
-        <div class="flex items-center gap-2">
-          {#if status.paused}
-            <button
-              class="px-3 py-1.5 bg-blue-700 hover:bg-blue-600 text-white text-sm rounded transition-colors"
-              onclick={handleResume}
-            >
-              Resume
-            </button>
-          {:else}
-            <button
-              class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm rounded transition-colors"
-              onclick={handlePause}
-            >
-              Pause
-            </button>
-          {/if}
-          <button
-            class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm rounded transition-colors"
-            onclick={handleCancel}
-          >
-            Cancel
-          </button>
-        </div>
-      </div>
+    {#if stacks.length === 0 || status.running}
+      <!-- States 1-3: No folders / Pre-index / Indexing in progress -->
+      <IndexingPanel
+        {sourceFolders}
+        {status}
+        {isGeneratingThumbnails}
+        progressPct={progressPct()}
+        thumbnailPct={thumbnailPct()}
+        onAddFolder={handleAddFolder}
+        onRemoveFolder={handleRemoveFolder}
+        onStartIndex={handleIndex}
+        onCancel={handleCancel}
+        onPause={handlePause}
+        onResume={handleResume}
+      />
 
     {:else}
       <!-- STATE 4: Indexed, stacks visible (thumbnails may still be generating) -->
@@ -490,36 +400,13 @@
       <hr class="border-gray-800" />
 
       {#if isGeneratingThumbnails}
-        <div class="flex flex-col gap-2 max-w-lg">
-          <div class="text-sm text-gray-300 font-medium">Generating thumbnails…</div>
-          {#if status.thumbnails_total > 0}
-            <!-- Determinate progress bar -->
-            <div class="w-full bg-gray-800 rounded-full h-2">
-              <div
-                class="bg-blue-500 h-2 rounded-full transition-all duration-300"
-                style="width: {thumbnailPct()}%"
-              ></div>
-            </div>
-            <div class="text-xs text-gray-500">
-              {status.thumbnails_done.toLocaleString()} / {status.thumbnails_total.toLocaleString()} thumbnails
-              ({thumbnailPct()}%)
-              {#if status.errors > 0}
-                <span class="text-red-400 ml-2">{status.errors} error{status.errors === 1 ? '' : 's'}</span>
-              {/if}
-            </div>
-          {:else}
-            <!-- Indeterminate spinner (before thumbnails_total is populated) -->
-            <div class="flex items-center gap-2">
-              <div class="w-4 h-4 rounded-full border-2 border-blue-500 border-t-transparent animate-spin flex-shrink-0"></div>
-              <div class="text-xs text-gray-500">
-                {status.total.toLocaleString()} files indexed
-                {#if status.errors > 0}
-                  <span class="text-red-400 ml-2">{status.errors} error{status.errors === 1 ? '' : 's'}</span>
-                {/if}
-              </div>
-            </div>
-          {/if}
-        </div>
+        <ThumbnailProgress
+          thumbnailsTotal={status.thumbnails_total}
+          thumbnailsDone={status.thumbnails_done}
+          thumbnailPct={thumbnailPct()}
+          filesIndexed={status.total}
+          errors={status.errors}
+        />
       {/if}
 
       <!-- Summary line -->
@@ -549,7 +436,8 @@
         {/if}
       </div>
 
-      <!-- Stack grid -->
+      <!-- Stack grid (scrollable) -->
+      <div class="flex-1 min-h-0 overflow-y-auto">
       <div class="grid grid-cols-4 gap-3">
         {#each stacks as stack, i (stack.stack_id)}
           <button
@@ -558,8 +446,18 @@
               {i === focusedIndex
                 ? 'border-blue-500 ring-2 ring-blue-500/30 bg-gray-800'
                 : 'border-gray-800 bg-gray-900 hover:border-gray-600'}
-              {selectedStacks.has(stack.stack_id) ? 'ring-2 ring-yellow-400 border-yellow-400' : ''}"
+              {selection.selected.has(stack.stack_id) ? 'ring-2 ring-yellow-400 border-yellow-400' : ''}"
             onclick={() => {
+              focusedIndex = i
+              if (selection.selected.size > 0) {
+                // Selection mode: click toggles selection instead of entering
+                selection = toggleSelect(selection, stack.stack_id, null)
+              } else {
+                navigation.stackOverviewFocusIndex = i
+                navigate({ kind: 'stack-focus', projectSlug, projectName, stackId: stack.stack_id })
+              }
+            }}
+            ondblclick={() => {
               focusedIndex = i
               navigation.stackOverviewFocusIndex = i
               navigate({ kind: 'stack-focus', projectSlug, projectName, stackId: stack.stack_id })
@@ -581,9 +479,22 @@
                 {stack.logical_photo_count} photo{stack.logical_photo_count === 1 ? '' : 's'}
               </div>
               <div class="text-xs text-gray-600">{formatDate(stack.earliest_capture, '(no EXIF)')}</div>
+              {#if stackProgress.has(stack.stack_id)}
+                {@const progress = stackProgress.get(stack.stack_id)!}
+                {#if progress.undecided === 0}
+                  <div class="text-xs text-green-400 flex items-center gap-1" data-testid="stack-badge-complete">
+                    <span>✓</span> {progress.decided}/{progress.total_photos}
+                  </div>
+                {:else}
+                  <div class="text-xs text-yellow-400 flex items-center gap-1" data-testid="stack-badge-progress">
+                    <span>●</span> {progress.decided}/{progress.total_photos}
+                  </div>
+                {/if}
+              {/if}
             </div>
           </button>
         {/each}
+      </div>
       </div>
     {/if}
 
@@ -598,36 +509,11 @@
   </main>
 
   {#if showBurstPanel}
-    <div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div class="bg-zinc-900 border border-zinc-700 rounded-lg p-6 w-80 shadow-xl">
-        <h2 class="text-white font-semibold mb-4">Burst gap</h2>
-        {#if burstRestacking}
-          <p class="text-zinc-400 text-sm mb-4">Recalculating stacks…</p>
-        {:else}
-          <label class="block text-zinc-400 text-sm mb-2">
-            Gap between bursts (seconds)
-          </label>
-          <input
-            type="number"
-            min="1"
-            max="300"
-            value={burstGapInput}
-            oninput={(e) => { burstGapInput = Number((e.target as HTMLInputElement).value) }}
-            onchange={(e) => { burstGapInput = Number((e.target as HTMLInputElement).value) }}
-            class="w-full bg-zinc-800 text-white border border-zinc-600 rounded px-3 py-2 mb-4"
-          />
-          <div class="flex gap-2 justify-end">
-            <button
-              onclick={cancelBurstPanel}
-              class="px-4 py-2 text-sm text-zinc-400 hover:text-white"
-            >Cancel</button>
-            <button
-              onclick={saveBurstGap}
-              class="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-500 text-white rounded"
-            >Save</button>
-          </div>
-        {/if}
-      </div>
-    </div>
+    <BurstGapModal
+      burstGap={burstGapValue}
+      restacking={burstRestacking}
+      onSave={saveBurstGap}
+      onCancel={() => { showBurstPanel = false }}
+    />
   {/if}
 </div>

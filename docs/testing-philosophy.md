@@ -717,6 +717,227 @@ returned `jpeg_path` pointing to the original photo outside `$HOME/.gem-keep/**`
 frontend tried `convertFileSrc(jpeg_path)` first, Tauri silently refused, and the
 `<img>` rendered black. All 334 tests passed.
 
+### Rule 16: Use existing test infrastructure — mandatory
+
+**Before writing any test setup code, search for and use existing helpers.**
+Creating new test utilities when equivalent ones already exist causes the
+restructuring debt that led to the test-improvements sprint.
+
+#### Rust — mandatory infrastructure
+
+| Tool | When to use | Exception requires |
+|------|------------|-------------------|
+| `TestLibraryBuilder` (`crate::import::test_fixtures`) | Any test needing projects, stacks, photos, or logical_photos | Explicit user approval |
+| `TestProject` (`crate::import::test_fixtures`) | Any test needing a project directory + DB | Explicit user approval |
+| `setup_ipc_home()` / `setup_ipc_with_photos()` (`commands/ipc_tests.rs`) | IPC command tests | None — always use |
+| Verification helpers: `count_thumbnails()`, `get_lp_ids()`, `get_status()` | Checking test outcomes | None — always use |
+
+**Forbidden patterns** (without explicit approval):
+- `Connection::open_in_memory()` for photo-related tests — use `TestLibraryBuilder::new().build_db_only()` or `TestProject`
+- Hand-written `INSERT INTO photos/logical_photos/stacks` SQL — use Builder methods
+- Ad-hoc JPEG/EXIF file creation — use `PhotoSpec` with Builder
+
+#### Frontend — mandatory infrastructure
+
+| Tool | Location | When to use |
+|------|----------|------------|
+| `IDLE_STATUS`, `PHOTO_1/2/3`, `OPEN_ROUND` | `src/test/fixtures.ts` | Any test needing these constants |
+| `makePhoto()`, `makeStack()`, `makeDecisionResult()` | `src/test/fixtures.ts` | Creating test data |
+| `resetInvokeMock()` | `src/test/helpers.ts` | Every `beforeEach` that clears mocks |
+| `renderStackOverview()` | `src/test/helpers.ts` | StackOverview render with mock chain |
+| `mockStackFocusMount()` | `src/test/helpers.ts` | StackFocus mount mocking |
+| `mockSingleViewMount()` | `src/test/helpers.ts` | SingleView mount mocking |
+| `waitForCards()` | `src/test/browser-helpers.ts` | Browser tests waiting for card elements |
+| `DECISION_SELECTORS` | `src/test/decision-helpers.ts` | Querying decision badge elements |
+| `assertVisuallyKept()` etc. | `src/test/decision-visual-helpers.ts` | Style-agnostic visual assertions (Rule 17) |
+
+**Before creating any new helper:** grep the `src/test/` directory and existing test files
+for similar functionality. If a helper exists, use it. If it needs extension, extend it.
+
+### Rule 17: Visual assertions must be style-agnostic
+
+**Browser tests that check computed CSS must use semantic assertion helpers, not raw
+`getComputedStyle` checks against specific CSS properties.** This enables future A/B
+testing of visual styles without rewriting every test.
+
+**Bad** — tightly coupled to one CSS implementation:
+```ts
+const bgColor = getComputedStyle(badge).backgroundColor
+expect(bgColor).toBe('rgb(34, 197, 94)')
+```
+
+**Good** — style-agnostic, survives implementation changes:
+```ts
+import { assertVisuallyKept } from '$test/decision-visual-helpers'
+assertVisuallyKept(cards[0])
+```
+
+**Infrastructure:**
+
+| Helper | Location | Purpose |
+|--------|----------|---------|
+| `assertVisuallyKept(card)` | `src/test/decision-visual-helpers.ts` | Card has green indicator (border or background) |
+| `assertVisuallyEliminated(card)` | `src/test/decision-visual-helpers.ts` | Card has red indicator (border or background) |
+| `assertVisuallyDimmed(card)` | `src/test/decision-visual-helpers.ts` | Card is dimmed (overlay or opacity) |
+| `assertVisuallyUndecided(card)` | `src/test/decision-visual-helpers.ts` | Card has no decision indicators |
+| `assertNotDimmed(card)` | `src/test/decision-visual-helpers.ts` | Card has full opacity, no overlay |
+
+**The pattern applies beyond decisions.** Any visual assertion that checks a
+computed style (color, opacity, size, visibility) should go through a helper that
+accepts multiple valid implementations. When a new visual style variant is added,
+update the helper — not every test file.
+
+**Why:** Commit `b3ed905` changed decision indicators from bg-filled badges to
+border-frame overlays but only updated CSS selectors in tests, not the property
+assertions. This left 3 browser tests permanently broken — caught months later.
+Style-agnostic helpers prevent this class of bug entirely.
+
+### Rule 18: Browser tests must assert computed styles, never class names
+
+**In browser tests (`.browser.test.ts`), never use `className.contains()`,
+`className.toMatch()`, or `className.includes()` to verify visual appearance.**
+These assertions prove the code sets a CSS class — they do NOT prove the user sees
+the intended result. A class can be present but visually invisible due to CSS
+specificity, property conflicts, or one property hiding another.
+
+**Always assert computed styles** (`getComputedStyle()`) or use the style-agnostic
+helpers from Rule 17.
+
+**Bad** — class name is present but visual result is broken:
+```ts
+// PASSES even when the blue ring is hidden behind a gray border
+expect(frame.className).toContain('ring-blue-500')
+```
+
+**Good** — asserts what the user actually sees:
+```ts
+// FAILS when the border is gray, proving the blue indicator is not visible
+const borderColor = getComputedStyle(frame).borderColor
+expect(borderColor).toBe('rgb(59, 130, 246)')
+```
+
+**Also good** — style-agnostic helper (preferred, see Rule 17):
+```ts
+assertVisuallyFocused(frame)  // checks the right computed property
+```
+
+**Class-name assertions are fine in jsdom tests** (`.test.ts`) where you are
+testing prop→class logic, not visual rendering. The rule applies only to browser
+tests, whose entire purpose is to verify what the user sees.
+
+**Why:** Commit `a7f0284` added `ring-2 ring-inset ring-blue-500` for focused
+PhotoFrame cards. All browser tests passed — they checked `className.contains('ring-blue-500')`.
+But `ring-inset` produces a `box-shadow` that is painted BEHIND the `border-2 border-gray-700`
+on the same element. The blue ring was invisible. A `getComputedStyle().borderColor` assertion
+would have caught it immediately: the border was gray, not blue.
+
+### Rule 19: Zero unhandled errors — not just zero failures
+
+Every test run must produce **0 unhandled errors**, not just 0 test failures.
+Vitest reports unhandled rejections separately from test failures in the `Errors`
+line. These are bugs in the test infrastructure, not false positives.
+
+Common causes:
+- **Timer leaks:** `setInterval` fires after test assertions complete but before
+  `onDestroy` unmounts the component. The mock queue is exhausted and the next
+  `invoke()` call throws.
+- **Unmocked follow-up calls:** Component adds a new API call (e.g., `getRoundStatus`
+  after `makeDecision`) but tests don't mock it.
+- **Async lifecycle gaps:** A promise resolves after the test ends, triggering
+  an unmocked path.
+
+**Fix:** Use name-based mock routers (see `createMockRouter` in `helpers.ts`)
+instead of ordered `mockResolvedValueOnce` queues. Routers match on command name
+and return the right response regardless of call order or count. New API calls
+only need one line added to the router defaults — zero test changes.
+
+```typescript
+// BAD — fragile ordered queue, breaks when component adds new API calls
+mockInvoke.mockResolvedValueOnce(photos)    // hope this is list_logical_photos
+mockInvoke.mockResolvedValueOnce(decisions) // hope this is get_stack_decisions
+
+// GOOD — name-based router, resilient to new API calls
+mockInvoke.mockImplementation(mockStackFocusRouter({
+  list_logical_photos: [photos],
+  get_stack_decisions: [decisions],
+}))
+```
+
+**Why:** Commit `bd2b718` introduced browser tests with ordered mock queues.
+When `3b3b266` added `getRoundStatus` after each decision, 13 tests started
+producing unhandled `get_round_status` errors. All tests still "passed" because
+the component caught the error. The 29 unhandled errors persisted for months
+until the mock router refactor eliminated them all.
+
+### Rule 20: Test names must honestly describe what the test verifies
+
+**The test name is a promise to the reader.** Every word in the name must be backed
+by an assertion in the code. If the name promises it, the code must verify it.
+
+**Why this matters:** The test audit (docs/test-name-audit.md) found 90+ tests
+where names promised behaviors the assertions didn't verify. These tests gave false
+confidence — they "passed" while the app had real bugs including: selected photos
+not passed to ComparisonView, clipboard copy never wired up, error messages never
+shown, and status bar missing stack name.
+
+**Four categories of name-assertion mismatch:**
+
+**Category A: Visual claims in wrong environment**
+- jsdom test says "shows green border" but checks `classList` — jsdom can't verify visuals
+- Fix: rename to "applies decision-keep class" or move to browser test
+
+**Category B: Name promises data/payload, assertion only checks action**
+- Name says "with selected photos" but code only checks `navigation.kind`
+- Name says "for the focused photo" but code never checks which photo ID
+- Name says "auto-fills with next undecided" but code only checks IPC call, not content
+- Fix: add assertion for the promised data
+
+**Category C: Name promises "X and Y", assertion only checks one**
+- Name says "eliminates AND auto-fills" but only checks eliminate
+- Name says "shows stack name AND round number" but only checks round
+- Name says "closes form AND clears input" but only checks form closed
+- Fix: add assertion for the missing part
+
+**Category D: Name promises scope, test too narrow**
+- Name says "shows error" but only checks navigation stayed, no error assertion
+- Name says "each card has correct class" but only checks one card
+- Fix: widen assertion to match promised scope
+
+**Examples:**
+```
+Category A:
+BAD:  "shows green border" (jsdom, checks class)
+GOOD: "keep status applies decision-keep class" (jsdom)
+GOOD: "keep status shows green border" (browser, computedStyle)
+
+Category B:
+BAD:  "C key with 2 selected navigates to ComparisonView with selected photos"
+      → only checks navigation.kind, never checks photoIds
+GOOD: "C key with 2 selected navigates to ComparisonView with selected photos"
+      → checks navigation.kind AND navigation.photoIds === [1, 3]
+
+Category C:
+BAD:  "Status bar shows stack name and round number"
+      → only checks "Round 1", never checks stack name
+GOOD: checks BOTH "Stack" AND "Round 1" in status bar text
+
+Category D:
+BAD:  "C key with 1-photo stack shows error"
+      → only checks navigation stays, no error element assertion
+GOOD: checks navigation stays AND error testid exists
+```
+
+**Enforced by:** `validateTestEnvironmentTask` in both behavioral-tdd and
+sprint-development processes. Checks all 4 categories at the RED review breakpoint.
+
+#### Process rule
+
+At sprint start, if ANY tests fail (Rust, frontend, E2E), the failure list must be
+presented for explicit user approval before proceeding. Never silently categorize
+failures as "pre-existing" or "known." Green means green — no exceptions.
+**This includes unhandled errors** — the `Errors` line in Vitest output must be
+absent or show 0.
+
 ---
 
 ## Section 5: Test Infrastructure

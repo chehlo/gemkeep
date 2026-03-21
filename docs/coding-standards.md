@@ -21,6 +21,20 @@
 - Label temporary workarounds with TODO + owner + timeframe
 - Explain architectural trade-offs in commit messages or nearby comments
 
+## Parameters & Fallbacks
+
+### No optional parameters by default
+- **Parameters are required unless there is a concrete, documented reason for optionality.**
+- Optional parameters with silent fallbacks hide bugs — the caller forgets to pass the value, the function silently returns wrong data, and tests pass because mocks don't check parameters.
+- If a parameter is truly optional, document WHY in a comment at the declaration site.
+- Prefer failing loudly (return error / panic) over silently degrading with a fallback.
+- Example of what NOT to do: `list_logical_photos(slug, stack_id, round_id: Option<i64>)` where `None` falls back to returning all photos — this hides the bug where the caller never passes `round_id`.
+
+### No silent fallbacks
+- If a function receives unexpected input, return an error — don't substitute a default.
+- We are a local desktop app with no network dependencies. If the DB fails, it's a critical error. Don't degrade gracefully — surface the error to the user.
+- Fallback values are allowed only for user-facing display (e.g., "(no date)" for missing EXIF), never for data queries.
+
 ## Error Handling
 
 ### Rust Backend
@@ -184,6 +198,9 @@ Use Svelte 5 runes exclusively: `$state`, `$derived`, `$props`, `$effect`. Do no
 ### Shared Utilities
 - Reusable pure functions live in `src/lib/utils/`
 - Prefer pure functions with no side effects; state mutation only when Svelte reactivity requires it
+- Any function used in 2+ screens MUST be extracted to `src/lib/utils/` — no copy-paste between screens
+- Grid navigation, decision handling, keyboard routing, scroll-into-view, file overlay toggle — all shared
+- `src/lib/utils/decisions.ts` must route through `src/lib/api/index.ts` — never raw `invoke()`
 - Example: `src/lib/utils/photos.ts` exports `updateDecisionState`, `formatCaptureTime`, `truncate`
 
 ### Test Helpers
@@ -198,22 +215,46 @@ Use Svelte 5 runes exclusively: `$state`, `$derived`, `$props`, `$effect`. Do no
 - Keep consistent spacing and color usage
 
 ### Keyboard Handling
-- Use `svelte:window` for global shortcuts
-- Prevent default browser behavior where needed
-- Document all keyboard shortcuts
+- Use `mapVimKey(e)` from `src/lib/utils/keyboard.ts` for hjkl-to-Arrow mapping — never inline the mapping
+- Use `gridNavigate(key, index, count, cols)` from `src/lib/utils/keyboard.ts` for grid arrow/Home/End navigation — never reimplement clamping logic
+- Prefer a declarative key-binding pattern over `if`/`return` chains:
 
-```svelte
-<svelte:window onkeydown={handleKeydown} />
+```ts
+// Good: declarative key map
+const bindings: KeyBinding[] = [
+  { key: 'Enter', ctrl: true, action: commitRound },
+  { key: 'y', action: () => decide('keep') },
+  { key: 'x', action: () => decide('reject') },
+];
+const handleKey = createKeyHandler(bindings);
 
-<script lang="ts">
-function handleKeydown(e: KeyboardEvent) {
-    if (e.key === 'j' || e.key === 'ArrowDown') {
-        e.preventDefault();
-        navigateNext();
-    }
+// Bad: 200-line if/return chain
+function handleKey(e: KeyboardEvent) {
+  if (e.ctrlKey && e.key === 'Enter') { ... return }
+  if (e.key === 'y') { ... return }
+  // ... 30 more cases
 }
-</script>
 ```
+
+### Component Size Limits
+- Max ~200 lines `<script>`, ~150 lines template. Extract sub-components when exceeded.
+- No function longer than ~50 lines. Split into helpers or utilities.
+- Inline `onclick` only for one-liners. Extract a named function for anything with conditional logic.
+
+### State Management
+- Use `SelectionState` from `src/lib/utils/selection.ts` for all multi-select — never raw `Set<number>` with manual reactivity hacks
+- Use `createTimedError()` for all timed error display — every screen follows the same pattern
+- Use `findNextUndecided()` from `src/lib/utils/decisions.ts` for Tab/Shift+Tab navigation — never reimplement the scan loop
+- Use `handleDecisionKey()` from `src/lib/utils/decisions.ts` for Y/X/U handlers — pass screen-specific callbacks for post-decision behavior
+
+### Template Conventions
+- Max 3 levels of nesting in templates. Use `{#snippet}` or extract a component to flatten deeper structures.
+- Extract components for template sections exceeding ~50 lines (e.g., `StackCard`, `ScreenHeader`, `ErrorBanner`)
+
+### API Call Patterns
+- `onMount` with `try/catch/finally` for loading state. All IPC errors go through `showActionError`.
+- All `invoke()` calls centralized in `src/lib/api/index.ts` — screens never call `invoke()` directly.
+- `onDestroy` must clean up `removeEventListener('keydown', ...)` and `cleanupErrorTimer()`.
 
 ## Code Duplication (DRY)
 

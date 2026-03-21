@@ -61,21 +61,69 @@ npm run test:e2e
 - All Tauri commands return `Result<T, String>`
 
 ### Svelte
-- Use TypeScript
-- Tailwind for styling
-- Keep logic minimal - heavy work belongs in Rust
+- Use TypeScript strictly — no `any` types
+- Tailwind for styling — no inline `style` attributes
+- Keep logic minimal — heavy work belongs in Rust
+- **Read `docs/coding-standards.md` (Svelte/Frontend section) before writing any Svelte code** — 19 rules covering component size, keyboard handling, state management, templates, shared utilities, API patterns
 
 ### Error Handling
 - Never crash on bad input
 - Log detailed error, return user-friendly message
 - Continue processing remaining items in batch operations
 
+## Development Processes (mandatory)
+
+All feature and bugfix work MUST go through babysitter. Pick the right process:
+
+### Small features & bug fixes — `gemkeep/task`
+
+```
+/babysitter:call
+```
+Process: `.a5c/processes/task.js` (process-id: `gemkeep/task`)
+
+**Workflow:**
+1. **Understand** — explore codebase, produce approach + behavioral contract
+2. **Clarify** — breakpoint: user approves or corrects the plan
+3. **TDD** — delegates to `behavioral-tdd` (RED → GREEN → quality gate)
+
+### Sprint development — `gemkeep/sprint-development`
+
+Process: `.a5c/processes/sprint-development.js` (process-id: `gemkeep/sprint-development`)
+
+For multi-feature sprints with architecture gates, anti-pattern scanning, spec quality scoring, and user review cycles. Delegates TDD cycle to `behavioral-tdd` per feature.
+
+### TDD engine — `gemkeep/behavioral-tdd`
+
+Process: `.a5c/processes/behavioral-tdd.js` (process-id: `gemkeep/behavioral-tdd`)
+
+Pure TDD engine used by both processes above. Not called directly — callers provide `behaviors` (array of {trigger, expectedOutcome, testLayer}).
+
+**TDD workflow:**
+1. **RED** — write black-box behavioral tests with stubs (must compile, fail at runtime)
+2. **Commit RED** — git record proving tests exist before implementation
+3. **GREEN** — implement minimum production code (test files are immutable)
+4. **Commit GREEN** — with automated test immutability check
+5. **Final quality gate** — full test suite + clippy + fmt
+
+**Key rules:**
+- Tests must compile (add `todo!()` stubs for missing API, not compile errors)
+- RED tests are immutable — zero modifications during GREEN
+- `expected` metadata must match actual file content (use `extract_metadata()` + `assert_exif_matches()`)
+- Use exact assertions (`==`), never approximate (`>=`, `>`)
+- Every breakpoint requires explicit user approval
+
+Do NOT implement features or fixes outside these processes unless explicitly asked to skip it.
+
 ## Testing
 
+- **Read `docs/testing-philosophy.md` before writing any tests** — 16 rules earned by real bugs
 - **Unit tests:** `cargo test` - 90% coverage on business logic
 - **Negative tests:** Test all error paths, corrupt files, edge cases
 - **Performance:** Establish baselines after implementation
 - **E2E:** 3-5 critical journeys only
+- **Use existing test infrastructure (Rule 16):** `TestLibraryBuilder`/`TestProject` for Rust photo tests, shared fixtures/helpers/factories from `src/test/` for frontend. No ad-hoc setup when helpers exist. Exceptions require explicit user approval.
+- **Green baseline required:** Every sprint starts with ALL tests passing. Failures must be fixed or explicitly approved — never silently skipped as "pre-existing."
 
 ## Commit Format
 

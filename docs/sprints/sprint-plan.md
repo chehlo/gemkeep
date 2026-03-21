@@ -49,7 +49,7 @@ Configurable burst gap threshold UI (Ctrl+B panel). Thumbnail progress display w
 
 ---
 
-## Sprint 7 — Minimum Viable Culling + Stack Management
+## Sprint 7 — Minimum Viable Culling + Stack Management ✅ Done
 **User Stories:** §3.2 (manual stack merge), §3.3 (restack preserves manual merges), §3.6 (merge transaction log), §4.5 (camera parameters display), §4.3 (pair decisions apply to both files), §5.1–5.3 (keep/eliminate with keyboard, visual feedback), §8.6 (auto-save on every decision), §8.7 (manual commit via Ctrl+Enter), §9.1 (Single View mode)
 
 **Goal:** The user can manually merge stacks (because burst-gap auto-stacking is not always accurate), view photos full-screen with camera parameters, and make keep/eliminate decisions with the keyboard. This is the first sprint where both stack management AND culling are possible.
@@ -117,7 +117,15 @@ All code in this sprint must be designed for future extension without rewriting:
 
 ---
 
-## Sprint 8 — Comparison View & Stack Workflow
+## Sprint 8 — Bug Fixes + RAW Preview ✅ Done
+
+**Actual scope:** Fixed 3 user-reported bugs (BUG-08 viewport overflow, BUG-09 sticky headers, BUG-10 RAW preview quality). Original Sprint 8 scope (Comparison View) pushed to Sprint 9.
+
+See `sprint-08.md` for details.
+
+---
+
+## Sprint 9 — Comparison View & Stack Workflow
 **User Stories:** §6 (all: side-by-side comparison, auto-fill, lock), §5.6 (auto-advance toggle), §9.5 (status bar / progress indicator), §18 (visual stack progress)
 
 **Goal:** The user can compare two photos side by side — their primary decision-making view — and work through a stack systematically with progress feedback.
@@ -134,12 +142,12 @@ All code in this sprint must be designed for future extension without rewriting:
 - **Stack Overview progress badges:** Each stack card in Stack Overview shows a visual state: untouched (no badge), in-progress (partial fill or yellow dot), complete (green checkmark or full bar). Compact summary like "3/12" on the card.
 
 ### After this sprint
-"I can compare two similar photos side by side, see their camera settings, eliminate the weaker one, and the next undecided photo automatically fills in. I can see my progress through each stack and the overall session. I can undo a mistake. When a stack is done, I move to the next one."
+"I can compare two similar photos side by side, see their camera settings, eliminate the weaker one, and the next undecided photo automatically fills in. I can see my progress through each stack. I can undo a mistake. When a stack is done, I move to the next one."
 
 ### Deferred from this sprint
 - **Multi-round** → Sprint 9 (one round of keep/eliminate is the immediate need)
 - **Restore eliminated photos** → Sprint 9 (requires multi-round engine)
-- **Session-wide finalist view** → Sprint 10 (requires all stacks to have finalists first)
+- **GemStack (final curation)** → Sprint 10 (requires stacks to have survivors first)
 - **Bulk keep/eliminate on multi-select** → Sprint 12 (edge case for hobbyist workflow)
 - **Synchronized zoom/pan in comparison** → Sprint 12 (useful but not core to decision-making)
 
@@ -175,23 +183,23 @@ All code in this sprint must be designed for future extension without rewriting:
 - **Decision overrides in later rounds:** A photo kept in Round 1 can be eliminated in Round 2. The Round 2 decision overrides Round 1 without changing Round 1's snapshot. The decisions log is append-only — `current_status` is derived from the latest entry per photo.
 - **Restoration:** An eliminated photo can be restored in a later round by creating a new "keep" decision for it. Use case: "I eliminated this in Round 1, but after seeing Round 2 survivors, I realize it was actually the best one." Explicit action (e.g., press `R` on a grayed-out photo in the round history view) to restore.
 - **Round navigation:** Press `[` and `]` (or a round selector UI) to navigate between rounds. Each round shows the state as it was at commit time. Current (uncommitted) round is the editable one.
-- **Round commit/finalize:** Ctrl+Enter commits the current round (same as Sprint 7, now extended to any round). After committing the final round (when only 1-2 photos remain, or the user explicitly finalizes), the stack is marked "finalized" — its finalist(s) are locked until the user chooses to reopen.
+- **Round commit/finalize:** Ctrl+Enter commits the current round (same as Sprint 7, now extended to any round). After committing the final round (when only 1-2 photos remain, or the user explicitly finalizes), the stack is marked "finalized" — its survivors are locked until the user chooses to reopen.
 - **Finalize action:** A "Finalize stack" action (e.g., `Ctrl+Shift+Enter`) marks the stack as done. Shows a non-modal confirmation. Finalized stacks show a distinct visual state in Stack Overview.
 - **Auto-save remains:** Every decision in every round is immediately persisted. Crash recovery restores the exact uncommitted state.
 
 ### After this sprint
-"I can do Round 1 to make quick keep/eliminate decisions, then start Round 2 to narrow my keepers further. If I change my mind, I can restore an eliminated photo in a later round. I can look back at any past round to see what I decided. Each stack produces one or more finalists through progressive refinement."
+"I can do Round 1 to make quick keep/eliminate decisions, then start Round 2 to narrow my keepers further. If I change my mind, I can restore an eliminated photo in a later round. I can look back at any past round to see what I decided. Each stack produces survivors through progressive refinement — ready to promote to the GemStack."
 
 ### Deferred from this sprint
-- **Session-wide finalist view** → Sprint 10 (stacks must produce finalists first; this sprint establishes the mechanism)
-- **Cross-stack refinement** → Sprint 10 (requires session scope)
+- **GemStack (final curation)** → Sprint 10 (stacks must produce survivors first; this sprint establishes the mechanism)
+- **Cross-stack refinement** → Sprint 10 (via GemStack)
 - **Structural changes audit log** → Sprint 12 (readable log is P2)
 - **Visual timeline of selection evolution** → Future/P2
 
 ### "Good enough" definition
 - Round navigation uses a simple numbered tab bar or bracket-key cycling. Not a timeline visualization.
 - Restoration works via a keyboard shortcut on a visible (but dimmed) eliminated photo in the round history, or via a "show eliminated" toggle. Not drag-and-drop.
-- Finalize confirmation is a non-modal inline message ("Stack finalized. 2 finalists."), not a dialog box.
+- Finalize confirmation is a non-modal inline message ("Stack finalized. 2 survivors."), not a dialog box.
 - Round snapshots are derived from the decisions log via SQL queries — no separate snapshot tables needed.
 
 ### Success criteria
@@ -207,65 +215,69 @@ All code in this sprint must be designed for future extension without rewriting:
 
 ---
 
-## Sprint 10 — Session Scope & Finalists
-**User Stories:** §7 (all: session-wide finalist view, cross-stack refinement, zero/multiple finalists), §9.2 (seamless scope switching), §18.2 (overall session progress indicator)
+## Sprint 10 — GemStack — Final Curation
+**User Stories:** §7 (all: GemStack promotion, same round engine, provenance, re-promotion, badges), §9.2 (seamless switching between stacks and GemStack), §18.2 (overall project progress indicator)
 
-**Goal:** The user can see all their stack winners together in one view and do a final cross-stack refinement pass to select the absolute best photos from the entire shoot.
+**Goal:** The user can promote stack survivors to a special GemStack, then refine the GemStack using the same round engine and keyboard workflow to arrive at the final gem set.
 
 ### What gets built
-- **Session-wide finalist view:** A new view (accessible from Stack Overview, e.g., press `F` for "Finalists") that shows all finalists from all finalized stacks in a single grid. Photos are grouped by source stack but displayed together. This is the "gem stack" — the collection of best photos across the entire session.
-- **Cross-stack refinement:** The same round engine used within stacks now operates across all finalists. The user can run Round 1 of session refinement to further narrow from (e.g.) 200 stack finalists to 50 session finalists. Same Y/X decisions, same comparison view, same commit/finalize flow.
-- **Zero and multiple finalists:** Some stacks may produce zero finalists (entire burst was bad) and some may produce multiple (several distinct good shots in one burst). The session finalist view handles both correctly.
-- **Global progress indicators:** Session-level stats: "142/387 stacks finalized, 245 remaining" in Stack Overview. Finalist count: "238 finalists from 387 stacks" in the finalist view.
-- **Seamless scope switching:** The user can switch between stack scope and session scope without changing keyboard behavior. Y/X/C/arrow keys work identically in both scopes. The only difference is the pool of photos being refined.
-- **Session finalize:** After session-level refinement, a "Finalize session" action locks the final gem stack. This is the last step before export.
+- **GemStack creation:** Each project has exactly one GemStack — a special stack created automatically when the project is created. It is visible in StackOverview with a distinct badge/label (e.g., "GemStack" or a gem icon). Press `F` from StackOverview to jump directly to it.
+- **Promote survivors (G key):** From StackFocus, press `G` to promote all current-round survivors to the GemStack. This is an explicit, deliberate action — not automatic. The user can over-promote liberally and cut later in the GemStack. Stacks with no good photos simply never get G pressed.
+- **Re-promotion:** If the user re-enters a stack later and changes decisions, pressing `G` again replaces the previous promotions from that stack. This ensures the GemStack always reflects the latest stack-level decisions.
+- **GemStack is a regular stack:** The GemStack behaves identically to any other stack — same round engine, same Y/X decisions, same comparison view (C key), same commit (Ctrl+Enter), same multi-round support. No special UI beyond the badge. The user runs rounds on the GemStack with no fixed target count — they cut until satisfied.
+- **Provenance display:** Each photo in the GemStack shows which source stack it came from (e.g., "from Stack #12") for traceability.
+- **Promoted badge on stack cards:** Stack cards in StackOverview show a "promoted" badge after G has been pressed, so the user knows which stacks still need attention.
+- **Project-wide progress indicators:** "142/387 stacks promoted, 245 remaining" in StackOverview header. GemStack photo count: "238 photos in GemStack" on the GemStack card.
+- **GemStack finalize:** After GemStack refinement, `Ctrl+Shift+Enter` finalizes the GemStack. Survivors are the final gems — ready for export.
 
 ### After this sprint
-"I can see all my stack winners in one place, do a final refinement pass across the entire shoot using the same comparison workflow, and arrive at my final gem stack — the photos worth printing or sharing."
+"I can work through each stack, and when I'm happy with the survivors, press G to promote them to the GemStack. I can see which stacks I've promoted and which still need attention. Then I open the GemStack and do a final refinement pass using the same comparison workflow, arriving at my final gem set — the photos worth printing or sharing."
 
 ### Deferred from this sprint
-- **Export** → Sprint 11 (the finalist set exists but no export mechanism yet)
+- **Export** → Sprint 11 (the gem set exists but no export mechanism yet)
 - **Tags/labels** → Sprint 11 (tagging is a post-selection organizational step)
-- **Filters in finalist view** → Sprint 12 (date range, camera model filters are polish)
+- **Filters in GemStack** → Sprint 12 (date range, camera model filters are polish)
 
 ### "Good enough" definition
-- Finalist view is a flat grid of thumbnails, optionally grouped by source stack with a subtle divider or label.
-- Global progress is a text counter in the header. Not a fancy dashboard.
-- Session refinement reuses the exact same decision UI — no new screens needed beyond the finalist grid.
-- Scope switching is via a dedicated key or tab, not a complex mode menu.
+- GemStack is a flat grid of thumbnails with provenance labels (source stack name/number).
+- Progress is a text counter in the header. Not a fancy dashboard.
+- GemStack refinement reuses the exact same decision UI — no new screens needed.
+- `F` key jumps to GemStack. No complex mode switching.
 
 ### Success criteria
-1. Finalist view shows all photos that survived stack-level refinement
-2. Stacks with zero finalists contribute nothing to the view; stacks with multiple contribute all
-3. Session-level round engine works: Y/X decisions, commit, multi-round, restoration — all identical to stack scope
-4. Comparison view (C) works in session scope for cross-stack comparison
-5. Global progress indicator shows stacks finalized / total and finalist count
-6. Session finalize action locks the gem stack
-7. Switching between stack scope and session scope preserves all keyboard shortcuts
-8. `cargo test` passes: session finalist aggregation, cross-stack round engine, scope switching, progress counting
+1. Each project has exactly one GemStack, visible in StackOverview with a distinct badge
+2. Pressing G in StackFocus promotes all current-round survivors to the GemStack
+3. Re-pressing G replaces previous promotions from that stack
+4. GemStack round engine works: Y/X decisions, commit, multi-round, restoration — all identical to regular stacks
+5. Comparison view (C) works within GemStack
+6. GemStack photos show provenance (source stack)
+7. Stack cards show promoted badge after G press
+8. Project progress indicator shows stacks promoted / total
+9. Ctrl+Shift+Enter finalizes the GemStack; survivors are the final gems
+10. `cargo test` passes: promotion, re-promotion, GemStack round engine, provenance, progress counting
 
 ---
 
 ## Sprint 11 — Export & Labels
-**User Stories:** §12 (all: export finalists, pair-aware, JSON manifest, preserve filenames, non-destructive), §16 (all: custom tags, assign, manage, filter by tag)
+**User Stories:** §12 (all: export GemStack survivors, pair-aware, JSON manifest, preserve filenames, non-destructive), §16 (all: custom tags, assign, manage, filter by tag)
 
-**Goal:** The user can tag their finalists for organization and export them to a folder for printing, sharing, or import into Lightroom.
+**Goal:** The user can tag their gems for organization and export them to a folder for printing, sharing, or import into Lightroom.
 
 ### What gets built
-- **Custom text tags:** Per-project tags (e.g., "print", "family album", "portfolio", "wall art"). Create, rename, delete, assign a color for visual distinction. Tags are a secondary labeling step applied to finalists — not a replacement for keep/eliminate.
-- **Tag assignment:** In finalist view or Stack Focus, select a photo and press a shortcut (e.g., `T` then type tag name, or number keys mapped to tags) to assign one or more tags. Tags are displayed as colored badges on thumbnails.
-- **Tag filtering:** In finalist view, filter by tag to see only "portfolio" photos, or only "print" candidates. Combine with session refinement for targeted export.
-- **Export finalists:** Export all current session finalists (or a tag-filtered subset) to a new folder. Options:
+- **Custom text tags:** Per-project tags (e.g., "print", "family album", "portfolio", "wall art"). Create, rename, delete, assign a color for visual distinction. Tags are a secondary labeling step applied to GemStack survivors — not a replacement for keep/eliminate.
+- **Tag assignment:** In GemStack or Stack Focus, select a photo and press a shortcut (e.g., `T` then type tag name, or number keys mapped to tags) to assign one or more tags. Tags are displayed as colored badges on thumbnails.
+- **Tag filtering:** In GemStack, filter by tag to see only "portfolio" photos, or only "print" candidates. Combine with GemStack refinement for targeted export.
+- **Export gems:** Export all GemStack survivors (from the last committed round, or a tag-filtered subset) to a new folder. Options:
   - Copy files (safe, uses disk space)
   - Hard-link files (fast, no extra disk space, same filesystem only)
   - Pair handling: export both RAW+JPEG when the logical photo is a pair, or offer JPEG-only / RAW-only options
   - Preserve original filenames and folder structure (with optional flattening)
-- **JSON manifest export:** Export a JSON file listing all finalist file paths (including both files of pairs), with metadata (stack ID, round history, tags). Machine-readable for scripting or external tools.
-- **XMP sidecar output:** Write XMP sidecar files alongside exported photos with star ratings and labels, so Lightroom/Capture One can read GemKeep's decisions on import. Maps finalists to Pick flag + star rating based on round survived.
+- **JSON manifest export:** Export a JSON file listing all GemStack survivor file paths (including both files of pairs), with metadata (source stack ID, round history, tags). Machine-readable for scripting or external tools.
+- **XMP sidecar output:** Write XMP sidecar files alongside exported photos with star ratings and labels, so Lightroom/Capture One can read GemKeep's decisions on import. Maps GemStack survivors to Pick flag + star rating based on round survived.
 - **Non-destructive guarantee:** Export never modifies or moves original source files. Clear messaging in UI.
 
 ### After this sprint
-"I can tag my finalists by purpose (print, portfolio, family album), export them to a folder with both RAW and JPEG files, and import into Lightroom with my ratings preserved via XMP sidecars."
+"I can tag my gems by purpose (print, portfolio, family album), export them to a folder with both RAW and JPEG files, and import into Lightroom with my ratings preserved via XMP sidecars."
 
 ### Deferred from this sprint
 - **Cloud sync / Google Photos** → Future/P2
@@ -280,9 +292,9 @@ All code in this sprint must be designed for future extension without rewriting:
 
 ### Success criteria
 1. User can create, rename, delete, and color-code custom tags per project
-2. Tags can be assigned to finalists; multiple tags per photo supported
-3. Finalist view can be filtered by tag
-4. Export copies (or hard-links) all finalist files to a chosen folder
+2. Tags can be assigned to GemStack survivors; multiple tags per photo supported
+3. GemStack can be filtered by tag
+4. Export copies (or hard-links) all GemStack survivor files to a chosen folder
 5. RAW+JPEG pairs are exported together; JPEG-only option available
 6. Original filenames preserved; optional folder flattening works
 7. JSON manifest lists all exported files with metadata
@@ -302,7 +314,7 @@ All code in this sprint must be designed for future extension without rewriting:
 - **RAW toggle:** Press `R` in Single View to switch from JPEG preview to full RAW decode. Shows actual RAW data for exposure evaluation. Toggles back on second press. Only loads RAW on demand — never preloaded.
 - **Full-resolution RAW on 100% zoom:** When zoomed to 100% (actual pixels), automatically switch to full-resolution decode (RAW if available, full JPEG otherwise). This is when sharpness evaluation matters.
 - **Fuzzy search:** Search bar (press `/` to focus) with fuzzy matching across filenames, capture dates (partial strings), camera model, lens model. Results update as you type. Jump to matching stack or photo.
-- **Metadata filters in Stack Overview:** Filter by date range, stack size, has-finalist / no-finalist, contains-RAW, contains-JPEG, camera model. Filter bar appears on press `F` (or toggle). Combinable filters.
+- **Metadata filters in Stack Overview:** Filter by date range, stack size, has-promoted / not-promoted, contains-RAW, contains-JPEG, camera model. Filter bar appears on press `/` (or toggle). Combinable filters.
 - **Stack merge/split:** Select 2+ stacks in Stack Overview and merge into one (preserving all photos and decisions). Remove a photo from a stack to create a new stack of size 1. Single-level undo for last merge. All structural changes recorded with timestamp and before/after state.
 - **Keyboard help overlay:** Press `?` to show a non-modal overlay listing all keyboard shortcuts for the current mode (Stack Overview, Stack Focus, Single View, Comparison). Dismiss with `?` or `Esc`.
 - **First-use onboarding:** On first launch (no projects exist), show a brief non-modal hint explaining the workflow: create project → add folders → enter stacks → cull with keyboard. Dismissed permanently after first project creation. "What's next?" prompt after import finishes.
@@ -353,15 +365,16 @@ S1 Skeleton ✅
            └── S4 Thumbnail Pipeline ✅
                 └── S5 Stack Overview UI ✅
                      └── S6 Burst Config + Thumbnail Resume ✅
-                          └── S7 Minimum Viable Culling
-                               └── S8 Comparison View + Stack Workflow
-                                    └── S9 Multi-Round Engine + Restoration
-                                         └── S10 Session Scope + Finalists
-                                              ├── S11 Export + Labels
-                                              └── S12 Zoom, Search + Polish
+                          └── S7 Minimum Viable Culling ✅
+                               └── S8 Bug Fixes + RAW Preview ✅
+                                    └── S9 Comparison View + Stack Workflow
+                                         └── S10 Multi-Round Engine + Restoration
+                                              └── S11 GemStack — Final Curation
+                                                   ├── S12 Export + Labels
+                                                   └── S13 Zoom, Search + Polish
 ```
 
-Note: Sprints 11 and 12 can be developed in parallel once Sprint 10 is complete. Sprint 11 (Export) depends on finalists existing (Sprint 10). Sprint 12 (Polish) depends on all core views existing (Sprint 10) but not on export.
+Note: Sprints 11 and 12 can be developed in parallel once Sprint 10 is complete. Sprint 11 (GemStack) depends on multi-round engine existing (Sprint 10). Sprint 12 (Export) depends on the GemStack existing (Sprint 11). Sprint 13 (Polish) depends on all core views existing but not on export.
 
 ---
 
@@ -410,7 +423,7 @@ This is a **P0 architectural invariant** that must be established in Sprint 7 an
 | Stack decision progress indicator | P1 | S8 | User needs to know where they are in a stack |
 | Stack completion + advance to next | P1 | S8 | Natural workflow: finish stack, move to next |
 | Auto-advance toggle (Caps Lock) | P1 | S8 | Default OFF for deliberate workflow; available for speed passes |
-| Stack Overview progress badges | P1 | S8 | At-a-glance session status (competitive §2.4) |
+| Stack Overview progress badges | P1 | S8 | At-a-glance project status (competitive §2.4) |
 | Lock comparison layout | P1 | S8 | Lets user linger and study without auto-fill interrupting |
 | Multi-round (Round 1 → 2 → 3) | P0 | S9 | Progressive refinement is GemKeep's core differentiator |
 | Immutable round snapshots | P0 | S9 | Traceability: user can always see what they decided in each round |
@@ -418,31 +431,33 @@ This is a **P0 architectural invariant** that must be established in Sprint 7 an
 | Restore eliminated photos | P0 | S9 | Core to user persona: ability to reconsider is non-negotiable |
 | Round navigation (browse history) | P0 | S9 | User wants to review past decisions for learning |
 | Round finalize action | P1 | S9 | Explicit "done" signal for a stack's refinement |
-| Session-wide finalist view | P0 | S10 | The "gem stack" — the entire point of the application |
-| Cross-stack refinement | P0 | S10 | Same round engine applied globally; systematic narrowing |
-| Global progress indicators | P1 | S10 | Session-level awareness: how much work remains |
-| Seamless scope switching | P0 | S10 | Stack and session scope must feel identical |
-| Export finalists (copy/hard-link) | P0 | S11 | Final output: get photos out of the app |
-| Pair-aware export (RAW+JPEG) | P0 | S11 | Must export both files of a pair |
-| JSON manifest export | P1 | S11 | Machine-readable output for scripting |
-| XMP sidecar output | P1 | S11 | Lightroom/Capture One interop (competitive §3.1) |
-| Custom text tags | P1 | S11 | Organizational step for finalists (print, portfolio, etc.) |
-| Tag management (CRUD + color) | P1 | S11 | Tags need create/rename/delete/color to be useful |
-| Tag filtering in finalist view | P1 | S11 | Filter by purpose for targeted export |
-| Non-destructive export guarantee | P0 | S11 | Never modify originals; core safety principle |
-| Zoom/pan in Single View | P1 | S12 | Sharpness evaluation; important but embedded JPEG suffices initially |
-| RAW toggle on demand | P1 | S12 | Exposure evaluation from true RAW data; not needed for initial culling |
-| Full-res RAW at 100% zoom | P1 | S12 | Only matters when zoomed; deferred with zoom |
-| Fuzzy search | P2 | S12 | Convenience for large sessions; not core workflow |
-| Metadata filters (Stack Overview) | P1 | S12 | Navigation aid for large sessions |
+| GemStack (promotion + curation) | P0 | S11 | The GemStack — the entire point of the application |
+| GemStack round engine | P0 | S11 | Same round engine for cross-stack refinement |
+| GemStack provenance display | P1 | S11 | Traceability: which source stack each gem came from |
+| Promoted badge on stack cards | P1 | S11 | Awareness: which stacks still need attention |
+| Project progress indicators | P1 | S11 | Project-level awareness: how much work remains |
+| F key jump to GemStack | P0 | S11 | Quick navigation to GemStack from StackOverview |
+| Export gems (copy/hard-link) | P0 | S12 | Final output: get photos out of the app |
+| Pair-aware export (RAW+JPEG) | P0 | S12 | Must export both files of a pair |
+| JSON manifest export | P1 | S12 | Machine-readable output for scripting |
+| XMP sidecar output | P1 | S12 | Lightroom/Capture One interop (competitive §3.1) |
+| Custom text tags | P1 | S12 | Organizational step for GemStack survivors (print, portfolio, etc.) |
+| Tag management (CRUD + color) | P1 | S12 | Tags need create/rename/delete/color to be useful |
+| Tag filtering in GemStack | P1 | S12 | Filter by purpose for targeted export |
+| Non-destructive export guarantee | P0 | S12 | Never modify originals; core safety principle |
+| Zoom/pan in Single View | P1 | S13 | Sharpness evaluation; important but embedded JPEG suffices initially |
+| RAW toggle on demand | P1 | S13 | Exposure evaluation from true RAW data; not needed for initial culling |
+| Full-res RAW at 100% zoom | P1 | S13 | Only matters when zoomed; deferred with zoom |
+| Fuzzy search | P2 | S13 | Convenience for large projects; not core workflow |
+| Metadata filters (Stack Overview) | P1 | S13 | Navigation aid for large projects |
 | Manual stack merge | P0 | S7 | Auto-stacking is not always accurate; manual merge is pre-culling step |
 | Merge-aware restacking | P0 | S7 | Changing burst gap must preserve manual merges |
 | Stack transaction log | P0 | S7 | Every structural change recorded in DB like git log |
 | Undo last merge | P1 | S7 | Safety net for merge mistakes |
 | Stack split (remove photo) | P1 | S8 | Less common than merge; deferred |
-| Keyboard help overlay (?) | P1 | S12 | Discoverability; user can learn shortcuts from docs initially |
-| First-use onboarding | P2 | S12 | Polish; early users are the developer (hobbyist user persona) |
-| Auto-advance stack-level | P1 | S12 | Refinement of S8's auto-advance for full workflow |
-| Quick preview (Space) in Overview | P2 | S12 | Convenience; user can enter Stack Focus instead |
+| Keyboard help overlay (?) | P1 | S13 | Discoverability; user can learn shortcuts from docs initially |
+| First-use onboarding | P2 | S13 | Polish; early users are the developer (hobbyist user persona) |
+| Auto-advance stack-level | P1 | S13 | Refinement of S8's auto-advance for full workflow |
+| Quick preview (Space) in Overview | P2 | S13 | Convenience; user can enter Stack Focus instead |
 | Synchronized zoom in comparison | P2 | S12 | Polish for pixel-level comparison |
 | Bulk keep/eliminate (multi-select) | P1 | S12 | Edge case; individual decisions are the norm for deliberate workflow |

@@ -1,5 +1,7 @@
 # GemKeep Test Coverage Matrix
 
+> **Stale snapshot** from commit 6999f0e (2026-03-02). Test counts now at 654. Regenerate if needed.
+
 **Generated:** 2026-03-02
 **Branch:** sprint-7 (commit 6999f0e)
 

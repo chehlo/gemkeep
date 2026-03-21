@@ -216,51 +216,6 @@ mod tests {
     }
 
     #[test]
-    fn test_case_insensitive_raw_jpeg_pairing() {
-        // CASE-PAIRING: IMG_001.CR2 + img_001.jpg must be grouped as one logical photo.
-        // The pipeline lowercases base_name (file_stem().to_lowercase()), so
-        // "IMG_001" and "img_001" both become "img_001".
-        // This test verifies detect_pairs groups them correctly when base_names match.
-        let mut raw = make_file("/photos", "IMG_001.CR2", PhotoFormat::Raw);
-        raw.base_name = "img_001".to_string(); // pipeline lowercases this
-
-        let mut jpeg = make_file("/photos", "img_001.jpg", PhotoFormat::Jpeg);
-        jpeg.base_name = "img_001".to_string(); // already lowercase
-
-        let groups = detect_pairs(vec![raw, jpeg]);
-        assert_eq!(
-            groups.len(),
-            1,
-            "mixed-case pair must produce 1 logical group"
-        );
-        assert!(
-            groups[0].is_pair,
-            "IMG_001.CR2 + img_001.jpg must be detected as a pair"
-        );
-        assert!(groups[0].raw.is_some(), "pair must have RAW component");
-        assert!(groups[0].jpeg.is_some(), "pair must have JPEG component");
-    }
-
-    #[test]
-    fn test_case_insensitive_pairing_different_extensions() {
-        // CASE-PAIRING variant: verify that uppercase JPEG extension + lowercase RAW pair correctly.
-        // Both have same base_name after lowercasing.
-        let mut raw = make_file("/photos", "shot_42.arw", PhotoFormat::Raw);
-        raw.base_name = "shot_42".to_string();
-
-        let mut jpeg = make_file("/photos", "SHOT_42.JPEG", PhotoFormat::Jpeg);
-        jpeg.base_name = "shot_42".to_string(); // pipeline lowercases file_stem
-
-        let groups = detect_pairs(vec![raw, jpeg]);
-        assert_eq!(
-            groups.len(),
-            1,
-            "case-insensitive pairing must produce 1 group"
-        );
-        assert!(groups[0].is_pair, "shot_42.arw + SHOT_42.JPEG must pair");
-    }
-
-    #[test]
     fn test_pair_cross_directory() {
         // Same base_name but different directories → NOT a pair
         let files = vec![

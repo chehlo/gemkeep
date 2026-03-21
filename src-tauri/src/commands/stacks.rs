@@ -1,35 +1,9 @@
 use crate::photos::model::{MergeResult, StackTransaction};
 use crate::photos::repository;
 use crate::state::AppState;
-use rusqlite::Connection;
-use std::sync::MutexGuard;
 use tauri::State;
 
-type ProjectGuards<'s> = (
-    MutexGuard<'s, Option<Connection>>,
-    MutexGuard<'s, Option<crate::projects::model::Project>>,
-);
-
-fn with_open_project<'s>(state: &'s AppState, slug: &str) -> Result<ProjectGuards<'s>, String> {
-    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
-    if db_guard.is_none() {
-        return Err("No project open".to_string());
-    }
-    let project_guard = state
-        .active_project
-        .lock()
-        .map_err(|_| "lock poisoned".to_string())?;
-    let project = project_guard
-        .as_ref()
-        .ok_or_else(|| "No project open".to_string())?;
-    if project.slug != slug {
-        return Err(format!(
-            "Slug mismatch: expected {}, got {}",
-            project.slug, slug
-        ));
-    }
-    Ok((db_guard, project_guard))
-}
+use super::with_open_project;
 
 /// Merge 2+ stacks into one new stack.
 /// Moves all logical_photos from source stacks into a new stack.

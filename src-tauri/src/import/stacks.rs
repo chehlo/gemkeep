@@ -1,5 +1,59 @@
 use crate::import::pairs::LogicalGroup;
 
+/// Generic burst grouping algorithm: separate items into timed/untimed,
+/// sort timed by time, group consecutive items whose gap is ≤ burst_gap_secs
+/// into the same stack, and give each untimed item its own solo stack.
+///
+/// Returns `(key, stack_index)` pairs where stack_index is 0-based.
+///
+/// - `items`: the collection to group
+/// - `burst_gap_secs`: maximum gap (inclusive) for items to share a stack
+/// - `key_fn`: extracts the key (e.g. `LogicalGroup` or `i64`) from each item
+/// - `time_fn`: extracts the optional capture time from each item
+pub fn burst_group<T, K>(
+    items: Vec<T>,
+    burst_gap_secs: u64,
+    key_fn: impl Fn(&T) -> K,
+    time_fn: impl Fn(&T) -> Option<chrono::DateTime<chrono::Utc>>,
+) -> Vec<(K, usize)> {
+    let mut with_time: Vec<(K, chrono::DateTime<chrono::Utc>)> = Vec::new();
+    let mut without_time: Vec<K> = Vec::new();
+
+    for item in &items {
+        let key = key_fn(item);
+        if let Some(t) = time_fn(item) {
+            with_time.push((key, t));
+        } else {
+            without_time.push(key);
+        }
+    }
+
+    with_time.sort_by_key(|(_, t)| *t);
+
+    let mut result: Vec<(K, usize)> = Vec::new();
+    let mut stack_index: usize = 0;
+    let mut last_time: Option<chrono::DateTime<chrono::Utc>> = None;
+
+    for (key, t) in with_time {
+        if let Some(prev) = last_time {
+            let gap = (t - prev).num_seconds().unsigned_abs();
+            if gap > burst_gap_secs {
+                stack_index += 1;
+            }
+        }
+        last_time = Some(t);
+        result.push((key, stack_index));
+    }
+
+    // Each untimed item gets a solo stack
+    for key in without_time {
+        stack_index += 1;
+        result.push((key, stack_index));
+    }
+
+    result
+}
+
 /// Assign logical groups to stacks based on burst detection.
 ///
 /// Groups with a capture_time are sorted; consecutive groups whose gap is
@@ -11,42 +65,7 @@ pub fn assign_stacks_clean(
     groups: Vec<LogicalGroup>,
     burst_gap_secs: u64,
 ) -> Vec<(LogicalGroup, usize)> {
-    let mut with_time: Vec<LogicalGroup> = Vec::new();
-    let mut without_time: Vec<LogicalGroup> = Vec::new();
-
-    for group in groups {
-        if group.capture_time().is_some() {
-            with_time.push(group);
-        } else {
-            without_time.push(group);
-        }
-    }
-
-    with_time.sort_by_key(|g| g.capture_time());
-
-    let mut result: Vec<(LogicalGroup, usize)> = Vec::new();
-    let mut stack_index: usize = 0;
-    let mut last_time: Option<chrono::DateTime<chrono::Utc>> = None;
-
-    for group in with_time {
-        let t = group.capture_time().unwrap();
-        if let Some(prev) = last_time {
-            let gap = (t - prev).num_seconds().unsigned_abs();
-            if gap > burst_gap_secs {
-                stack_index += 1;
-            }
-        }
-        last_time = Some(t);
-        result.push((group, stack_index));
-    }
-
-    // Each untimed group gets a solo stack
-    for group in without_time {
-        stack_index += 1;
-        result.push((group, stack_index));
-    }
-
-    result
+    burst_group(groups, burst_gap_secs, |g| g.clone(), |g| g.capture_time())
 }
 
 /// Primary public API for burst-based stack assignment.

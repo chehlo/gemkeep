@@ -269,17 +269,17 @@ GemKeep's Stack Focus multi-photo grid already resembles Lightroom's Survey view
 *Rationale:* Burst selection (GemKeep's primary use case) is where Survey view shines. All competitors provide this.
 
 **[MEDIUM PRIORITY] Filter bar in Stack Overview**
-After completing stack-level culling, provide filters in Stack Overview: "has finalist," "no finalist," "undecided," stack size, date range. This is planned in Sprint 5 (user story 11).
+After completing stack-level culling, provide filters in Stack Overview: "promoted," "not promoted," "undecided," stack size, date range. This is planned in Sprint 5 (user story 11).
 
 *Rationale:* Filtering is how photographers navigate 5000-photo sessions. Jump-to-next-undecided is especially critical.
 
 **[MEDIUM PRIORITY] Progressive refinement (flag then rate)**
-Consider adding a lightweight star rating (1-3 or 1-5) as a secondary signal on top of keep/eliminate. After the elimination rounds, photographers may want to rank their finalists for delivery priority.
+Consider adding a lightweight star rating (1-3 or 1-5) as a secondary signal on top of keep/eliminate. After the elimination rounds, photographers may want to rank their GemStack survivors for delivery priority.
 
-*Rationale:* Every competitor supports both binary flags and nuanced ratings. GemKeep's round-based system handles the binary well, but finalist ranking is a gap.
+*Rationale:* Every competitor supports both binary flags and nuanced ratings. GemKeep's round-based system handles the binary well, but gem ranking is a gap.
 
 **[LOW PRIORITY] XMP sidecar output**
-When exporting finalists, write XMP sidecar files with ratings so that downstream tools (Lightroom, Capture One) can read GemKeep's decisions.
+When exporting GemStack survivors, write XMP sidecar files with ratings so that downstream tools (Lightroom, Capture One) can read GemKeep's decisions.
 
 *Rationale:* Professional photographers rarely use only one tool. XMP interop reduces friction.
 
@@ -322,7 +322,7 @@ The round engine then provides structured refinement within each stack, replacin
 | Keep/Pick | 1-8 (color class) | P | Alt+1..5 (rating) | + (green tag) | y or k | y (mnemonic: yes) |
 | Reject/Eliminate | 0 (no class) | X | Alt+Del | - (red tag) | n or x | x (mnemonic: cross out) |
 | Clear/Unflag | 0 | U | Alt+0 | -- | -- | u (undo decision) |
-| Star rating 1-5 | Ctrl+1..5 | 1, 2, 3, 4, 5 | Alt+1..5 | 1, 2, 3, 4, 5 | -- | 1-5 (finalist ranking) |
+| Star rating 1-5 | Ctrl+1..5 | 1, 2, 3, 4, 5 | Alt+1..5 | 1, 2, 3, 4, 5 | -- | 1-5 (gem ranking) |
 
 ### Navigation Shortcuts
 
@@ -406,9 +406,9 @@ The round engine then provides structured refinement within each stack, replacin
 2. **Progressive thumbnail display (background):** Thumbnails appear in Stack Overview as they are generated (7ms/photo using embedded EXIF fast path). No blocking import step.
 3. **Stack-level triage (15-20 min):** Stack Overview shows ~400-800 time-proximity burst stacks. Arrow keys to navigate between stacks. Glance at stack thumbnails -- some stacks are obvious keeps/skips at the stack level.
 4. **Stack Focus -- Round 1 (40-50 min):** Enter a stack. See all photos in the burst. Press y to keep, x to eliminate. Auto-advance to next photo. After deciding all photos in the stack, only keepers survive Round 1. Auto-advance to next stack.
-5. **Stack Focus -- Round 2 (10-15 min):** Re-enter stacks with multiple survivors. Narrow from ~3 keepers to ~1 finalist per stack. Round engine records decisions with full audit trail.
-6. **Session-level refinement (5-10 min):** Switch to session scope. See all stack finalists across the entire shoot. Run one more round to select hero shots for delivery.
-7. **Export:** Export finalists (both RAW + JPEG of pairs). JSON manifest for tooling integration.
+5. **Stack Focus -- Round 2 (10-15 min):** Re-enter stacks with multiple survivors. Narrow from ~3 keepers to ~1 survivor per stack. Round engine records decisions with full audit trail.
+6. **GemStack curation (5-10 min):** Press G to promote survivors from each stack to the GemStack. Open the GemStack and run refinement rounds to select hero shots for delivery.
+7. **Export:** Export GemStack survivors (both RAW + JPEG of pairs). JSON manifest for tooling integration.
 
 **GemKeep's Unique Advantages:**
 - **Stack-first navigation** eliminates scrolling through 5000 flat thumbnails. Photographers interact with ~500 stacks, not 5000 individual photos.

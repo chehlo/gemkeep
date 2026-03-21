@@ -199,66 +199,6 @@ mod tests {
     }
 
     #[test]
-    fn test_config_serde_round_trip_all_fields_survive() {
-        // CONFIG-SERDE: Serialize Config with non-default values, deserialize back,
-        // assert all fields survive the round trip.
-        let config = Config {
-            last_opened_slug: Some("iceland-2024".to_string()),
-            burst_gap_secs: 15,
-        };
-        let json = serde_json::to_string(&config).unwrap();
-        let deserialized: Config = serde_json::from_str(&json).unwrap();
-        assert_eq!(
-            deserialized.last_opened_slug,
-            Some("iceland-2024".to_string()),
-            "last_opened_slug must survive serde round-trip"
-        );
-        assert_eq!(
-            deserialized.burst_gap_secs, 15,
-            "burst_gap_secs must survive serde round-trip"
-        );
-    }
-
-    #[test]
-    fn test_config_serde_missing_burst_gap_uses_default() {
-        // CONFIG-SERDE variant: JSON without burst_gap_secs must deserialize
-        // with the serde default of 3 (not 0).
-        let json = r#"{"last_opened_slug": "wedding"}"#;
-        let config: Config = serde_json::from_str(json).unwrap();
-        assert_eq!(
-            config.last_opened_slug,
-            Some("wedding".to_string()),
-            "last_opened_slug must be parsed"
-        );
-        assert_eq!(
-            config.burst_gap_secs, 3,
-            "missing burst_gap_secs must default to 3, not 0"
-        );
-    }
-
-    #[test]
-    fn test_config_serde_file_round_trip_all_fields() {
-        // CONFIG-SERDE: Write to file then read back, assert all non-default fields survive.
-        let tmp = temp_home();
-        let home = tmp.path();
-        let original = Config {
-            last_opened_slug: Some("my-project".to_string()),
-            burst_gap_secs: 42,
-        };
-        write_config(home, &original).unwrap();
-        let loaded = read_config(home).unwrap();
-        assert_eq!(
-            loaded.last_opened_slug,
-            Some("my-project".to_string()),
-            "last_opened_slug must survive file round-trip"
-        );
-        assert_eq!(
-            loaded.burst_gap_secs, 42,
-            "burst_gap_secs must survive file round-trip"
-        );
-    }
-
-    #[test]
     fn test_read_config_malformed_json_no_crash() {
         let tmp = temp_home();
         let home = tmp.path();

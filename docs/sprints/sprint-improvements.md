@@ -1,5 +1,7 @@
 # Sprint: Improvements (Backlog)
 
+> **Superseded by `docs/backlog.md`.** All items consolidated there. This file kept for historical reference.
+
 Non-blocking UX improvements discovered during screen-by-screen review.
 These are refinements to existing features — not new features.
 
@@ -93,7 +95,7 @@ are incomplete. Missing keyboard shortcuts from S7 spec.
 ## SingleView — Layout & Polish
 
 **Context:** Camera params panel position doesn't match wireframe. Some
-status bar info missing.
+status bar info missing. Full-res photos may display with wrong orientation.
 
 ### Items
 
@@ -106,6 +108,16 @@ status bar info missing.
 
 3. **Decision flash animation** — Brief green/red flash (200ms) before
    settling to persistent border. Low priority polish.
+
+4. **Full-res orientation correction** — SingleView shows original JPEG
+   via `convertFileSrc(jpeg_path)`. Thumbnails are pre-rotated by Rust,
+   but original files are served raw — cameras with EXIF orientation != 1
+   will display incorrectly. Fix: add `orientation` field to
+   `LogicalPhotoSummary` (Rust struct + SQL query + TS type), pass it to
+   the frontend, apply CSS `transform: rotate()` based on orientation
+   value. Affects: `model.rs`, `repository.rs`, `api/index.ts`,
+   `SingleView.svelte`, `StackFocus.svelte` (data-orientation attribute).
+   Tests: restore orientation.test.ts (removed in sprint-7 cleanup).
 
 ---
 

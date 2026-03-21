@@ -245,6 +245,10 @@ mod tests {
         let found = scan_projects(home);
         assert_eq!(found.len(), 1, "Only the valid project should appear");
         assert_eq!(found[0].slug, "valid");
+        assert!(
+            !found.iter().any(|p| p.slug == "corrupt-no-db"),
+            "corrupt project (missing DB) must be excluded from scan results"
+        );
     }
 
     #[test]
@@ -268,6 +272,10 @@ mod tests {
             "Only the valid project counted; corrupt skipped without crash"
         );
         assert_eq!(found[0].slug, "good");
+        assert!(
+            !found.iter().any(|p| p.slug == "corrupt-empty-db"),
+            "corrupt project (empty DB) must be excluded from scan results"
+        );
     }
 
     // -------------------------------------------------------------------------

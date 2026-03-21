@@ -1,0 +1,12 @@
+# Real RAW test fixtures (large, downloaded by script)
+RAW_CANON_EOS7D.CR2
+RAW_SONY_RX10.ARW
+RAW_NIKON_D850.NEF
+RAW_FUJIFILM_XT50.RAF
+RAW_PANASONIC_GH6.RW2
+
+# Generated manifest fragments (from add-camera.sh)
+*.manifest-entry.json
+
+# exiftool backup files
+*_original

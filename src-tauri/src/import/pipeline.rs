@@ -16,6 +16,51 @@ pub struct ThumbnailReadyPayload {
     pub logical_photo_id: i64,
 }
 
+/// Run a rayon thread pool to generate thumbnails in parallel.
+///
+/// Shared by the full import pipeline (step 8) and `resume_thumbnails`.
+/// Each successfully generated thumbnail increments `done_counter` and,
+/// if `app_handle` is `Some`, emits a `thumbnail-ready` event.
+pub fn run_thumbnail_pool(
+    targets: &[(i64, PathBuf, PhotoFormat, Option<u16>)],
+    cache_dir: &Path,
+    num_threads: usize,
+    cancel: &AtomicBool,
+    done_counter: &AtomicUsize,
+    app_handle: Option<&tauri::AppHandle>,
+) {
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(num_threads)
+        .build()
+        .unwrap_or_else(|_| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(1)
+                .build()
+                .unwrap()
+        });
+    pool.install(|| {
+        targets
+            .par_iter()
+            .for_each(|(lp_id, path, format, orientation)| {
+                if !cancel.load(Ordering::SeqCst)
+                    && thumbnails::generate_thumbnail(path, format, *lp_id, cache_dir, *orientation)
+                        .is_some()
+                {
+                    done_counter.fetch_add(1, Ordering::Relaxed);
+                    if let Some(handle) = app_handle {
+                        use tauri::Emitter;
+                        let _ = handle.emit(
+                            "thumbnail-ready",
+                            ThumbnailReadyPayload {
+                                logical_photo_id: *lp_id,
+                            },
+                        );
+                    }
+                }
+            });
+    });
+}
+
 /// Static configuration for a pipeline run (source folders, cache, burst settings).
 pub struct PipelineConfig {
     pub project_id: i64,
@@ -206,7 +251,7 @@ fn run_pipeline_inner(
 
     // ── STEP 4: Load existing files from DB for re-stacking ───────────────────
     // Load existing photos so they can be re-incorporated into pairs/stacks.
-    let existing_scanned = repository::load_existing_scanned_files(conn);
+    let existing_scanned = repository::load_existing_scanned_files(conn, config.project_id);
     let all_files: Vec<ScannedFile> = existing_scanned.into_iter().chain(new_files).collect();
 
     // ── STEP 5: Pair detection ────────────────────────────────────────────────
@@ -251,22 +296,6 @@ fn run_pipeline_inner(
         return stats;
     }
 
-    // Save photo_path → old_lp_id mapping before clearing, so we can
-    // rename existing thumbnail files to match new LP IDs after rebuild.
-    let old_path_to_lp: std::collections::HashMap<String, i64> = conn
-        .prepare(
-            "SELECT p.path, lp.id FROM logical_photos lp \
-             JOIN photos p ON p.id = lp.representative_photo_id \
-             WHERE lp.project_id = ?1",
-        )
-        .and_then(|mut stmt| {
-            let rows = stmt.query_map(rusqlite::params![config.project_id], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-            })?;
-            rows.collect::<Result<std::collections::HashMap<_, _>, _>>()
-        })
-        .unwrap_or_default();
-
     // Clear old stacks/logical_photos so we can rebuild cleanly.
     if let Err(e) = repository::clear_stacks_and_logical_photos(conn, config.project_id) {
         let msg = format!("pipeline: failed to clear stacks: {}", e);
@@ -303,40 +332,6 @@ fn run_pipeline_inner(
         Some(&existing_paths),
         &mut stats,
     );
-
-    // Rename old thumbnail files to new LP IDs so they aren't regenerated.
-    // LP IDs change on reindex (clear + recreate), but the photo paths are
-    // the same. If a photo's old LP had a thumbnail, rename it to the new ID.
-    let mut reused_thumbs = 0usize;
-    for (new_lp_id, path, _format, _orient) in &lp_thumb_targets {
-        let path_str = path.to_string_lossy().to_string();
-        if let Some(&old_lp_id) = old_path_to_lp.get(&path_str) {
-            if old_lp_id == *new_lp_id {
-                continue; // same ID, no rename needed
-            }
-            let old_thumb = cache_dir.join(format!("{}.jpg", old_lp_id));
-            let new_thumb = cache_dir.join(format!("{}.jpg", new_lp_id));
-            if old_thumb.exists()
-                && !new_thumb.exists()
-                && std::fs::rename(&old_thumb, &new_thumb).is_ok()
-            {
-                reused_thumbs += 1;
-            }
-        }
-    }
-    if reused_thumbs > 0 {
-        tracing::info!(
-            "pipeline: reused {} existing thumbnails via rename",
-            reused_thumbs
-        );
-    }
-
-    // Filter out LPs that already have thumbnails on disk (reused or pre-existing).
-    let existing_thumb_ids = crate::import::util::cached_thumbnail_ids(&cache_dir);
-    let lp_thumb_targets: Vec<_> = lp_thumb_targets
-        .into_iter()
-        .filter(|(lp_id, _, _, _)| !existing_thumb_ids.contains(lp_id))
-        .collect();
 
     tracing::info!(
         "pipeline: DB writes complete — imported={} skipped_existing={} errors={}",
@@ -375,44 +370,14 @@ fn run_pipeline_inner(
         strategy.num_threads,
         strategy.use_exif_fast_path
     );
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(strategy.num_threads)
-        .build()
-        .unwrap_or_else(|_| {
-            rayon::ThreadPoolBuilder::new()
-                .num_threads(1)
-                .build()
-                .unwrap()
-        });
-    pool.install(|| {
-        lp_thumb_targets
-            .par_iter()
-            .for_each(|(lp_id, path, format, orientation)| {
-                if !controls.cancel.load(Ordering::SeqCst)
-                    && thumbnails::generate_thumbnail(
-                        path,
-                        format,
-                        *lp_id,
-                        &cache_dir,
-                        *orientation,
-                    )
-                    .is_some()
-                {
-                    controls
-                        .thumbnails_done_counter
-                        .fetch_add(1, Ordering::Relaxed);
-                    if let Some(handle) = &controls.app_handle {
-                        use tauri::Emitter;
-                        let _ = handle.emit(
-                            "thumbnail-ready",
-                            ThumbnailReadyPayload {
-                                logical_photo_id: *lp_id,
-                            },
-                        );
-                    }
-                }
-            });
-    });
+    run_thumbnail_pool(
+        &lp_thumb_targets,
+        &cache_dir,
+        strategy.num_threads,
+        &controls.cancel,
+        &controls.thumbnails_done_counter,
+        controls.app_handle.as_ref(),
+    );
 
     // Mark thumbnails done
     update_status(&controls.status, |s| {
@@ -653,45 +618,20 @@ pub fn restack_from_existing_photos(
     repository::clear_stacks_only(conn, project_id)
         .map_err(|e| format!("restack: clear stacks: {}", e))?;
 
-    // Separate into timed and untimed logical photos.
-    let mut timed: Vec<(i64, chrono::DateTime<chrono::Utc>)> = Vec::new();
-    let mut untimed: Vec<i64> = Vec::new();
+    // Parse capture times and apply burst grouping via shared algorithm.
+    let items: Vec<(i64, Option<chrono::DateTime<chrono::Utc>>)> = lp_rows
+        .iter()
+        .map(|(lp_id, capture_time_str)| {
+            let dt = capture_time_str.as_ref().and_then(|ct_str| {
+                chrono::DateTime::parse_from_rfc3339(ct_str)
+                    .ok()
+                    .map(|dt| dt.with_timezone(&chrono::Utc))
+            });
+            (*lp_id, dt)
+        })
+        .collect();
 
-    for (lp_id, capture_time_str) in &lp_rows {
-        if let Some(ref ct_str) = capture_time_str {
-            if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ct_str) {
-                timed.push((*lp_id, dt.with_timezone(&chrono::Utc)));
-                continue;
-            }
-        }
-        untimed.push(*lp_id);
-    }
-
-    // Sort timed by capture_time
-    timed.sort_by_key(|(_, t)| *t);
-
-    // Apply consecutive-gap burst algorithm (same logic as assign_stacks_clean).
-    // Build: Vec<(lp_id, stack_index)>
-    let mut assignments: Vec<(i64, usize)> = Vec::new();
-    let mut stack_index: usize = 0;
-    let mut last_time: Option<chrono::DateTime<chrono::Utc>> = None;
-
-    for (lp_id, t) in &timed {
-        if let Some(prev) = last_time {
-            let gap = (*t - prev).num_seconds().unsigned_abs();
-            if gap > burst_gap_secs {
-                stack_index += 1;
-            }
-        }
-        last_time = Some(*t);
-        assignments.push((*lp_id, stack_index));
-    }
-
-    // Each untimed gets its own solo stack
-    for lp_id in &untimed {
-        stack_index += 1;
-        assignments.push((*lp_id, stack_index));
-    }
+    let assignments = stacks::burst_group(items, burst_gap_secs, |(id, _)| *id, |(_, dt)| *dt);
 
     let max_stack_idx = assignments
         .iter()

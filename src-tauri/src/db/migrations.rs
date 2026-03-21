@@ -3,9 +3,6 @@
 // because there is no shipped user data to preserve.
 // If real users ever exist, restore the incremental migration approach.
 pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
-    // Snapshot the version BEFORE the squashed block (which bumps to 4).
-    let pre_version = schema_version(conn).unwrap_or(0);
-
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS schema_version (
@@ -101,6 +98,12 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
             active      INTEGER NOT NULL DEFAULT 1
         );
 
+        CREATE TABLE IF NOT EXISTS round_photos (
+            round_id          INTEGER NOT NULL REFERENCES rounds(id),
+            logical_photo_id  INTEGER NOT NULL REFERENCES logical_photos(id),
+            PRIMARY KEY (round_id, logical_photo_id)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_photos_capture_time ON photos(capture_time);
         CREATE INDEX IF NOT EXISTS idx_logical_stack        ON logical_photos(stack_id);
         CREATE INDEX IF NOT EXISTS idx_logical_project      ON logical_photos(project_id);
@@ -116,51 +119,6 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
         UPDATE schema_version SET version = 4 WHERE version < 4;
         ",
     )?;
-
-    // Incremental migration: v3 → v4
-    // Existing v3 databases have photos table WITHOUT camera-param columns.
-    // CREATE TABLE IF NOT EXISTS is a no-op for existing tables, so we must
-    // ALTER TABLE to add the missing columns.
-    if pre_version < 4 {
-        // Check if columns already exist (fresh DB has them from CREATE TABLE above).
-        let has_aperture: bool = conn.prepare("SELECT aperture FROM photos LIMIT 0").is_ok();
-        if !has_aperture {
-            conn.execute_batch(
-                "
-                ALTER TABLE photos ADD COLUMN aperture      REAL;
-                ALTER TABLE photos ADD COLUMN shutter_speed  TEXT;
-                ALTER TABLE photos ADD COLUMN iso            INTEGER;
-                ALTER TABLE photos ADD COLUMN focal_length   REAL;
-                ALTER TABLE photos ADD COLUMN exposure_comp  REAL;
-                ",
-            )?;
-        }
-
-        // Add stack_transactions and manual_merges tables if missing (v3 → v4).
-        conn.execute_batch(
-            "
-            CREATE TABLE IF NOT EXISTS stack_transactions (
-                id          INTEGER PRIMARY KEY,
-                project_id  INTEGER NOT NULL REFERENCES projects(id),
-                action      TEXT NOT NULL,
-                details     TEXT NOT NULL,
-                created_at  TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS manual_merges (
-                id          INTEGER PRIMARY KEY,
-                project_id  INTEGER NOT NULL REFERENCES projects(id),
-                merge_group TEXT NOT NULL,
-                created_at  TEXT NOT NULL,
-                active      INTEGER NOT NULL DEFAULT 1
-            );
-            CREATE INDEX IF NOT EXISTS idx_stack_tx_project
-                ON stack_transactions(project_id, created_at DESC);
-            CREATE INDEX IF NOT EXISTS idx_manual_merges_project
-                ON manual_merges(project_id, active);
-            UPDATE schema_version SET version = 4 WHERE version < 4;
-            ",
-        )?;
-    }
 
     Ok(())
 }
@@ -208,6 +166,7 @@ mod tests {
             "rounds",
             "decisions",
             "merges",
+            "round_photos",
         ];
         for table in &tables {
             let count: i64 = conn
@@ -371,149 +330,5 @@ mod tests {
             !cols.contains(&"photo_id".to_string()),
             "decisions must NOT have old photo_id column"
         );
-    }
-
-    /// Create a v3 schema (before Sprint 7 camera-param columns).
-    fn create_v3_schema(conn: &Connection) {
-        conn.execute_batch(
-            "
-            CREATE TABLE schema_version (version INTEGER NOT NULL);
-            INSERT INTO schema_version VALUES (3);
-
-            CREATE TABLE projects (
-                id INTEGER PRIMARY KEY, name TEXT NOT NULL,
-                slug TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL,
-                last_opened_at TEXT
-            );
-            CREATE TABLE source_folders (
-                id INTEGER PRIMARY KEY,
-                project_id INTEGER NOT NULL REFERENCES projects(id),
-                path TEXT NOT NULL, added_at TEXT NOT NULL
-            );
-            CREATE TABLE stacks (
-                id INTEGER PRIMARY KEY,
-                project_id INTEGER NOT NULL REFERENCES projects(id),
-                created_at TEXT NOT NULL
-            );
-            CREATE TABLE logical_photos (
-                id INTEGER PRIMARY KEY,
-                project_id INTEGER NOT NULL REFERENCES projects(id),
-                representative_photo_id INTEGER REFERENCES photos(id),
-                stack_id INTEGER REFERENCES stacks(id),
-                current_status TEXT NOT NULL DEFAULT 'undecided'
-            );
-            CREATE TABLE photos (
-                id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE,
-                format TEXT NOT NULL, capture_time TEXT,
-                orientation INTEGER, camera_model TEXT, lens TEXT,
-                logical_photo_id INTEGER REFERENCES logical_photos(id)
-            );
-            CREATE TABLE rounds (
-                id INTEGER PRIMARY KEY,
-                project_id INTEGER NOT NULL REFERENCES projects(id),
-                scope TEXT NOT NULL, scope_id INTEGER NOT NULL,
-                round_number INTEGER NOT NULL,
-                state TEXT NOT NULL DEFAULT 'open',
-                created_at TEXT NOT NULL, committed_at TEXT
-            );
-            CREATE TABLE decisions (
-                id INTEGER PRIMARY KEY,
-                logical_photo_id INTEGER NOT NULL REFERENCES logical_photos(id),
-                round_id INTEGER NOT NULL REFERENCES rounds(id),
-                action TEXT NOT NULL, timestamp TEXT NOT NULL
-            );
-            CREATE TABLE merges (
-                id INTEGER PRIMARY KEY,
-                project_id INTEGER NOT NULL REFERENCES projects(id),
-                merged_stack_id INTEGER, original_stack_ids TEXT NOT NULL,
-                timestamp TEXT NOT NULL, undone INTEGER NOT NULL DEFAULT 0
-            );
-            ",
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn test_v3_to_v4_migration_adds_camera_param_columns() {
-        let conn = in_memory();
-        create_v3_schema(&conn);
-
-        // v3 photos table should NOT have aperture
-        assert!(
-            conn.prepare("SELECT aperture FROM photos LIMIT 0").is_err(),
-            "v3 photos must not have aperture column"
-        );
-
-        // Run migrations — should upgrade to v4
-        run_migrations(&conn).unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), 4);
-
-        // Now photos must have all 5 camera-param columns
-        let mut stmt = conn.prepare("PRAGMA table_info(photos)").unwrap();
-        let cols: Vec<String> = stmt
-            .query_map([], |r| r.get(1))
-            .unwrap()
-            .filter_map(|r| r.ok())
-            .collect();
-
-        for col in &[
-            "aperture",
-            "shutter_speed",
-            "iso",
-            "focal_length",
-            "exposure_comp",
-        ] {
-            assert!(
-                cols.contains(&col.to_string()),
-                "v3→v4 migration must add '{}' column, found: {:?}",
-                col,
-                cols
-            );
-        }
-    }
-
-    #[test]
-    fn test_v3_to_v4_migration_adds_new_tables() {
-        let conn = in_memory();
-        create_v3_schema(&conn);
-
-        run_migrations(&conn).unwrap();
-
-        for table in &["stack_transactions", "manual_merges"] {
-            let count: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
-                    rusqlite::params![table],
-                    |row| row.get(0),
-                )
-                .unwrap();
-            assert_eq!(count, 1, "v3→v4 must create {} table", table);
-        }
-    }
-
-    #[test]
-    fn test_v3_to_v4_insert_photo_with_camera_params() {
-        // After v3→v4 migration, insert_photo with camera params must succeed.
-        let conn = in_memory();
-        create_v3_schema(&conn);
-        run_migrations(&conn).unwrap();
-
-        conn.execute(
-            "INSERT INTO photos (path, format, capture_time, orientation, camera_model, lens, \
-             aperture, shutter_speed, iso, focal_length, exposure_comp) \
-             VALUES ('/test.jpg', 'jpeg', '2026-01-01T00:00:00', 1, 'Canon', 'EF 85mm', \
-             2.8, '1/250', 400, 85.0, 0.7)",
-            [],
-        )
-        .expect("insert_photo with camera params must work after v3→v4 migration");
-
-        let aperture: f64 = conn
-            .query_row(
-                "SELECT aperture FROM photos WHERE path = '/test.jpg'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert!((aperture - 2.8).abs() < 0.01);
     }
 }

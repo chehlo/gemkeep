@@ -4,6 +4,7 @@
   import StackOverview from '$lib/components/screens/StackOverview.svelte'
   import StackFocus from '$lib/components/screens/StackFocus.svelte'
   import SingleView from '$lib/components/screens/SingleView.svelte'
+  import ComparisonView from '$lib/components/screens/ComparisonView.svelte'
 </script>
 
 <main class="h-screen w-screen bg-gray-950 text-gray-100" oncontextmenu={(e) => e.preventDefault()}>
@@ -15,5 +16,7 @@
     <StackFocus />
   {:else if navigation.current.kind === 'single-view'}
     <SingleView />
+  {:else if navigation.current.kind === 'comparison-view'}
+    <ComparisonView />
   {/if}
 </main>

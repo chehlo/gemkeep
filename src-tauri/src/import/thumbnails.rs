@@ -42,8 +42,7 @@ fn generate_thumbnail_inner(
 
     match format {
         PhotoFormat::Jpeg => generate_jpeg_thumbnail(source_path, &out_path, orientation),
-        // RAW: camera embeds the preview already oriented — pass None
-        PhotoFormat::Raw => generate_raw_thumbnail(source_path, &out_path),
+        PhotoFormat::Raw => generate_raw_thumbnail(source_path, &out_path, orientation),
     }
 }
 
@@ -90,16 +89,25 @@ fn extract_exif_embedded_thumbnail(source_path: &Path) -> Option<Vec<u8>> {
     buf.get(offset..offset + length).map(|s| s.to_vec())
 }
 
+/// Exposed for testing: apply EXIF orientation to a decoded image.
+#[cfg(test)]
+pub(crate) fn apply_orientation_to_image(
+    img: image::DynamicImage,
+    orientation: Option<u16>,
+) -> image::DynamicImage {
+    apply_orientation(img, orientation)
+}
+
 /// Apply EXIF orientation rotation to an image.
 fn apply_orientation(img: image::DynamicImage, orientation: Option<u16>) -> image::DynamicImage {
     match orientation {
+        Some(2) => img.fliph(),
         Some(3) => img.rotate180(),
+        Some(4) => img.flipv(),
+        Some(5) => img.fliph().rotate270(),
         Some(6) => img.rotate90(),
+        Some(7) => img.fliph().rotate90(),
         Some(8) => img.rotate270(),
-        Some(o) if matches!(o, 2 | 4 | 5 | 7) => {
-            tracing::debug!("thumbnail: orientation {} (mirror) not applied", o);
-            img
-        }
         _ => img,
     }
 }
@@ -200,12 +208,53 @@ fn generate_jpeg_thumbnail(
     generate_thumbnail_from_image(img, out_path, orientation)
 }
 
-fn generate_raw_thumbnail(source_path: &Path, out_path: &Path) -> Option<PathBuf> {
+fn generate_raw_thumbnail(
+    source_path: &Path,
+    out_path: &Path,
+    orientation: Option<u16>,
+) -> Option<PathBuf> {
     // rsraw extracts a large embedded JPEG preview (typically 1620×1080).
     // Resize to 256×256 to keep cache files small and grid loads fast.
     let jpeg_bytes = extract_raw_embedded_jpeg(source_path)?;
     let img = image::load_from_memory(&jpeg_bytes).ok()?;
-    generate_thumbnail_from_image(img, out_path, None) // RAW preview is pre-oriented
+
+    // Also save the full-size preview for SingleView (not just the 256×256 thumbnail).
+    // The preview uses the embedded JPEG at its native resolution with orientation applied.
+    save_raw_preview(&img, out_path, orientation);
+
+    generate_thumbnail_from_image(img, out_path, orientation)
+}
+
+/// Save the full-size RAW embedded preview as `{id}_preview.jpg` alongside the thumbnail.
+/// This provides a high-quality image for SingleView when no paired JPEG exists.
+fn save_raw_preview(
+    img: &image::DynamicImage,
+    thumbnail_out_path: &Path,
+    orientation: Option<u16>,
+) {
+    let preview_path = raw_preview_path(thumbnail_out_path);
+    let oriented = apply_orientation(img.clone(), orientation);
+
+    ensure_parent_dir(&preview_path);
+    if let Err(e) = oriented.save(&preview_path) {
+        tracing::warn!("raw preview: save failed for {:?}: {}", preview_path, e);
+    } else {
+        tracing::debug!(
+            "raw preview saved: {:?} ({}×{})",
+            preview_path,
+            oriented.width(),
+            oriented.height()
+        );
+    }
+}
+
+/// Derive the preview path from a thumbnail path: `{id}.jpg` → `{id}_preview.jpg`
+pub fn raw_preview_path(thumbnail_path: &Path) -> PathBuf {
+    let stem = thumbnail_path
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy();
+    thumbnail_path.with_file_name(format!("{}_preview.jpg", stem))
 }
 
 /// Adaptive thumbnail generation strategy based on batch size.
@@ -866,6 +915,56 @@ mod tests {
         println!("  method1_full_decode.jpg  (gold standard)");
         println!("  method2_dct_eighth.jpg   (new DCT 1/8 path)");
         println!("  method3_exif_embedded.jpg (current EXIF, if any)");
+    }
+
+    // ── BUG-10: RAW preview extraction tests ────────────────────────────────
+
+    #[test]
+    fn test_raw_preview_path_derives_correctly() {
+        // raw_preview_path converts "{id}.jpg" to "{id}_preview.jpg"
+        let thumb = Path::new("/cache/42.jpg");
+        let preview = raw_preview_path(thumb);
+        assert_eq!(preview, Path::new("/cache/42_preview.jpg"));
+    }
+
+    #[test]
+    fn test_save_raw_preview_creates_file() {
+        // save_raw_preview must create a {id}_preview.jpg alongside the thumbnail
+        let out_dir = TempDir::new().unwrap();
+        let thumb_path = out_dir.path().join("7.jpg");
+
+        let img = image::DynamicImage::new_rgb8(1620, 1080);
+        save_raw_preview(&img, &thumb_path, None);
+
+        let preview = out_dir.path().join("7_preview.jpg");
+        assert!(preview.exists(), "preview file must be created");
+
+        // Verify it's a valid JPEG at full resolution (not downscaled to 256×256)
+        let loaded = image::open(&preview).unwrap();
+        assert_eq!(loaded.width(), 1620, "preview must preserve original width");
+        assert_eq!(
+            loaded.height(),
+            1080,
+            "preview must preserve original height"
+        );
+    }
+
+    #[test]
+    fn test_save_raw_preview_applies_orientation() {
+        // Preview must have orientation applied (e.g., 90° rotation)
+        let out_dir = TempDir::new().unwrap();
+        let thumb_path = out_dir.path().join("8.jpg");
+
+        let img = image::DynamicImage::new_rgb8(1620, 1080); // landscape
+        save_raw_preview(&img, &thumb_path, Some(6)); // orientation=6 → 90° CW → portrait
+
+        let preview = out_dir.path().join("8_preview.jpg");
+        assert!(preview.exists());
+
+        let loaded = image::open(&preview).unwrap();
+        // After 90° rotation: 1620×1080 → 1080×1620
+        assert_eq!(loaded.width(), 1080, "rotated preview width");
+        assert_eq!(loaded.height(), 1620, "rotated preview height");
     }
 
     // ── Sprint 7 Part B: Thumbnail DCT optimization tests (RED) ─────────────

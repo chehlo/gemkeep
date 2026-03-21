@@ -1,0 +1,19 @@
+[{
+  "SourceFile": "RAW_CANON_EOS7D.CR2",
+  "Composite:LensID": "Canon EF 70-200mm f/2.8L IS USM"
+},
+{
+  "SourceFile": "RAW_SONY_RX10.ARW"
+},
+{
+  "SourceFile": "RAW_NIKON_D850.NEF",
+  "Composite:LensID": "Sigma 35mm F1.4 DG HSM"
+},
+{
+  "SourceFile": "RAW_FUJIFILM_XT50.RAF",
+  "Composite:LensID": "XF35mm F1.4 R"
+},
+{
+  "SourceFile": "RAW_PANASONIC_GH6.RW2",
+  "Composite:LensID": "Lumix G Vario 35-100mm F2.8 II"
+}]

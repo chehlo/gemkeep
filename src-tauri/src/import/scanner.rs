@@ -2,7 +2,7 @@ use crate::photos::model::PhotoFormat;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
-const RAW_EXTENSIONS: &[&str] = &["cr2", "cr3", "arw"];
+const RAW_EXTENSIONS: &[&str] = &["cr2", "cr3", "arw", "nef", "raf", "rw2"];
 const JPEG_EXTENSIONS: &[&str] = &["jpg", "jpeg"];
 
 pub struct ScannedPath {
@@ -140,9 +140,9 @@ mod tests {
 
     #[test]
     fn test_detect_format_unsupported() {
-        assert!(detect_format(Path::new("file.nef")).is_none());
         assert!(detect_format(Path::new("file.txt")).is_none());
         assert!(detect_format(Path::new("file")).is_none());
+        assert!(detect_format(Path::new("file.bmp")).is_none());
     }
 
     #[test]

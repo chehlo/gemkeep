@@ -1,6 +1,25 @@
 use crate::photos::model::PhotoFormat;
 use std::path::Path;
 
+/// Display as "Make Model" but avoid duplication when model already contains make.
+/// E.g. Canon: make="Canon", model="EOS 7D" → "Canon EOS 7D"
+///      Nikon: make="NIKON CORPORATION", model="NIKON D850" → "NIKON D850" (already has it)
+pub fn format_camera_model(make: &str, model: &str) -> Option<String> {
+    let make = make.trim();
+    let model = model.trim();
+    if model.is_empty() {
+        None
+    } else if make.is_empty()
+        || model
+            .to_uppercase()
+            .starts_with(&make.split_whitespace().next().unwrap_or("").to_uppercase())
+    {
+        Some(model.to_string())
+    } else {
+        Some(format!("{} {}", make, model))
+    }
+}
+
 #[derive(Default)]
 pub struct ExifData {
     pub capture_time: Option<chrono::DateTime<chrono::Utc>>,
@@ -60,7 +79,13 @@ fn extract_jpeg_exif_inner(path: &Path) -> ExifData {
     };
 
     let capture_time = read_datetime_original(&exif);
-    let camera_model = read_ascii_tag(&exif, exif::Tag::Model);
+
+    let camera_model = {
+        let make = read_ascii_tag(&exif, exif::Tag::Make).unwrap_or_default();
+        let model = read_ascii_tag(&exif, exif::Tag::Model).unwrap_or_default();
+        format_camera_model(&make, &model)
+    };
+
     let lens = read_ascii_tag(&exif, exif::Tag::LensModel);
     let orientation = read_orientation(&exif);
 
@@ -218,20 +243,7 @@ fn extract_raw_exif_inner(path: &Path) -> ExifData {
         .as_deref()
         .and_then(parse_exif_datetime);
 
-    // Combine make + model, avoiding duplicate prefix
-    let camera_model = {
-        let make = metadata.make.trim().to_string();
-        let model = metadata.model.trim().to_string();
-        if model.is_empty() && make.is_empty() {
-            None
-        } else if model.is_empty() {
-            Some(make)
-        } else if make.is_empty() || model.starts_with(&make) {
-            Some(model)
-        } else {
-            Some(format!("{} {}", make, model))
-        }
-    };
+    let camera_model = format_camera_model(&metadata.make, &metadata.model);
 
     let lens = metadata
         .exif
@@ -290,10 +302,28 @@ pub fn extract_exif(path: &Path, format: &PhotoFormat) -> ExifData {
     }
 }
 
+/// Unified metadata extraction: auto-detect format from extension and return normalized ExifData.
+///
+/// Dispatch strategy (no fallbacks — explicit per-format):
+/// - JPEG → kamadak-exif (standard TIFF/EXIF reader)
+/// - ALL RAW (CR2, CR3, NEF, ARW, RAF, RW2) → rawler (reads both standard EXIF and MakerNotes,
+///   providing lens info for Canon/Nikon that kamadak-exif cannot access)
+pub fn extract_metadata(path: &Path) -> ExifData {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_lowercase())
+        .unwrap_or_default();
+    match ext.as_str() {
+        "jpg" | "jpeg" => extract_jpeg_exif(path),
+        "cr2" | "cr3" | "nef" | "arw" | "raf" | "rw2" => extract_raw_exif(path),
+        _ => ExifData::default(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::photos::model::ScannedFile;
 
     #[test]
     fn test_exif_jpeg_no_file() {
@@ -889,221 +919,6 @@ mod tests {
             format_shutter_speed(1.0),
             "1.0s",
             "1.0s should format as 1.0s"
-        );
-    }
-
-    // ── Camera test infrastructure ─────────────────────────────────────────
-
-    struct CameraTestCase {
-        label: &'static str,
-        jpeg_path: &'static str,
-        raw_path: &'static str,
-        expected_model_contains: &'static str,
-        expected_lens: Option<&'static str>,
-        has_aperture: bool,
-        has_shutter: bool,
-        has_iso: bool,
-        has_focal_length: bool,
-        has_exposure_comp: bool,
-    }
-
-    const CANON_EOS_80D: CameraTestCase = CameraTestCase {
-        label: "Canon EOS 80D",
-        jpeg_path: "/home/ilya/ssd_disk/photo/venice 2026/il/1/IMG_4651.JPG",
-        raw_path: "/home/ilya/ssd_disk/photo/venice 2026/il/1/IMG_4651.CR2",
-        expected_model_contains: "Canon EOS 80D",
-        expected_lens: Some("50mm f/1.8 STM"),
-        has_aperture: true,
-        has_shutter: true,
-        has_iso: true,
-        has_focal_length: true,
-        has_exposure_comp: true,
-    };
-
-    const SONY_RX10M4: CameraTestCase = CameraTestCase {
-        label: "Sony DSC-RX10M4",
-        jpeg_path: "/home/ilya/ssd_disk/photo/venice 2026/lina/100MSDCF/DSC02967.JPG",
-        raw_path: "/home/ilya/ssd_disk/photo/venice 2026/lina/100MSDCF/DSC02967.ARW",
-        expected_model_contains: "DSC-RX10M4",
-        expected_lens: None,
-        has_aperture: true,
-        has_shutter: true,
-        has_iso: true,
-        has_focal_length: true,
-        has_exposure_comp: true,
-    };
-
-    fn assert_camera_exif(case: &CameraTestCase, data: &ExifData) {
-        let model = data
-            .camera_model
-            .as_deref()
-            .expect(&format!("{}: camera_model must be present", case.label));
-        assert!(
-            model.contains(case.expected_model_contains),
-            "{}: camera_model '{}' must contain '{}'",
-            case.label,
-            model,
-            case.expected_model_contains
-        );
-
-        if let Some(expected_lens) = case.expected_lens {
-            let lens = data
-                .lens
-                .as_deref()
-                .expect(&format!("{}: lens must be present", case.label));
-            assert!(
-                lens.contains(expected_lens),
-                "{}: lens '{}' must contain '{}'",
-                case.label,
-                lens,
-                expected_lens
-            );
-        }
-
-        if case.has_aperture {
-            assert!(
-                data.aperture.is_some(),
-                "{}: aperture must be present",
-                case.label
-            );
-        }
-        if case.has_shutter {
-            assert!(
-                data.shutter_speed.is_some(),
-                "{}: shutter_speed must be present",
-                case.label
-            );
-        }
-        if case.has_iso {
-            assert!(data.iso.is_some(), "{}: iso must be present", case.label);
-        }
-        if case.has_focal_length {
-            assert!(
-                data.focal_length.is_some(),
-                "{}: focal_length must be present",
-                case.label
-            );
-        }
-        if case.has_exposure_comp {
-            assert!(
-                data.exposure_comp.is_some(),
-                "{}: exposure_comp must be present",
-                case.label
-            );
-        }
-    }
-
-    #[test]
-    fn test_canon_jpeg_metadata() {
-        let path = Path::new(CANON_EOS_80D.jpeg_path);
-        if !path.exists() {
-            eprintln!("SKIP: Canon JPEG test photo not found");
-            return;
-        }
-        let data = extract_jpeg_exif(path);
-        assert_camera_exif(&CANON_EOS_80D, &data);
-    }
-
-    #[test]
-    fn test_canon_raw_metadata() {
-        let path = Path::new(CANON_EOS_80D.raw_path);
-        if !path.exists() {
-            eprintln!("SKIP: Canon RAW test photo not found");
-            return;
-        }
-        let data = extract_raw_exif(path);
-        assert_camera_exif(&CANON_EOS_80D, &data);
-    }
-
-    #[test]
-    fn test_sony_jpeg_metadata() {
-        let path = Path::new(SONY_RX10M4.jpeg_path);
-        if !path.exists() {
-            eprintln!("SKIP: Sony JPEG test photo not found");
-            return;
-        }
-        let data = extract_jpeg_exif(path);
-        assert_camera_exif(&SONY_RX10M4, &data);
-    }
-
-    #[test]
-    fn test_sony_raw_metadata() {
-        let path = Path::new(SONY_RX10M4.raw_path);
-        if !path.exists() {
-            eprintln!("SKIP: Sony RAW test photo not found");
-            return;
-        }
-        let data = extract_raw_exif(path);
-        assert_camera_exif(&SONY_RX10M4, &data);
-    }
-
-    // ── RED test: ScannedFile must carry camera params to DB ─────────────
-
-    #[test]
-    fn test_scanned_file_carries_camera_params() {
-        // RED: ScannedFile lacks aperture, shutter_speed, iso, focal_length, exposure_comp fields.
-        // ExifData extracts them correctly, but they are dropped in the pipeline because
-        // ScannedFile doesn't have slots for them and insert_photo() doesn't write them.
-        // This test documents the pipeline gap: EXIF → ScannedFile → insert_photo → DB.
-        let f = make_jpeg_with_camera_params(
-            28, 10, // aperture = 2.8
-            1, 250, // shutter = 1/250
-            400, // iso
-            850, 10, // focal_length = 85.0
-            7, 10, // exposure_comp = +0.7
-        );
-        let exif_data = extract_jpeg_exif(f.path());
-
-        // Verify EXIF extraction works (these pass)
-        assert!(exif_data.aperture.is_some(), "ExifData has aperture");
-        assert!(
-            exif_data.shutter_speed.is_some(),
-            "ExifData has shutter_speed"
-        );
-        assert!(exif_data.iso.is_some(), "ExifData has iso");
-        assert!(
-            exif_data.focal_length.is_some(),
-            "ExifData has focal_length"
-        );
-        assert!(
-            exif_data.exposure_comp.is_some(),
-            "ExifData has exposure_comp"
-        );
-
-        // GREEN: ScannedFile now carries camera params through the pipeline
-        let scanned = ScannedFile {
-            path: f.path().to_path_buf(),
-            format: PhotoFormat::Jpeg,
-            capture_time: exif_data.capture_time,
-            camera_model: exif_data.camera_model,
-            lens: exif_data.lens,
-            orientation: exif_data.orientation,
-            aperture: exif_data.aperture,
-            shutter_speed: exif_data.shutter_speed,
-            iso: exif_data.iso,
-            focal_length: exif_data.focal_length,
-            exposure_comp: exif_data.exposure_comp,
-            base_name: "test".to_string(),
-            dir: f.path().parent().unwrap().to_path_buf(),
-        };
-
-        assert!(
-            (scanned.aperture.unwrap() - 2.8).abs() < 0.01,
-            "aperture should be ~2.8"
-        );
-        assert_eq!(
-            scanned.shutter_speed.as_deref(),
-            Some("1/250"),
-            "shutter_speed should be 1/250"
-        );
-        assert_eq!(scanned.iso, Some(400), "iso should be 400");
-        assert!(
-            (scanned.focal_length.unwrap() - 85.0).abs() < 0.01,
-            "focal_length should be ~85.0"
-        );
-        assert!(
-            (scanned.exposure_comp.unwrap() - 0.7).abs() < 0.01,
-            "exposure_comp should be ~0.7"
         );
     }
 }

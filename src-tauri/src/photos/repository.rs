@@ -113,8 +113,21 @@ pub fn insert_logical_photo(
 
 /// Delete all stacks and logical_photos for this project (for idempotent re-indexing).
 /// Photos rows are kept (they represent files on disk) but their logical_photo_id is cleared.
+/// Cascade order: decisions → rounds → photos.logical_photo_id → logical_photos → stacks.
 pub fn clear_stacks_and_logical_photos(conn: &Connection, project_id: i64) -> rusqlite::Result<()> {
-    // Clear logical_photo_id references in photos first to avoid FK constraint issues.
+    // 1. Delete decisions that reference logical_photos in this project.
+    conn.execute(
+        "DELETE FROM decisions WHERE logical_photo_id IN (
+             SELECT id FROM logical_photos WHERE project_id = ?1
+         )",
+        params![project_id],
+    )?;
+    // 2. Delete rounds for this project (decisions are already gone).
+    conn.execute(
+        "DELETE FROM rounds WHERE project_id = ?1",
+        params![project_id],
+    )?;
+    // 3. Clear logical_photo_id references in photos.
     conn.execute(
         "UPDATE photos SET logical_photo_id = NULL
          WHERE logical_photo_id IN (
@@ -122,10 +135,12 @@ pub fn clear_stacks_and_logical_photos(conn: &Connection, project_id: i64) -> ru
          )",
         params![project_id],
     )?;
+    // 4. Delete logical_photos (no more FK references to them).
     conn.execute(
         "DELETE FROM logical_photos WHERE project_id = ?1",
         params![project_id],
     )?;
+    // 5. Delete stacks (no more FK references from logical_photos).
     conn.execute(
         "DELETE FROM stacks WHERE project_id = ?1",
         params![project_id],
@@ -184,7 +199,11 @@ pub fn query_logical_photos_by_stack(
             rep.camera_model                                    AS camera_model,
             rep.lens                                            AS lens,
             MAX(CASE WHEN p.format = 'raw'  THEN 1 ELSE 0 END) AS has_raw,
-            MAX(CASE WHEN p.format = 'jpeg' THEN 1 ELSE 0 END) AS has_jpeg
+            MAX(CASE WHEN p.format = 'jpeg' THEN 1 ELSE 0 END) AS has_jpeg,
+            rep.aperture                                        AS aperture,
+            rep.shutter_speed                                   AS shutter_speed,
+            rep.iso                                             AS iso,
+            rep.focal_length                                    AS focal_length
          FROM logical_photos lp
          LEFT JOIN photos rep ON rep.id = lp.representative_photo_id
          LEFT JOIN photos p   ON p.logical_photo_id = lp.id
@@ -203,6 +222,10 @@ pub fn query_logical_photos_by_stack(
                 lens: row.get(3)?,
                 has_raw: has_raw != 0,
                 has_jpeg: has_jpeg != 0,
+                aperture: row.get(6)?,
+                shutter_speed: row.get(7)?,
+                iso: row.get(8)?,
+                focal_length: row.get(9)?,
             })
         },
     )
@@ -222,6 +245,53 @@ pub fn enrich_with_thumbnails(summaries: &mut [LogicalPhotoSummary], cache_dir: 
             );
         }
     }
+}
+
+/// Return summaries of logical photos belonging to a specific round.
+/// Only photos linked via `round_photos` are included (i.e., survivors of previous rounds).
+pub fn query_logical_photos_by_round(
+    conn: &Connection,
+    round_id: i64,
+) -> rusqlite::Result<Vec<LogicalPhotoSummary>> {
+    collect_rows(
+        conn,
+        "SELECT
+            lp.id                                               AS logical_photo_id,
+            rep.capture_time                                    AS capture_time,
+            rep.camera_model                                    AS camera_model,
+            rep.lens                                            AS lens,
+            MAX(CASE WHEN p.format = 'raw'  THEN 1 ELSE 0 END) AS has_raw,
+            MAX(CASE WHEN p.format = 'jpeg' THEN 1 ELSE 0 END) AS has_jpeg,
+            rep.aperture                                        AS aperture,
+            rep.shutter_speed                                   AS shutter_speed,
+            rep.iso                                             AS iso,
+            rep.focal_length                                    AS focal_length
+         FROM round_photos rp
+         JOIN logical_photos lp ON lp.id = rp.logical_photo_id
+         LEFT JOIN photos rep ON rep.id = lp.representative_photo_id
+         LEFT JOIN photos p   ON p.logical_photo_id = lp.id
+         WHERE rp.round_id = ?1
+         GROUP BY lp.id
+         ORDER BY rep.capture_time ASC NULLS LAST, lp.id ASC",
+        params![round_id],
+        |row| {
+            let has_raw: i64 = row.get(4)?;
+            let has_jpeg: i64 = row.get(5)?;
+            Ok(LogicalPhotoSummary {
+                logical_photo_id: row.get(0)?,
+                thumbnail_path: None,
+                capture_time: row.get(1)?,
+                camera_model: row.get(2)?,
+                lens: row.get(3)?,
+                has_raw: has_raw != 0,
+                has_jpeg: has_jpeg != 0,
+                aperture: row.get(6)?,
+                shutter_speed: row.get(7)?,
+                iso: row.get(8)?,
+                focal_length: row.get(9)?,
+            })
+        },
+    )
 }
 
 /// Return a summary of all logical photos in a given stack, ordered by capture time.
@@ -469,10 +539,14 @@ pub fn update_logical_photo_stack(
 /// Load existing photos from DB and reconstruct ScannedFile structs for re-stacking.
 /// After `clear_stacks_and_logical_photos`, all photos have logical_photo_id = NULL
 /// but still exist in the photos table. We reload them to re-pair and re-stack.
-pub fn load_existing_scanned_files(conn: &Connection) -> Vec<ScannedFile> {
-    let mut stmt = match conn
-        .prepare("SELECT path, format, capture_time, orientation, camera_model, lens, aperture, shutter_speed, iso, focal_length, exposure_comp FROM photos")
-    {
+pub fn load_existing_scanned_files(conn: &Connection, project_id: i64) -> Vec<ScannedFile> {
+    let mut stmt = match conn.prepare(
+        "SELECT p.path, p.format, p.capture_time, p.orientation, p.camera_model, p.lens, \
+                p.aperture, p.shutter_speed, p.iso, p.focal_length, p.exposure_comp \
+         FROM photos p \
+         INNER JOIN logical_photos lp ON p.logical_photo_id = lp.id \
+         WHERE lp.project_id = ?1",
+    ) {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!("load_existing_scanned_files prepare: {}", e);
@@ -480,7 +554,7 @@ pub fn load_existing_scanned_files(conn: &Connection) -> Vec<ScannedFile> {
         }
     };
 
-    let rows = stmt.query_map([], |row| {
+    let rows = stmt.query_map(params![project_id], |row| {
         let path_str: String = row.get(0)?;
         let format_str: String = row.get(1)?;
         let capture_time_str: Option<String> = row.get(2)?;
@@ -687,12 +761,14 @@ pub fn merge_stacks(
             "INSERT INTO manual_merges (project_id, merge_group, created_at, active) VALUES (?1, ?2, ?3, 1)",
             params![project_id, merge_group_json, now],
         )?;
+        let manual_merge_id = conn.last_insert_rowid();
 
         // 9. INSERT INTO stack_transactions
         let details = serde_json::json!({
             "source_stack_ids": stack_ids,
             "target_stack_id": new_stack_id,
             "photo_assignments": photo_assignments,
+            "manual_merge_id": manual_merge_id,
         });
         let details_str = serde_json::to_string(&details)?;
         conn.execute(
@@ -783,12 +859,20 @@ pub fn undo_last_merge(conn: &Connection, project_id: i64) -> anyhow::Result<()>
         // 6. Delete the merged stack
         conn.execute("DELETE FROM stacks WHERE id = ?1", params![target_stack_id])?;
 
-        // 7. Mark manual_merges record as inactive
-        // Find the active manual_merges for this project that contains the LP IDs from this merge
-        conn.execute(
-            "UPDATE manual_merges SET active = 0 WHERE project_id = ?1 AND active = 1",
-            params![project_id],
-        )?;
+        // 7. Mark the specific manual_merges record as inactive
+        if let Some(manual_merge_id) = details.get("manual_merge_id").and_then(|v| v.as_i64()) {
+            conn.execute(
+                "UPDATE manual_merges SET active = 0 WHERE id = ?1",
+                params![manual_merge_id],
+            )?;
+        } else {
+            // Fallback for transactions created before manual_merge_id was stored:
+            // deactivate the most recently created active manual_merges row for this project.
+            conn.execute(
+                "UPDATE manual_merges SET active = 0 WHERE id = (SELECT id FROM manual_merges WHERE project_id = ?1 AND active = 1 ORDER BY id DESC LIMIT 1)",
+                params![project_id],
+            )?;
+        }
 
         // 8. Log undo_merge transaction
         let undo_details = serde_json::json!({
@@ -994,54 +1078,29 @@ pub fn list_stack_transactions(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::run_migrations;
+    use crate::import::test_fixtures::{Camera, FileType, PhotoSpec, TestLibraryBuilder};
 
     #[test]
     fn test_list_representative_photos_for_lp_ids_returns_correct_rows() {
-        let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
-
-        // Insert project
-        conn.execute(
-            "INSERT INTO projects (name, slug, created_at) VALUES ('Test', 'test', '2024-01-01T00:00:00Z')",
-            [],
-        ).unwrap();
-        let project_id: i64 = conn.last_insert_rowid();
-
-        // Insert stack
-        let stack_id = insert_stack(&conn, project_id).unwrap();
-
-        // Insert photo
-        let photo_id = insert_photo(
-            &conn,
-            "/fake/photo.jpg",
-            "jpeg",
-            None,
-            Some(1u16),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        .unwrap();
-
-        // Insert logical_photo
-        let lp_id = insert_logical_photo(&conn, project_id, photo_id, stack_id).unwrap();
+        let project = TestLibraryBuilder::new()
+            .add_photo(PhotoSpec {
+                camera: Camera::Canon,
+                orientation: 1,
+                file_type: FileType::Jpeg,
+                capture_time: None,
+                camera_params: None,
+            })
+            .build_db_only();
+        let lp_id = project.lp_ids[0];
 
         // Call the function under test
-        let result = list_representative_photos_for_lp_ids(&conn, project_id, &[lp_id]).unwrap();
+        let result =
+            list_representative_photos_for_lp_ids(&project.conn, project.project_id, &[lp_id])
+                .unwrap();
 
         assert_eq!(result.len(), 1, "should return exactly 1 row");
-        let (row_lp_id, row_path, row_format, row_orientation) = &result[0];
+        let (row_lp_id, _row_path, row_format, row_orientation) = &result[0];
         assert_eq!(*row_lp_id, lp_id, "lp_id must match");
-        assert_eq!(
-            *row_path,
-            std::path::PathBuf::from("/fake/photo.jpg"),
-            "path must match"
-        );
         assert_eq!(
             *row_format,
             crate::photos::model::PhotoFormat::Jpeg,
@@ -1052,11 +1111,20 @@ mod tests {
 
     #[test]
     fn test_list_representative_photos_for_lp_ids_empty_input() {
-        let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
+        // Minimal DB — no photos needed, just testing empty-input edge case
+        let project = TestLibraryBuilder::new()
+            .add_photo(PhotoSpec {
+                camera: Camera::Canon,
+                orientation: 1,
+                file_type: FileType::Jpeg,
+                capture_time: None,
+                camera_params: None,
+            })
+            .build_db_only();
 
         // Call with empty lp_ids slice — must not produce SQL error from IN ()
-        let result = list_representative_photos_for_lp_ids(&conn, 1, &[]).unwrap();
+        let result =
+            list_representative_photos_for_lp_ids(&project.conn, project.project_id, &[]).unwrap();
         assert_eq!(result, vec![], "empty input must return empty vec");
     }
 
@@ -1066,54 +1134,17 @@ mod tests {
     /// count: COUNT(lp.id) counted both joined rows even though lp.id was the same value twice.
     #[test]
     fn test_logical_photo_count_is_one_for_raw_jpeg_pair() {
-        let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
+        let project = TestLibraryBuilder::new()
+            .add_photo(PhotoSpec {
+                camera: Camera::Sony,
+                orientation: 1,
+                file_type: FileType::Both,
+                capture_time: Some("2024:01:01 10:00:00".to_string()),
+                camera_params: None,
+            })
+            .build_db_only();
 
-        conn.execute(
-            "INSERT INTO projects (name, slug, created_at) VALUES ('P', 'p', '2024-01-01T00:00:00Z')",
-            [],
-        ).unwrap();
-        let project_id: i64 = conn.last_insert_rowid();
-        let stack_id = insert_stack(&conn, project_id).unwrap();
-
-        // Two physical files (RAW + JPEG) — one logical photo
-        let raw_id = insert_photo(
-            &conn,
-            "/img/shot.ARW",
-            "raw",
-            Some("2024-01-01T10:00:00Z"),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        .unwrap();
-        let jpg_id = insert_photo(
-            &conn,
-            "/img/shot.JPG",
-            "jpeg",
-            Some("2024-01-01T10:00:00Z"),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        .unwrap();
-
-        // One logical_photo row (representative = RAW)
-        let lp_id = insert_logical_photo(&conn, project_id, raw_id, stack_id).unwrap();
-        set_logical_photo_id(&conn, raw_id, lp_id).unwrap();
-        set_logical_photo_id(&conn, jpg_id, lp_id).unwrap();
-
-        let summaries = list_stacks_summary(&conn, project_id).unwrap();
+        let summaries = list_stacks_summary(&project.conn, project.project_id).unwrap();
         assert_eq!(summaries.len(), 1, "should be exactly one stack");
         assert_eq!(
             summaries[0].logical_photo_count, 1,
@@ -1126,66 +1157,70 @@ mod tests {
     // ── §16.4 Stack Merge Tests ─────────────────────────────────────────────
 
     /// Helper: set up a project with N stacks, each containing `lps_per_stack`
-    /// logical photos. Returns (conn, project_id, Vec<(stack_id, Vec<lp_id>)>).
+    /// logical photos using TestLibraryBuilder.
+    /// Returns (TestProject, project_id, Vec<(stack_id, Vec<lp_id>)>).
     fn setup_merge_test_db(
-        num_stacks: usize,
+        _num_stacks: usize,
         lps_per_stack: &[usize],
-    ) -> (Connection, i64, Vec<(i64, Vec<i64>)>) {
-        let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
-
-        conn.execute(
-            "INSERT INTO projects (name, slug, created_at) VALUES ('Test', 'test', '2024-01-01T00:00:00Z')",
-            [],
-        )
-        .unwrap();
-        let project_id = conn.last_insert_rowid();
-
-        let mut stacks_with_lps = Vec::new();
-        let mut photo_counter = 0u64;
-
-        for stack_idx in 0..num_stacks {
-            let stack_id = insert_stack(&conn, project_id).unwrap();
-            let count = lps_per_stack.get(stack_idx).copied().unwrap_or(1);
-            let mut lp_ids = Vec::new();
-            for _ in 0..count {
-                photo_counter += 1;
-                let path = format!("/test/photo_{}.jpg", photo_counter);
-                let capture_time = format!("2024-01-01T10:{:02}:00Z", photo_counter);
-                let photo_id = insert_photo(
-                    &conn,
-                    &path,
-                    "jpeg",
-                    Some(&capture_time),
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                )
-                .unwrap();
-                let lp_id = insert_logical_photo(&conn, project_id, photo_id, stack_id).unwrap();
-                conn.execute(
-                    "UPDATE photos SET logical_photo_id = ?1 WHERE id = ?2",
-                    params![lp_id, photo_id],
-                )
-                .unwrap();
-                lp_ids.push(lp_id);
-            }
-            stacks_with_lps.push((stack_id, lp_ids));
+    ) -> (
+        crate::import::test_fixtures::TestProject,
+        i64,
+        Vec<(i64, Vec<i64>)>,
+    ) {
+        let total: usize = lps_per_stack.iter().sum();
+        let mut builder = TestLibraryBuilder::new();
+        for _ in 0..total {
+            builder = builder.add_photo(PhotoSpec {
+                camera: Camera::Canon,
+                orientation: 1,
+                file_type: FileType::Jpeg,
+                capture_time: None,
+                camera_params: None,
+            });
         }
+        let project = builder.with_layout(lps_per_stack).build_db_only();
+        let project_id = project.project_id;
+        let stacks = project.stacks_with_lps.clone();
+        (project, project_id, stacks)
+    }
 
-        (conn, project_id, stacks_with_lps)
+    /// Check if a stack exists in the DB.
+    fn stack_exists(conn: &Connection, stack_id: i64) -> bool {
+        conn.query_row(
+            "SELECT COUNT(*) FROM stacks WHERE id = ?1",
+            params![stack_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap()
+            > 0
+    }
+
+    /// Count logical photos in a specific stack.
+    fn count_lps_in_stack(conn: &Connection, stack_id: i64) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM logical_photos WHERE stack_id = ?1",
+            params![stack_id],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    /// Count active manual merge records for a project.
+    fn count_active_manual_merges(conn: &Connection, project_id: i64) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM manual_merges WHERE project_id = ?1 AND active = 1",
+            params![project_id],
+            |row| row.get(0),
+        )
+        .unwrap()
     }
 
     #[test]
     fn test_merge_two_stacks() {
         // Sprint 7 §16.4: Merge 2 stacks with 3 and 4 LPs respectively.
         // After merge: 1 stack with 7 LPs, source stacks deleted.
-        let (conn, project_id, stacks) = setup_merge_test_db(2, &[3, 4]);
+        let (project, project_id, stacks) = setup_merge_test_db(2, &[3, 4]);
+        let conn = &project.conn;
         let stack_ids: Vec<i64> = stacks.iter().map(|(id, _)| *id).collect();
         let all_lp_ids: Vec<i64> = stacks.iter().flat_map(|(_, lps)| lps.clone()).collect();
 
@@ -1202,25 +1237,19 @@ mod tests {
         );
 
         // Verify new stack has all 7 LPs
-        let lp_count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM logical_photos WHERE stack_id = ?1",
-                params![result.merged_stack_id],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(lp_count, 7, "merged stack must have 7 logical photos");
+        assert_eq!(
+            count_lps_in_stack(&conn, result.merged_stack_id),
+            7,
+            "merged stack must have 7 logical photos"
+        );
 
         // Verify source stacks no longer exist
         for sid in &stack_ids {
-            let exists: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM stacks WHERE id = ?1",
-                    params![sid],
-                    |row| row.get(0),
-                )
-                .unwrap();
-            assert_eq!(exists, 0, "source stack {} must be deleted", sid);
+            assert!(
+                !stack_exists(&conn, *sid),
+                "source stack {} must be deleted",
+                sid
+            );
         }
 
         // Verify all LP IDs now point to the merged stack
@@ -1243,7 +1272,8 @@ mod tests {
     #[test]
     fn test_merge_three_stacks() {
         // Sprint 7 §16.4: Merge 3 stacks into 1.
-        let (conn, project_id, stacks) = setup_merge_test_db(3, &[2, 3, 2]);
+        let (project, project_id, stacks) = setup_merge_test_db(3, &[2, 3, 2]);
+        let conn = &project.conn;
         let stack_ids: Vec<i64> = stacks.iter().map(|(id, _)| *id).collect();
 
         let result = merge_stacks(&conn, project_id, &stack_ids).unwrap();
@@ -1253,20 +1283,18 @@ mod tests {
             "merge of 3 stacks must move all 7 LPs"
         );
 
-        let lp_count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM logical_photos WHERE stack_id = ?1",
-                params![result.merged_stack_id],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(lp_count, 7, "merged stack must contain all 7 LPs");
+        assert_eq!(
+            count_lps_in_stack(&conn, result.merged_stack_id),
+            7,
+            "merged stack must contain all 7 LPs"
+        );
     }
 
     #[test]
     fn test_merge_logs_transaction() {
         // Sprint 7 §16.4: merge_stacks must insert a row into stack_transactions.
-        let (conn, project_id, stacks) = setup_merge_test_db(2, &[2, 3]);
+        let (project, project_id, stacks) = setup_merge_test_db(2, &[2, 3]);
+        let conn = &project.conn;
         let stack_ids: Vec<i64> = stacks.iter().map(|(id, _)| *id).collect();
 
         let result = merge_stacks(&conn, project_id, &stack_ids).unwrap();
@@ -1301,7 +1329,8 @@ mod tests {
     #[test]
     fn test_merge_creates_manual_merge_record() {
         // Sprint 7 §16.4: merge_stacks must create an active manual_merges row.
-        let (conn, project_id, stacks) = setup_merge_test_db(2, &[2, 3]);
+        let (project, project_id, stacks) = setup_merge_test_db(2, &[2, 3]);
+        let conn = &project.conn;
         let stack_ids: Vec<i64> = stacks.iter().map(|(id, _)| *id).collect();
         let all_lp_ids: Vec<i64> = stacks.iter().flat_map(|(_, lps)| lps.clone()).collect();
 
@@ -1331,7 +1360,8 @@ mod tests {
     #[test]
     fn test_merge_invalid_single_stack() {
         // Sprint 7 §16.4: merge_stacks with < 2 stack_ids must error.
-        let (conn, project_id, stacks) = setup_merge_test_db(1, &[3]);
+        let (project, project_id, stacks) = setup_merge_test_db(1, &[3]);
+        let conn = &project.conn;
         let stack_ids = vec![stacks[0].0];
 
         let result = merge_stacks(&conn, project_id, &stack_ids);
@@ -1344,7 +1374,8 @@ mod tests {
     #[test]
     fn test_merge_nonexistent_stack() {
         // Sprint 7 §16.4: merge_stacks with a non-existent stack_id must error.
-        let (conn, project_id, stacks) = setup_merge_test_db(1, &[3]);
+        let (project, project_id, stacks) = setup_merge_test_db(1, &[3]);
+        let conn = &project.conn;
         let stack_ids = vec![stacks[0].0, 99999]; // 99999 does not exist
 
         let result = merge_stacks(&conn, project_id, &stack_ids);
@@ -1357,7 +1388,8 @@ mod tests {
     #[test]
     fn test_undo_merge_restores_stacks() {
         // Sprint 7 §16.4: After merge, undo_last_merge restores original stacks.
-        let (conn, project_id, stacks) = setup_merge_test_db(2, &[3, 4]);
+        let (project, project_id, stacks) = setup_merge_test_db(2, &[3, 4]);
+        let conn = &project.conn;
         let stack_ids: Vec<i64> = stacks.iter().map(|(id, _)| *id).collect();
         let original_lps_per_stack: Vec<Vec<i64>> =
             stacks.iter().map(|(_, lps)| lps.clone()).collect();
@@ -1370,26 +1402,15 @@ mod tests {
         undo_last_merge(&conn, project_id).unwrap();
 
         // Verify merged stack is deleted
-        let merged_exists: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM stacks WHERE id = ?1",
-                params![merge_result.merged_stack_id],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(merged_exists, 0, "merged stack must be deleted after undo");
+        assert!(
+            !stack_exists(&conn, merge_result.merged_stack_id),
+            "merged stack must be deleted after undo"
+        );
 
         // Verify original stacks are recreated
         for (idx, sid) in stack_ids.iter().enumerate() {
-            let exists: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM stacks WHERE id = ?1",
-                    params![sid],
-                    |row| row.get(0),
-                )
-                .unwrap();
-            assert_eq!(
-                exists, 1,
+            assert!(
+                stack_exists(&conn, *sid),
                 "original stack {} must be restored after undo",
                 sid
             );
@@ -1412,15 +1433,9 @@ mod tests {
         }
 
         // Verify manual_merges record marked inactive
-        let active_count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM manual_merges WHERE project_id = ?1 AND active = 1",
-                params![project_id],
-                |row| row.get(0),
-            )
-            .unwrap();
         assert_eq!(
-            active_count, 0,
+            count_active_manual_merges(&conn, project_id),
+            0,
             "manual_merges must have active=0 after undo"
         );
     }
@@ -1428,7 +1443,8 @@ mod tests {
     #[test]
     fn test_undo_merge_no_merges() {
         // Sprint 7 §16.4: undo_last_merge with no prior merges must error.
-        let (conn, project_id, _stacks) = setup_merge_test_db(2, &[3, 4]);
+        let (project, project_id, _stacks) = setup_merge_test_db(2, &[3, 4]);
+        let conn = &project.conn;
 
         let result = undo_last_merge(&conn, project_id);
         assert!(
@@ -1441,7 +1457,8 @@ mod tests {
     fn test_restack_preserves_manual_merges() {
         // Sprint 7 §16.4: After manually merging stacks 0+1, restack_merge_aware
         // must keep those LPs together in one stack, even with a different burst_gap.
-        let (conn, project_id, stacks) = setup_merge_test_db(4, &[2, 3, 2, 1]);
+        let (project, project_id, stacks) = setup_merge_test_db(4, &[2, 3, 2, 1]);
+        let conn = &project.conn;
 
         // Merge stacks 0 and 1 manually
         let merge_stack_ids = vec![stacks[0].0, stacks[1].0];
@@ -1479,5 +1496,547 @@ mod tests {
                 lp_id, merged_lp_ids[0], sid, stack_id_of_first
             );
         }
+    }
+
+    // ── BUG-01 Regression: insert_photo must persist camera parameters ──────
+
+    #[test]
+    fn test_insert_photo_roundtrips_camera_params() {
+        // BUG-01: insert_photo previously ignored aperture, shutter_speed, iso,
+        // focal_length, exposure_comp — they were silently dropped on INSERT.
+        let project = TestLibraryBuilder::new()
+            .add_photo(PhotoSpec {
+                camera: Camera::Canon,
+                orientation: 1,
+                file_type: FileType::Jpeg,
+                capture_time: None,
+                camera_params: None,
+            })
+            .build();
+        let conn = &project.conn;
+
+        let photo_id = insert_photo(
+            conn,
+            "/test/photo_cam.jpg",
+            "jpeg",
+            Some("2024-06-15T14:30:00Z"),
+            Some(1),
+            Some("Canon EOS 80D"),
+            Some("EF-S 18-135mm"),
+            Some(2.8),
+            Some("1/250"),
+            Some(400),
+            Some(35.0),
+            Some(-0.7),
+        )
+        .unwrap();
+
+        // Read back directly from the DB to verify all columns were written.
+        let (aperture, shutter_speed, iso, focal_length, exposure_comp): (
+            Option<f64>,
+            Option<String>,
+            Option<u32>,
+            Option<f64>,
+            Option<f64>,
+        ) = conn
+            .query_row(
+                "SELECT aperture, shutter_speed, iso, focal_length, exposure_comp FROM photos WHERE id = ?1",
+                params![photo_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            )
+            .unwrap();
+
+        assert_eq!(aperture, Some(2.8), "aperture must be persisted");
+        assert_eq!(
+            shutter_speed,
+            Some("1/250".to_string()),
+            "shutter_speed must be persisted"
+        );
+        assert_eq!(iso, Some(400), "iso must be persisted");
+        assert_eq!(focal_length, Some(35.0), "focal_length must be persisted");
+        assert_eq!(exposure_comp, Some(-0.7), "exposure_comp must be persisted");
+    }
+
+    #[test]
+    fn test_insert_photo_camera_params_none_stays_null() {
+        // Complement to BUG-01: when camera params are None, DB columns stay NULL.
+        let project = TestLibraryBuilder::new()
+            .add_photo(PhotoSpec {
+                camera: Camera::Canon,
+                orientation: 1,
+                file_type: FileType::Jpeg,
+                capture_time: None,
+                camera_params: None,
+            })
+            .build();
+        let conn = &project.conn;
+
+        let photo_id = insert_photo(
+            conn,
+            "/test/no_params.jpg",
+            "jpeg",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let (aperture, iso): (Option<f64>, Option<u32>) = conn
+            .query_row(
+                "SELECT aperture, iso FROM photos WHERE id = ?1",
+                params![photo_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+
+        assert_eq!(aperture, None, "aperture must be NULL when not provided");
+        assert_eq!(iso, None, "iso must be NULL when not provided");
+    }
+
+    // ── BUG-02 Regression: load_existing_scanned_files must scope by project ──
+
+    #[test]
+    fn test_load_existing_scanned_files_project_isolation() {
+        // BUG-02: load_existing_scanned_files previously returned ALL photos
+        // across all projects. With two projects each having distinct photos,
+        // querying for project A must NOT return project B's photos.
+        let project = TestLibraryBuilder::new()
+            .add_photo(PhotoSpec {
+                camera: Camera::Canon,
+                orientation: 1,
+                file_type: FileType::Jpeg,
+                capture_time: None,
+                camera_params: None,
+            })
+            .build();
+        let conn = &project.conn;
+        let project_a = project.project_id;
+
+        // Create a second project in the same DB
+        conn.execute(
+            "INSERT INTO projects (name, slug, created_at) VALUES ('Beta', 'beta', '2024-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        let project_b = conn.last_insert_rowid();
+
+        // Insert photos for project A
+        let stack_a = insert_stack(&conn, project_a).unwrap();
+        let photo_a1 = insert_photo(
+            &conn,
+            "/alpha/img_001.jpg",
+            "jpeg",
+            Some("2024-01-01T10:00:00Z"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let photo_a2 = insert_photo(
+            &conn,
+            "/alpha/img_002.jpg",
+            "jpeg",
+            Some("2024-01-01T10:01:00Z"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let lp_a1 = insert_logical_photo(&conn, project_a, photo_a1, stack_a).unwrap();
+        set_logical_photo_id(&conn, photo_a1, lp_a1).unwrap();
+        let lp_a2 = insert_logical_photo(&conn, project_a, photo_a2, stack_a).unwrap();
+        set_logical_photo_id(&conn, photo_a2, lp_a2).unwrap();
+
+        // Insert photos for project B
+        let stack_b = insert_stack(&conn, project_b).unwrap();
+        let photo_b1 = insert_photo(
+            &conn,
+            "/beta/img_100.jpg",
+            "jpeg",
+            Some("2024-02-01T10:00:00Z"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let lp_b1 = insert_logical_photo(&conn, project_b, photo_b1, stack_b).unwrap();
+        set_logical_photo_id(&conn, photo_b1, lp_b1).unwrap();
+
+        // Query for project A only
+        let files_a = load_existing_scanned_files(&conn, project_a);
+        assert_eq!(
+            files_a.len(),
+            2,
+            "project A must return exactly 2 scanned files"
+        );
+        let paths_a: Vec<String> = files_a
+            .iter()
+            .map(|f| f.path.to_string_lossy().to_string())
+            .collect();
+        assert!(
+            paths_a.contains(&"/alpha/img_001.jpg".to_string()),
+            "project A must contain img_001"
+        );
+        assert!(
+            paths_a.contains(&"/alpha/img_002.jpg".to_string()),
+            "project A must contain img_002"
+        );
+
+        // Query for project B only
+        let files_b = load_existing_scanned_files(&conn, project_b);
+        assert_eq!(
+            files_b.len(),
+            1,
+            "project B must return exactly 1 scanned file"
+        );
+        assert_eq!(
+            files_b[0].path.to_string_lossy(),
+            "/beta/img_100.jpg",
+            "project B must contain only its own photo"
+        );
+    }
+
+    #[test]
+    fn test_load_existing_scanned_files_returns_camera_params() {
+        // Cross-check for BUG-01 + BUG-02: camera params survive the
+        // insert_photo -> load_existing_scanned_files round-trip.
+        let project = TestLibraryBuilder::new()
+            .add_photo(PhotoSpec {
+                camera: Camera::Sony,
+                orientation: 1,
+                file_type: FileType::Jpeg,
+                capture_time: None,
+                camera_params: None,
+            })
+            .build();
+        let conn = &project.conn;
+        let project_id = project.project_id;
+
+        let stack_id = insert_stack(conn, project_id).unwrap();
+        let photo_id = insert_photo(
+            conn,
+            "/test/cam_roundtrip.jpg",
+            "jpeg",
+            Some("2024-01-01T10:00:00Z"),
+            None,
+            Some("Sony DSC-RX10M4"),
+            None,
+            Some(5.6),
+            Some("1/1000"),
+            Some(100),
+            Some(24.0),
+            Some(0.3),
+        )
+        .unwrap();
+        let lp_id = insert_logical_photo(conn, project_id, photo_id, stack_id).unwrap();
+        set_logical_photo_id(conn, photo_id, lp_id).unwrap();
+
+        let files = load_existing_scanned_files(conn, project_id);
+        assert_eq!(files.len(), 1, "must return exactly 1 file");
+        let f = &files[0];
+        assert_eq!(f.aperture, Some(5.6), "aperture must round-trip");
+        assert_eq!(
+            f.shutter_speed,
+            Some("1/1000".to_string()),
+            "shutter_speed must round-trip"
+        );
+        assert_eq!(f.iso, Some(100), "iso must round-trip");
+        assert_eq!(f.focal_length, Some(24.0), "focal_length must round-trip");
+        assert_eq!(f.exposure_comp, Some(0.3), "exposure_comp must round-trip");
+    }
+
+    // ── BUG-03 Regression: undo_last_merge must only undo the LAST merge ────
+
+    #[test]
+    fn test_undo_last_merge_preserves_earlier_merge() {
+        // BUG-03: undo_last_merge previously ran
+        //   UPDATE manual_merges SET active = 0 WHERE project_id = ?1 AND active = 1
+        // which deactivated ALL merges, not just the one being undone.
+        //
+        // Setup: 4 stacks. Merge stacks 0+1, then merge stacks 2+3.
+        // Undo the LAST merge (2+3). The first merge (0+1) must remain active.
+        let (project, project_id, stacks) = setup_merge_test_db(4, &[2, 2, 2, 2]);
+        let conn = &project.conn;
+
+        // First merge: stacks 0 + 1
+        let merge1_ids = vec![stacks[0].0, stacks[1].0];
+        let merge1_result = merge_stacks(&conn, project_id, &merge1_ids).unwrap();
+
+        // Second merge: stacks 2 + 3
+        let merge2_ids = vec![stacks[2].0, stacks[3].0];
+        let merge2_result = merge_stacks(&conn, project_id, &merge2_ids).unwrap();
+
+        // Verify we have 2 active manual_merges before undo
+        assert_eq!(
+            count_active_manual_merges(&conn, project_id),
+            2,
+            "must have 2 active manual_merges before undo"
+        );
+
+        // Undo the LAST merge (merge2: stacks 2+3)
+        undo_last_merge(&conn, project_id).unwrap();
+
+        // The first merge must still be active
+        assert_eq!(
+            count_active_manual_merges(&conn, project_id),
+            1,
+            "exactly 1 manual_merge must remain active after undoing only the last"
+        );
+
+        // The first merge's stack must still exist with all its LPs
+        assert_eq!(
+            count_lps_in_stack(&conn, merge1_result.merged_stack_id),
+            4,
+            "first merge stack must still have all 4 LPs"
+        );
+
+        // The second merge's stack must be deleted
+        assert!(
+            !stack_exists(&conn, merge2_result.merged_stack_id),
+            "second merge stack must be deleted after undo"
+        );
+
+        // Stacks 2 and 3 must be restored
+        for &sid in &[stacks[2].0, stacks[3].0] {
+            assert!(
+                stack_exists(&conn, sid),
+                "original stack {} must be restored after undo",
+                sid
+            );
+        }
+    }
+
+    #[test]
+    fn test_undo_merge_only_deactivates_target_manual_merge() {
+        // Direct BUG-03 assertion: after merge1 and merge2, the undo's SQL
+        // UPDATE must target only the specific manual_merge_id stored in the
+        // transaction details, not blanket-deactivate all active rows.
+        let (project, project_id, stacks) = setup_merge_test_db(4, &[2, 2, 2, 2]);
+        let conn = &project.conn;
+
+        // Merge stacks 0+1
+        let merge1_ids = vec![stacks[0].0, stacks[1].0];
+        let merge1_result = merge_stacks(&conn, project_id, &merge1_ids).unwrap();
+
+        // Merge stacks 2+3
+        let merge2_ids = vec![stacks[2].0, stacks[3].0];
+        merge_stacks(&conn, project_id, &merge2_ids).unwrap();
+
+        // Verify the merge1 transaction details contain manual_merge_id
+        let details_json: String = conn
+            .query_row(
+                "SELECT details FROM stack_transactions WHERE id = ?1",
+                params![merge1_result.transaction_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let details: serde_json::Value = serde_json::from_str(&details_json).unwrap();
+        assert!(
+            details.get("manual_merge_id").is_some(),
+            "merge transaction must store manual_merge_id for targeted undo"
+        );
+
+        // Undo only the last merge
+        undo_last_merge(&conn, project_id).unwrap();
+
+        // Verify the manual_merge from merge1 is still active
+        let merge1_manual_merge_id = details["manual_merge_id"].as_i64().unwrap();
+        let still_active: i64 = conn
+            .query_row(
+                "SELECT active FROM manual_merges WHERE id = ?1",
+                params![merge1_manual_merge_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            still_active, 1,
+            "merge1's manual_merge row must remain active=1 after undoing only merge2"
+        );
+    }
+
+    // ── Camera params on LogicalPhotoSummary ────────────────────────────────
+
+    #[test]
+    fn test_query_logical_photos_returns_camera_params() {
+        use crate::import::test_fixtures::CameraParams;
+
+        let project = TestLibraryBuilder::new()
+            .add_photo(PhotoSpec {
+                camera: Camera::Canon,
+                orientation: 1,
+                file_type: FileType::Jpeg,
+                capture_time: Some("2024:01:15 10:30:00".to_string()),
+                camera_params: Some(CameraParams {
+                    aperture: Some(2.8),
+                    shutter_speed: Some("1/250".to_string()),
+                    iso: Some(400),
+                    focal_length: Some(85.0),
+                    exposure_comp: Some(0.7),
+                    lens: Some("EF 85mm f/1.4".to_string()),
+                }),
+            })
+            .build_db_only();
+
+        let summaries =
+            query_logical_photos_by_stack(&project.conn, project.stack_id()).unwrap();
+
+        assert_eq!(summaries.len(), 1);
+        let s = &summaries[0];
+
+        // Camera params must be populated from the representative photo
+        assert_eq!(s.aperture, Some(2.8), "aperture must be 2.8");
+        assert_eq!(
+            s.shutter_speed,
+            Some("1/250".to_string()),
+            "shutter_speed must be 1/250"
+        );
+        assert_eq!(s.iso, Some(400), "iso must be 400");
+        assert_eq!(s.focal_length, Some(85.0), "focal_length must be 85.0");
+    }
+
+    #[test]
+    fn test_query_logical_photos_returns_none_for_missing_camera_params() {
+        // Photo with no camera params — all should be None
+        let project = TestLibraryBuilder::new()
+            .add_photo(PhotoSpec {
+                camera: Camera::Canon,
+                orientation: 1,
+                file_type: FileType::Jpeg,
+                capture_time: Some("2024:01:15 10:30:00".to_string()),
+                camera_params: None,
+            })
+            .build_db_only();
+
+        let summaries =
+            query_logical_photos_by_stack(&project.conn, project.stack_id()).unwrap();
+
+        assert_eq!(summaries.len(), 1);
+        let s = &summaries[0];
+
+        assert_eq!(s.aperture, None, "aperture must be None when not set");
+        assert_eq!(s.shutter_speed, None, "shutter_speed must be None");
+        assert_eq!(s.iso, None, "iso must be None");
+        assert_eq!(s.focal_length, None, "focal_length must be None");
+    }
+
+    #[test]
+    fn test_query_logical_photos_partial_camera_params() {
+        use crate::import::test_fixtures::CameraParams;
+
+        // Only aperture and ISO set, rest null
+        let project = TestLibraryBuilder::new()
+            .add_photo(PhotoSpec {
+                camera: Camera::Canon,
+                orientation: 1,
+                file_type: FileType::Jpeg,
+                capture_time: Some("2024:01:15 10:30:00".to_string()),
+                camera_params: Some(CameraParams {
+                    aperture: Some(5.6),
+                    shutter_speed: None,
+                    iso: Some(800),
+                    focal_length: None,
+                    exposure_comp: None,
+                    lens: None,
+                }),
+            })
+            .build_db_only();
+
+        let summaries =
+            query_logical_photos_by_stack(&project.conn, project.stack_id()).unwrap();
+
+        assert_eq!(summaries.len(), 1);
+        let s = &summaries[0];
+
+        assert_eq!(s.aperture, Some(5.6), "aperture must be 5.6");
+        assert_eq!(s.shutter_speed, None, "shutter_speed must be None");
+        assert_eq!(s.iso, Some(800), "iso must be 800");
+        assert_eq!(s.focal_length, None, "focal_length must be None");
+    }
+
+    /// BUG: re-indexing a project that has decisions fails with
+    /// "Foreign key constraint failed" because clear_stacks_and_logical_photos
+    /// deletes logical_photos without first deleting decisions that reference them.
+    #[test]
+    fn test_clear_stacks_succeeds_when_decisions_exist() {
+        let project = TestLibraryBuilder::new()
+            .add_photo(PhotoSpec {
+                camera: Camera::Canon,
+                orientation: 1,
+                file_type: FileType::Jpeg,
+                capture_time: None,
+                camera_params: None,
+            })
+            .build_db_only();
+
+        // Enable foreign keys (SQLite default is OFF — production may have it ON)
+        project.conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+
+        let stack_id = project.conn
+            .query_row(
+                "SELECT stack_id FROM logical_photos WHERE project_id = ?1 LIMIT 1",
+                params![project.project_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        let lp_id = project.lp_ids[0];
+
+        // Create a round and a decision — this is the normal flow after user presses Y/X
+        let now = chrono::Utc::now().to_rfc3339();
+        project.conn.execute(
+            "INSERT INTO rounds (project_id, scope, scope_id, round_number, state, created_at)
+             VALUES (?1, 'stack', ?2, 1, 'open', ?3)",
+            params![project.project_id, stack_id, now],
+        ).unwrap();
+        let round_id = project.conn.last_insert_rowid();
+
+        project.conn.execute(
+            "INSERT INTO decisions (logical_photo_id, round_id, action, timestamp)
+             VALUES (?1, ?2, 'keep', ?3)",
+            params![lp_id, round_id, now],
+        ).unwrap();
+
+        // This is the re-index path — should succeed even with decisions present
+        let result = clear_stacks_and_logical_photos(&project.conn, project.project_id);
+        assert!(
+            result.is_ok(),
+            "clear_stacks_and_logical_photos must succeed when decisions exist, got: {:?}",
+            result.err()
+        );
+
+        // Verify everything was cleaned up
+        let lp_count: i64 = project.conn
+            .query_row(
+                "SELECT COUNT(*) FROM logical_photos WHERE project_id = ?1",
+                params![project.project_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(lp_count, 0, "all logical_photos should be deleted");
+
+        let decision_count: i64 = project.conn
+            .query_row("SELECT COUNT(*) FROM decisions", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(decision_count, 0, "all decisions should be deleted");
     }
 }

@@ -1,5 +1,7 @@
 # Screen Review: Gaps Between Wireframe Spec and Implementation
 
+> **Note:** Pending items consolidated into `docs/backlog.md` §UX Improvements. This file kept as detailed reference.
+
 Systematic comparison of `docs/ui-wireframes.md` + `docs/keyboard-map.md`
 against the actual Svelte components. Only mismatches and gaps listed.
 

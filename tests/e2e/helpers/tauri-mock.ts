@@ -211,7 +211,7 @@ export async function injectTauriMock(
       mergeUndone: false,
       photos: (s.initialPhotos ?? []) as unknown[],
       photoDetails: (s.initialPhotoDetails ?? {}) as Record<number, unknown>,
-      decisions: (s.initialDecisions ?? []) as Array<{ logical_photo_id: number; current_status: string }>,
+      decisions: (s.initialDecisions ?? []) as Array<{ logical_photo_id: number; current_status: 'undecided' | 'keep' | 'eliminate' }>,
       roundStatus: (s.initialRoundStatus ?? null) as unknown,
       roundCommitted: false,
       transactions: (s.initialTransactions ?? []) as unknown[],
@@ -383,7 +383,7 @@ export async function injectTauriMock(
           }
           case 'make_decision': {
             const photoId = args.logicalPhotoId as number
-            const action = args.action as string
+            const action = args.action as 'keep' | 'eliminate'
             const existing = store.decisions.findIndex(
               (d: { logical_photo_id: number }) => d.logical_photo_id === photoId
             )

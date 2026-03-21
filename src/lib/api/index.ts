@@ -88,20 +88,20 @@ export async function startIndexing(slug: string): Promise<void> {
   return invoke('start_indexing', { slug })
 }
 
-export async function cancelIndexing(): Promise<void> {
-  return invoke('cancel_indexing')
+export async function cancelIndexing(slug: string): Promise<void> {
+  return invoke('cancel_indexing', { slug })
 }
 
-export async function pauseIndexing(): Promise<void> {
-  return invoke('pause_indexing')
+export async function pauseIndexing(slug: string): Promise<void> {
+  return invoke('pause_indexing', { slug })
 }
 
-export async function resumeIndexing(): Promise<void> {
-  return invoke('resume_indexing')
+export async function resumeIndexing(slug: string): Promise<void> {
+  return invoke('resume_indexing', { slug })
 }
 
-export async function getIndexingStatus(): Promise<IndexingStatus> {
-  return invoke('get_indexing_status')
+export async function getIndexingStatus(slug: string): Promise<IndexingStatus> {
+  return invoke('get_indexing_status', { slug })
 }
 
 export async function listStacks(slug: string): Promise<StackSummary[]> {
@@ -116,10 +116,14 @@ export interface LogicalPhotoSummary {
   lens:             string | null
   has_raw:          boolean
   has_jpeg:         boolean
+  aperture:         number | null
+  shutter_speed:    string | null
+  iso:              number | null
+  focal_length:     number | null
 }
 
-export function listLogicalPhotos(slug: string, stackId: number): Promise<LogicalPhotoSummary[]> {
-  return invoke('list_logical_photos', { slug, stackId })
+export function listLogicalPhotos(slug: string, stackId: number, roundId: number): Promise<LogicalPhotoSummary[]> {
+  return invoke('list_logical_photos', { slug, stackId, roundId })
 }
 
 export function getThumbnailUrl(path: string): string {
@@ -147,18 +151,28 @@ export async function expandSourceScopes(slug: string): Promise<void> {
 }
 
 // Sprint 7: Decision engine types
+
+/** The three possible states of a photo's culling decision. */
+export type DecisionStatus = 'undecided' | 'keep' | 'eliminate'
+
+/** The action a user can take on a photo (subset of DecisionStatus — no 'undecided'). */
+export type DecisionAction = 'keep' | 'eliminate'
+
+/** The lifecycle state of a culling round. */
+export type RoundState = 'open' | 'committed'
+
 export interface DecisionResult {
   decision_id: number
   round_id: number
-  action: string
-  current_status: string
+  action: DecisionAction
+  current_status: DecisionStatus
   round_auto_created: boolean
 }
 
 export interface RoundStatus {
   round_id: number
   round_number: number
-  state: string  // "open" | "committed"
+  state: RoundState
   total_photos: number
   decided: number
   kept: number
@@ -175,7 +189,7 @@ export interface PhotoDetail {
   lens: string | null
   has_raw: boolean
   has_jpeg: boolean
-  current_status: string  // "undecided" | "keep" | "eliminate"
+  current_status: DecisionStatus
   aperture: number | null
   shutter_speed: string | null
   iso: number | null
@@ -183,11 +197,12 @@ export interface PhotoDetail {
   exposure_comp: number | null
   jpeg_path: string | null
   raw_path: string | null
+  preview_path: string | null  // full-size RAW embedded preview (SingleView fallback)
 }
 
 export interface PhotoDecisionStatus {
   logical_photo_id: number
-  current_status: string  // "undecided" | "keep" | "eliminate"
+  current_status: DecisionStatus
 }
 
 export interface MergeResult {
@@ -206,7 +221,7 @@ export interface StackTransaction {
 }
 
 // Sprint 7: Decision commands
-export async function makeDecision(slug: string, logicalPhotoId: number, action: string): Promise<DecisionResult> {
+export async function makeDecision(slug: string, logicalPhotoId: number, action: DecisionAction): Promise<DecisionResult> {
   return invoke('make_decision', { slug, logicalPhotoId, action })
 }
 

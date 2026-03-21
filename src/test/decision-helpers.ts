@@ -5,7 +5,7 @@
  * If we rename `.decision-keep` to `.badge-keep`, only decisions.ts
  * and this file need updating — not every test file.
  */
-import { DECISION_SELECTORS, DECISION_BORDERS } from '$lib/constants/decisions'
+import { DECISION_SELECTORS } from '$lib/constants/decisions'
 
 // ── jsdom helpers (querySelector-based) ──────────────────────────────────────
 
@@ -40,18 +40,11 @@ export const ELIMINATE_SELECTOR = DECISION_SELECTORS.eliminate
 /** CSS selector string for dim overlay */
 export const DIM_OVERLAY_SELECTOR = DECISION_SELECTORS.dimOverlay
 
-// Border class selectors derived from DECISION_BORDERS
-// e.g. '.border-green-500' from 'border-4 border-green-500'
-function borderSelector(borderClasses: string): string {
-  const colorClass = borderClasses.split(' ').find(c => c.startsWith('border-') && c !== 'border-4')
-  return `.${colorClass}`
-}
+/** CSS selector for keep border */
+export const KEEP_BORDER_SELECTOR = '.border-green-500'
 
-/** CSS selector for keep border (e.g. '.border-green-500') */
-export const KEEP_BORDER_SELECTOR = borderSelector(DECISION_BORDERS.keep)
-
-/** CSS selector for eliminate border (e.g. '.border-red-500') */
-export const ELIMINATE_BORDER_SELECTOR = borderSelector(DECISION_BORDERS.eliminate)
+/** CSS selector for eliminate border */
+export const ELIMINATE_BORDER_SELECTOR = '.border-red-500'
 
 // Re-export selectors for direct use in tests that need the raw strings
 export { DECISION_SELECTORS }

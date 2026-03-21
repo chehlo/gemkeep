@@ -183,3 +183,4 @@ src-tauri/target/
 # Playwright
 playwright-report/
 test-results/
+screens/

@@ -75,3 +75,23 @@ pub struct PhotoDecisionStatus {
     pub logical_photo_id: i64,
     pub current_status: String, // "undecided" | "keep" | "eliminate"
 }
+
+/// Summary of a round for list_rounds display.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RoundSummary {
+    pub round_id: i64,
+    pub round_number: i32,
+    pub state: String, // "open" | "committed"
+    pub committed_at: Option<String>,
+    pub total: i64,
+    pub kept: i64,
+    pub eliminated: i64,
+    pub undecided: i64,
+}
+
+/// Snapshot of a single photo's status within a specific round.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PhotoSnapshot {
+    pub logical_photo_id: i64,
+    pub status: String, // "undecided" | "keep" | "eliminate"
+}

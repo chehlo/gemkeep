@@ -1,7 +1,7 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 
-use super::model::{DecisionAction, PhotoDetail, RoundStatus};
+use super::model::{DecisionAction, PhotoDetail, PhotoSnapshot, RoundStatus, RoundSummary};
 
 /// Find or auto-create an open round for a stack.
 /// Returns (round_id, was_created).
@@ -445,6 +445,26 @@ pub fn get_photo_detail(
             }
         },
     })
+}
+
+/// List all rounds for a stack with summary counts.
+/// Returns a Vec<RoundSummary> ordered by round_number ascending.
+pub fn list_rounds(
+    _conn: &Connection,
+    _project_id: i64,
+    _stack_id: i64,
+) -> rusqlite::Result<Vec<RoundSummary>> {
+    todo!("Sprint 10 Phase B: list_rounds not yet implemented")
+}
+
+/// Get a snapshot of all photos in a specific round with their historical statuses.
+/// For committed rounds, returns decisions as they were at commit time.
+/// For open rounds, returns current live state.
+pub fn get_round_snapshot(
+    _conn: &Connection,
+    _round_id: i64,
+) -> rusqlite::Result<Vec<PhotoSnapshot>> {
+    todo!("Sprint 10 Phase B: get_round_snapshot not yet implemented")
 }
 
 #[cfg(test)]
@@ -1495,6 +1515,371 @@ mod tests {
                 "all round 2 photos must be undecided (fresh round)"
             );
         }
+    }
+
+    // ── Sprint 10 Phase B: Multi-round decision engine RED tests ────────
+
+    #[test]
+    fn test_s10b_make_decision_in_r2_after_r1_committed() {
+        // B1: After committing R1, making a decision in R2 should succeed.
+        // commit_round creates R2 automatically; find_or_create_round finds it.
+        let (project, project_id, stack_id, lp_ids) = setup_test_db(3);
+        let conn = &project.conn;
+
+        // R1: decide all, commit
+        let (r1_id, _) = find_or_create_round(conn, project_id, stack_id).unwrap();
+        record_decision(conn, lp_ids[0], r1_id, &DecisionAction::Keep).unwrap();
+        record_decision(conn, lp_ids[1], r1_id, &DecisionAction::Keep).unwrap();
+        record_decision(conn, lp_ids[2], r1_id, &DecisionAction::Eliminate).unwrap();
+        commit_round(conn, r1_id).unwrap();
+
+        // R2 should exist (auto-created by commit). Make a decision on a survivor.
+        let (r2_id, was_created) = find_or_create_round(conn, project_id, stack_id).unwrap();
+        assert!(!was_created, "R2 already exists from commit, should not create new");
+        assert_ne!(r2_id, r1_id, "R2 must be a different round than R1");
+
+        // Decision in R2 must succeed
+        record_decision(conn, lp_ids[0], r2_id, &DecisionAction::Eliminate).unwrap();
+
+        let status = get_current_status(conn, lp_ids[0]);
+        assert_eq!(
+            status, "eliminate",
+            "current_status must reflect R2 decision"
+        );
+    }
+
+    #[test]
+    fn test_s10b_list_rounds_after_commit() {
+        // B2: After R1 commit (3 photos: 2 keep, 1 eliminate), list_rounds must
+        // return 2 RoundSummary entries with correct counts.
+        let (project, project_id, stack_id, lp_ids) = setup_test_db(3);
+        let conn = &project.conn;
+
+        let (r1_id, _) = find_or_create_round(conn, project_id, stack_id).unwrap();
+        record_decision(conn, lp_ids[0], r1_id, &DecisionAction::Keep).unwrap();
+        record_decision(conn, lp_ids[1], r1_id, &DecisionAction::Keep).unwrap();
+        record_decision(conn, lp_ids[2], r1_id, &DecisionAction::Eliminate).unwrap();
+        commit_round(conn, r1_id).unwrap();
+
+        let rounds = list_rounds(conn, project_id, stack_id).unwrap();
+
+        assert_eq!(rounds.len(), 2, "must have 2 rounds after commit");
+
+        // R1: committed, total=3, kept=2, eliminated=1, undecided=0
+        let r1 = rounds.iter().find(|r| r.round_number == 1).unwrap();
+        assert_eq!(r1.state, "committed");
+        assert_eq!(r1.total, 3, "R1 total must be 3");
+        assert_eq!(r1.kept, 2, "R1 kept must be 2");
+        assert_eq!(r1.eliminated, 1, "R1 eliminated must be 1");
+        assert_eq!(r1.undecided, 0, "R1 undecided must be 0");
+
+        // R2: open, total=2, kept=0, eliminated=0, undecided=2
+        let r2 = rounds.iter().find(|r| r.round_number == 2).unwrap();
+        assert_eq!(r2.state, "open");
+        assert_eq!(r2.total, 2, "R2 total must be 2 (survivors)");
+        assert_eq!(r2.kept, 0, "R2 kept must be 0");
+        assert_eq!(r2.eliminated, 0, "R2 eliminated must be 0");
+        assert_eq!(r2.undecided, 2, "R2 undecided must be 2");
+    }
+
+    #[test]
+    fn test_s10b_get_round_snapshot_committed() {
+        // B3: After committing R1 (3 photos: 2 keep, 1 eliminate),
+        // get_round_snapshot(r1_id) returns historical statuses from decisions table.
+        let (project, project_id, stack_id, lp_ids) = setup_test_db(3);
+        let conn = &project.conn;
+
+        let (r1_id, _) = find_or_create_round(conn, project_id, stack_id).unwrap();
+        record_decision(conn, lp_ids[0], r1_id, &DecisionAction::Keep).unwrap();
+        record_decision(conn, lp_ids[1], r1_id, &DecisionAction::Eliminate).unwrap();
+        record_decision(conn, lp_ids[2], r1_id, &DecisionAction::Keep).unwrap();
+        commit_round(conn, r1_id).unwrap();
+
+        let snapshot = get_round_snapshot(conn, r1_id).unwrap();
+
+        assert_eq!(snapshot.len(), 3, "R1 snapshot must have 3 photos");
+
+        let s0 = snapshot.iter().find(|s| s.logical_photo_id == lp_ids[0]).unwrap();
+        assert_eq!(s0.status, "keep", "photo 0 was kept in R1");
+
+        let s1 = snapshot.iter().find(|s| s.logical_photo_id == lp_ids[1]).unwrap();
+        assert_eq!(s1.status, "eliminate", "photo 1 was eliminated in R1");
+
+        let s2 = snapshot.iter().find(|s| s.logical_photo_id == lp_ids[2]).unwrap();
+        assert_eq!(s2.status, "keep", "photo 2 was kept in R1");
+    }
+
+    #[test]
+    fn test_s10b_snapshot_immutable_after_r2_override() {
+        // B4: Keep photo in R1, commit, eliminate same photo in R2.
+        // get_round_snapshot for R1 must still show 'keep'.
+        let (project, project_id, stack_id, lp_ids) = setup_test_db(2);
+        let conn = &project.conn;
+
+        // R1: keep both
+        let (r1_id, _) = find_or_create_round(conn, project_id, stack_id).unwrap();
+        record_decision(conn, lp_ids[0], r1_id, &DecisionAction::Keep).unwrap();
+        record_decision(conn, lp_ids[1], r1_id, &DecisionAction::Keep).unwrap();
+        commit_round(conn, r1_id).unwrap();
+
+        // R2: eliminate photo 0
+        let (r2_id, _) = find_or_create_round(conn, project_id, stack_id).unwrap();
+        record_decision(conn, lp_ids[0], r2_id, &DecisionAction::Eliminate).unwrap();
+
+        // R1 snapshot must be immutable — photo 0 still 'keep' in R1
+        let snapshot = get_round_snapshot(conn, r1_id).unwrap();
+        let s0 = snapshot.iter().find(|s| s.logical_photo_id == lp_ids[0]).unwrap();
+        assert_eq!(
+            s0.status, "keep",
+            "R1 snapshot must be immutable: photo 0 was kept in R1, even though eliminated in R2"
+        );
+    }
+
+    #[test]
+    fn test_s10b_undo_r2_with_remaining_decisions() {
+        // B5: In R2, decide 'keep' then 'eliminate' on same photo. Undo last.
+        // current_status should be 'keep' (the remaining decision), not 'undecided'.
+        //
+        // BUG: Current undo_decision always sets current_status = 'undecided',
+        // ignoring any remaining earlier decisions in the same round.
+        let (project, project_id, stack_id, lp_ids) = setup_test_db(2);
+        let conn = &project.conn;
+
+        // R1: keep both, commit
+        let (r1_id, _) = find_or_create_round(conn, project_id, stack_id).unwrap();
+        record_decision(conn, lp_ids[0], r1_id, &DecisionAction::Keep).unwrap();
+        record_decision(conn, lp_ids[1], r1_id, &DecisionAction::Keep).unwrap();
+        commit_round(conn, r1_id).unwrap();
+
+        // R2: decide keep then eliminate on photo 0
+        let (r2_id, _) = find_or_create_round(conn, project_id, stack_id).unwrap();
+        record_decision(conn, lp_ids[0], r2_id, &DecisionAction::Keep).unwrap();
+        record_decision(conn, lp_ids[0], r2_id, &DecisionAction::Eliminate).unwrap();
+
+        // Undo last decision (eliminate) — keep decision still remains
+        undo_decision(conn, lp_ids[0], r2_id).unwrap();
+
+        let status = get_current_status(conn, lp_ids[0]);
+        assert_eq!(
+            status, "keep",
+            "after undoing eliminate, remaining 'keep' decision must be reflected in current_status"
+        );
+    }
+
+    #[test]
+    fn test_s10b_undo_only_r2_decision() {
+        // B6: In R2, make one decision on a photo. Undo it.
+        // current_status should be 'undecided' (not R1's value).
+        // The photo enters R2 as undecided; after undo, it goes back to undecided.
+        let (project, project_id, stack_id, lp_ids) = setup_test_db(2);
+        let conn = &project.conn;
+
+        // R1: keep both, commit
+        let (r1_id, _) = find_or_create_round(conn, project_id, stack_id).unwrap();
+        record_decision(conn, lp_ids[0], r1_id, &DecisionAction::Keep).unwrap();
+        record_decision(conn, lp_ids[1], r1_id, &DecisionAction::Keep).unwrap();
+        commit_round(conn, r1_id).unwrap();
+
+        // R2: decide eliminate on photo 0
+        let (r2_id, _) = find_or_create_round(conn, project_id, stack_id).unwrap();
+        record_decision(conn, lp_ids[0], r2_id, &DecisionAction::Eliminate).unwrap();
+
+        // Undo — no remaining decisions in R2 for this photo
+        undo_decision(conn, lp_ids[0], r2_id).unwrap();
+
+        let status = get_current_status(conn, lp_ids[0]);
+        assert_eq!(
+            status, "undecided",
+            "after undoing only R2 decision, current_status must be 'undecided'"
+        );
+    }
+
+    #[test]
+    fn test_s10b_make_decision_auto_creates_r1() {
+        // B7: On a stack with no rounds, make a decision. Should auto-create R1.
+        let (project, project_id, stack_id, lp_ids) = setup_test_db(2);
+        let conn = &project.conn;
+
+        // Verify no rounds exist yet
+        let round_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM rounds", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(round_count, 0, "no rounds should exist initially");
+
+        // find_or_create_round + record_decision (this is what make_decision does)
+        let (r1_id, was_created) = find_or_create_round(conn, project_id, stack_id).unwrap();
+        assert!(was_created, "round must be auto-created");
+
+        record_decision(conn, lp_ids[0], r1_id, &DecisionAction::Keep).unwrap();
+
+        // Verify R1 exists
+        let (round_number, state): (i32, String) = conn
+            .query_row(
+                "SELECT round_number, state FROM rounds WHERE id = ?1",
+                params![r1_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(round_number, 1, "auto-created round must be round 1");
+        assert_eq!(state, "open", "auto-created round must be open");
+
+        // Verify decision was recorded
+        let status = get_current_status(conn, lp_ids[0]);
+        assert_eq!(status, "keep", "decision must be recorded after auto-create");
+    }
+
+    #[test]
+    fn test_s10b_list_rounds_empty_stack() {
+        // B8: list_rounds on a stack with no rounds returns empty vec.
+        let (project, project_id, stack_id, _lp_ids) = setup_test_db(2);
+        let conn = &project.conn;
+
+        let rounds = list_rounds(conn, project_id, stack_id).unwrap();
+        assert_eq!(rounds.len(), 0, "list_rounds on stack with no rounds must return empty vec");
+    }
+
+    #[test]
+    fn test_s10b_get_round_snapshot_open_round() {
+        // B9: Make decisions without committing. get_round_snapshot returns current live state.
+        let (project, project_id, stack_id, lp_ids) = setup_test_db(3);
+        let conn = &project.conn;
+
+        let (r1_id, _) = find_or_create_round(conn, project_id, stack_id).unwrap();
+        record_decision(conn, lp_ids[0], r1_id, &DecisionAction::Keep).unwrap();
+        record_decision(conn, lp_ids[1], r1_id, &DecisionAction::Eliminate).unwrap();
+        // lp_ids[2] left undecided
+
+        let snapshot = get_round_snapshot(conn, r1_id).unwrap();
+
+        assert_eq!(snapshot.len(), 3, "open round snapshot must have all 3 photos");
+
+        let s0 = snapshot.iter().find(|s| s.logical_photo_id == lp_ids[0]).unwrap();
+        assert_eq!(s0.status, "keep", "photo 0 decided keep");
+
+        let s1 = snapshot.iter().find(|s| s.logical_photo_id == lp_ids[1]).unwrap();
+        assert_eq!(s1.status, "eliminate", "photo 1 decided eliminate");
+
+        let s2 = snapshot.iter().find(|s| s.logical_photo_id == lp_ids[2]).unwrap();
+        assert_eq!(s2.status, "undecided", "photo 2 not yet decided");
+    }
+
+    #[test]
+    fn test_s10b_lifecycle_multiround_invariants() {
+        // B10: Full lifecycle test asserting structural invariants at each step.
+        // R1: 5 photos → decide all (3 keep, 2 eliminate) → commit
+        // R2: 3 survivors → decide 1 keep, 1 eliminate → undo eliminate → re-decide eliminate
+        // Assert counts at each step.
+        let (project, project_id, stack_id, lp_ids) = setup_test_db(5);
+        let conn = &project.conn;
+
+        // ── Step 1: Create R1, decide all ──
+        let (r1_id, _) = find_or_create_round(conn, project_id, stack_id).unwrap();
+
+        // round_photos must have 5 entries
+        let rp_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM round_photos WHERE round_id = ?1",
+                params![r1_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(rp_count, 5, "R1 round_photos must have 5 entries");
+
+        record_decision(conn, lp_ids[0], r1_id, &DecisionAction::Keep).unwrap();
+        record_decision(conn, lp_ids[1], r1_id, &DecisionAction::Keep).unwrap();
+        record_decision(conn, lp_ids[2], r1_id, &DecisionAction::Keep).unwrap();
+        record_decision(conn, lp_ids[3], r1_id, &DecisionAction::Eliminate).unwrap();
+        record_decision(conn, lp_ids[4], r1_id, &DecisionAction::Eliminate).unwrap();
+
+        // Invariant: 5 decisions in R1
+        let d_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM decisions WHERE round_id = ?1",
+                params![r1_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(d_count, 5, "R1 must have 5 decisions");
+
+        // ── Step 2: Commit R1 ──
+        commit_round(conn, r1_id).unwrap();
+
+        // R1 must be committed
+        assert!(is_round_committed(conn, r1_id).unwrap(), "R1 must be committed");
+
+        // R2 must exist with 3 survivors
+        let r2_id: i64 = conn
+            .query_row(
+                "SELECT id FROM rounds WHERE project_id = ?1 AND scope = 'stack' AND scope_id = ?2 AND round_number = 2",
+                params![project_id, stack_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        let r2_rp_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM round_photos WHERE round_id = ?1",
+                params![r2_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(r2_rp_count, 3, "R2 round_photos must have 3 survivors");
+
+        // All 3 survivors must be undecided
+        for &lp_id in &lp_ids[0..3] {
+            let status = get_current_status(conn, lp_id);
+            assert_eq!(status, "undecided", "survivor {} must be undecided in R2", lp_id);
+        }
+
+        // ── Step 3: R2 decisions with undo ──
+        record_decision(conn, lp_ids[0], r2_id, &DecisionAction::Keep).unwrap();
+        record_decision(conn, lp_ids[1], r2_id, &DecisionAction::Eliminate).unwrap();
+
+        // Undo eliminate on lp_ids[1]
+        undo_decision(conn, lp_ids[1], r2_id).unwrap();
+
+        // After undo, lp_ids[1] should be undecided (no remaining R2 decisions)
+        let status_after_undo = get_current_status(conn, lp_ids[1]);
+        assert_eq!(
+            status_after_undo, "undecided",
+            "after undoing only R2 decision, photo must be undecided"
+        );
+
+        // Re-decide: eliminate lp_ids[1]
+        record_decision(conn, lp_ids[1], r2_id, &DecisionAction::Eliminate).unwrap();
+
+        let status_after_redecide = get_current_status(conn, lp_ids[1]);
+        assert_eq!(
+            status_after_redecide, "eliminate",
+            "re-decided photo must be eliminate"
+        );
+
+        // ── Step 4: Verify R2 decision counts ──
+        let r2_decisions: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM decisions WHERE round_id = ?1",
+                params![r2_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        // keep(lp0) + eliminate(lp1 re-decide) = 2
+        // (the undone eliminate was DELETED by undo_decision, so only 2 remain)
+        assert_eq!(
+            r2_decisions, 2,
+            "R2 must have 2 decision rows (keep + re-decide; undone row deleted)"
+        );
+
+        // ── Step 5: Verify list_rounds shows correct state ──
+        let rounds = list_rounds(conn, project_id, stack_id).unwrap();
+        assert_eq!(rounds.len(), 2, "must have 2 rounds");
+
+        let r1_summary = rounds.iter().find(|r| r.round_number == 1).unwrap();
+        assert_eq!(r1_summary.state, "committed");
+        assert_eq!(r1_summary.total, 5);
+
+        let r2_summary = rounds.iter().find(|r| r.round_number == 2).unwrap();
+        assert_eq!(r2_summary.state, "open");
+        assert_eq!(r2_summary.total, 3);
     }
 
     #[test]

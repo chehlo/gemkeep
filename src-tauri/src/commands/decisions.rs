@@ -4,7 +4,6 @@ use crate::decisions::model::{
 };
 use crate::projects::manager;
 use crate::state::AppState;
-use rusqlite::OptionalExtension;
 use tauri::State;
 
 use super::with_open_project;
@@ -37,22 +36,6 @@ pub fn make_decision(
             |row| row.get(0),
         )
         .map_err(|e| format!("Logical photo {} not found: {}", logical_photo_id, e))?;
-
-    // Check if the most recent round for this stack is committed — if so, reject
-    // (multi-round is deferred; once committed, no more decisions allowed)
-    {
-        let committed_check: Option<String> = conn
-            .query_row(
-                "SELECT state FROM rounds WHERE project_id = ?1 AND scope = 'stack' AND scope_id = ?2 ORDER BY id DESC LIMIT 1",
-                rusqlite::params![project.id, stack_id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|e| e.to_string())?;
-        if committed_check.as_deref() == Some("committed") {
-            return Err("Cannot make decisions on a committed round".to_string());
-        }
-    }
 
     // Find or create round
     let (round_id, was_created) =

@@ -314,7 +314,7 @@ pub fn get_round_decisions(
 }
 
 /// Undo the last decision for a logical photo in the current open round.
-/// Sets current_status back to "undecided".
+/// Recomputes current_status from remaining decisions in the same round.
 pub fn undo_decision(
     conn: &Connection,
     logical_photo_id: i64,
@@ -330,10 +330,21 @@ pub fn undo_decision(
         params![logical_photo_id, round_id],
     )?;
 
-    // Reset current_status to undecided
+    // Recompute current_status from remaining decisions in this round
+    let remaining_action: Option<String> = conn
+        .query_row(
+            "SELECT action FROM decisions
+             WHERE logical_photo_id = ?1 AND round_id = ?2
+             ORDER BY id DESC LIMIT 1",
+            params![logical_photo_id, round_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+
+    let new_status = remaining_action.as_deref().unwrap_or("undecided");
     conn.execute(
-        "UPDATE logical_photos SET current_status = 'undecided' WHERE id = ?1",
-        params![logical_photo_id],
+        "UPDATE logical_photos SET current_status = ?1 WHERE id = ?2",
+        params![new_status, logical_photo_id],
     )?;
 
     Ok(())
@@ -449,22 +460,142 @@ pub fn get_photo_detail(
 
 /// List all rounds for a stack with summary counts.
 /// Returns a Vec<RoundSummary> ordered by round_number ascending.
+/// For committed rounds, counts are derived from the decisions table (historical).
+/// For open rounds, counts are derived from logical_photos.current_status (live).
 pub fn list_rounds(
-    _conn: &Connection,
-    _project_id: i64,
-    _stack_id: i64,
+    conn: &Connection,
+    project_id: i64,
+    stack_id: i64,
 ) -> rusqlite::Result<Vec<RoundSummary>> {
-    todo!("Sprint 10 Phase B: list_rounds not yet implemented")
+    let mut stmt = conn.prepare(
+        "SELECT r.id, r.round_number, r.state, r.committed_at,
+                COUNT(rp.logical_photo_id) as total
+         FROM rounds r
+         LEFT JOIN round_photos rp ON rp.round_id = r.id
+         WHERE r.project_id = ?1 AND r.scope = 'stack' AND r.scope_id = ?2
+         GROUP BY r.id
+         ORDER BY r.round_number",
+    )?;
+
+    let rows: Vec<(i64, i32, String, Option<String>, i64)> = stmt
+        .query_map(params![project_id, stack_id], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let mut results = Vec::with_capacity(rows.len());
+    for (round_id, round_number, state, committed_at, total) in rows {
+        let (kept, eliminated) = if state == "committed" {
+            // Derive from decisions table (latest decision per photo in this round)
+            let kept: i64 = conn.query_row(
+                "SELECT COUNT(DISTINCT rp.logical_photo_id) FROM round_photos rp
+                 WHERE rp.round_id = ?1 AND (
+                     SELECT d.action FROM decisions d
+                     WHERE d.logical_photo_id = rp.logical_photo_id AND d.round_id = ?1
+                     ORDER BY d.id DESC LIMIT 1
+                 ) = 'keep'",
+                params![round_id],
+                |row| row.get(0),
+            )?;
+            let eliminated: i64 = conn.query_row(
+                "SELECT COUNT(DISTINCT rp.logical_photo_id) FROM round_photos rp
+                 WHERE rp.round_id = ?1 AND (
+                     SELECT d.action FROM decisions d
+                     WHERE d.logical_photo_id = rp.logical_photo_id AND d.round_id = ?1
+                     ORDER BY d.id DESC LIMIT 1
+                 ) = 'eliminate'",
+                params![round_id],
+                |row| row.get(0),
+            )?;
+            (kept, eliminated)
+        } else {
+            // Open round: derive from logical_photos.current_status
+            let kept: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM round_photos rp
+                 JOIN logical_photos lp ON lp.id = rp.logical_photo_id
+                 WHERE rp.round_id = ?1 AND lp.current_status = 'keep'",
+                params![round_id],
+                |row| row.get(0),
+            )?;
+            let eliminated: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM round_photos rp
+                 JOIN logical_photos lp ON lp.id = rp.logical_photo_id
+                 WHERE rp.round_id = ?1 AND lp.current_status = 'eliminate'",
+                params![round_id],
+                |row| row.get(0),
+            )?;
+            (kept, eliminated)
+        };
+
+        results.push(RoundSummary {
+            round_id,
+            round_number,
+            state,
+            committed_at,
+            total,
+            kept,
+            eliminated,
+            undecided: total - kept - eliminated,
+        });
+    }
+
+    Ok(results)
 }
 
 /// Get a snapshot of all photos in a specific round with their historical statuses.
 /// For committed rounds, returns decisions as they were at commit time.
 /// For open rounds, returns current live state.
 pub fn get_round_snapshot(
-    _conn: &Connection,
-    _round_id: i64,
+    conn: &Connection,
+    round_id: i64,
 ) -> rusqlite::Result<Vec<PhotoSnapshot>> {
-    todo!("Sprint 10 Phase B: get_round_snapshot not yet implemented")
+    let state: String = conn.query_row(
+        "SELECT state FROM rounds WHERE id = ?1",
+        params![round_id],
+        |row| row.get(0),
+    )?;
+
+    if state == "committed" {
+        // Committed round: derive statuses from decisions table
+        let mut stmt = conn.prepare(
+            "SELECT rp.logical_photo_id,
+                    COALESCE(
+                        (SELECT d.action FROM decisions d
+                         WHERE d.logical_photo_id = rp.logical_photo_id AND d.round_id = ?1
+                         ORDER BY d.id DESC LIMIT 1),
+                        'undecided'
+                    ) AS status
+             FROM round_photos rp WHERE rp.round_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![round_id], |row| {
+            Ok(PhotoSnapshot {
+                logical_photo_id: row.get(0)?,
+                status: row.get(1)?,
+            })
+        })?;
+        rows.collect()
+    } else {
+        // Open round: derive from logical_photos.current_status
+        let mut stmt = conn.prepare(
+            "SELECT rp.logical_photo_id, lp.current_status as status
+             FROM round_photos rp
+             JOIN logical_photos lp ON lp.id = rp.logical_photo_id
+             WHERE rp.round_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![round_id], |row| {
+            Ok(PhotoSnapshot {
+                logical_photo_id: row.get(0)?,
+                status: row.get(1)?,
+            })
+        })?;
+        rows.collect()
+    }
 }
 
 #[cfg(test)]
@@ -1535,7 +1666,10 @@ mod tests {
 
         // R2 should exist (auto-created by commit). Make a decision on a survivor.
         let (r2_id, was_created) = find_or_create_round(conn, project_id, stack_id).unwrap();
-        assert!(!was_created, "R2 already exists from commit, should not create new");
+        assert!(
+            !was_created,
+            "R2 already exists from commit, should not create new"
+        );
         assert_ne!(r2_id, r1_id, "R2 must be a different round than R1");
 
         // Decision in R2 must succeed
@@ -1599,13 +1733,22 @@ mod tests {
 
         assert_eq!(snapshot.len(), 3, "R1 snapshot must have 3 photos");
 
-        let s0 = snapshot.iter().find(|s| s.logical_photo_id == lp_ids[0]).unwrap();
+        let s0 = snapshot
+            .iter()
+            .find(|s| s.logical_photo_id == lp_ids[0])
+            .unwrap();
         assert_eq!(s0.status, "keep", "photo 0 was kept in R1");
 
-        let s1 = snapshot.iter().find(|s| s.logical_photo_id == lp_ids[1]).unwrap();
+        let s1 = snapshot
+            .iter()
+            .find(|s| s.logical_photo_id == lp_ids[1])
+            .unwrap();
         assert_eq!(s1.status, "eliminate", "photo 1 was eliminated in R1");
 
-        let s2 = snapshot.iter().find(|s| s.logical_photo_id == lp_ids[2]).unwrap();
+        let s2 = snapshot
+            .iter()
+            .find(|s| s.logical_photo_id == lp_ids[2])
+            .unwrap();
         assert_eq!(s2.status, "keep", "photo 2 was kept in R1");
     }
 
@@ -1628,7 +1771,10 @@ mod tests {
 
         // R1 snapshot must be immutable — photo 0 still 'keep' in R1
         let snapshot = get_round_snapshot(conn, r1_id).unwrap();
-        let s0 = snapshot.iter().find(|s| s.logical_photo_id == lp_ids[0]).unwrap();
+        let s0 = snapshot
+            .iter()
+            .find(|s| s.logical_photo_id == lp_ids[0])
+            .unwrap();
         assert_eq!(
             s0.status, "keep",
             "R1 snapshot must be immutable: photo 0 was kept in R1, even though eliminated in R2"
@@ -1725,7 +1871,10 @@ mod tests {
 
         // Verify decision was recorded
         let status = get_current_status(conn, lp_ids[0]);
-        assert_eq!(status, "keep", "decision must be recorded after auto-create");
+        assert_eq!(
+            status, "keep",
+            "decision must be recorded after auto-create"
+        );
     }
 
     #[test]
@@ -1735,7 +1884,11 @@ mod tests {
         let conn = &project.conn;
 
         let rounds = list_rounds(conn, project_id, stack_id).unwrap();
-        assert_eq!(rounds.len(), 0, "list_rounds on stack with no rounds must return empty vec");
+        assert_eq!(
+            rounds.len(),
+            0,
+            "list_rounds on stack with no rounds must return empty vec"
+        );
     }
 
     #[test]
@@ -1751,15 +1904,28 @@ mod tests {
 
         let snapshot = get_round_snapshot(conn, r1_id).unwrap();
 
-        assert_eq!(snapshot.len(), 3, "open round snapshot must have all 3 photos");
+        assert_eq!(
+            snapshot.len(),
+            3,
+            "open round snapshot must have all 3 photos"
+        );
 
-        let s0 = snapshot.iter().find(|s| s.logical_photo_id == lp_ids[0]).unwrap();
+        let s0 = snapshot
+            .iter()
+            .find(|s| s.logical_photo_id == lp_ids[0])
+            .unwrap();
         assert_eq!(s0.status, "keep", "photo 0 decided keep");
 
-        let s1 = snapshot.iter().find(|s| s.logical_photo_id == lp_ids[1]).unwrap();
+        let s1 = snapshot
+            .iter()
+            .find(|s| s.logical_photo_id == lp_ids[1])
+            .unwrap();
         assert_eq!(s1.status, "eliminate", "photo 1 decided eliminate");
 
-        let s2 = snapshot.iter().find(|s| s.logical_photo_id == lp_ids[2]).unwrap();
+        let s2 = snapshot
+            .iter()
+            .find(|s| s.logical_photo_id == lp_ids[2])
+            .unwrap();
         assert_eq!(s2.status, "undecided", "photo 2 not yet decided");
     }
 
@@ -1805,7 +1971,10 @@ mod tests {
         commit_round(conn, r1_id).unwrap();
 
         // R1 must be committed
-        assert!(is_round_committed(conn, r1_id).unwrap(), "R1 must be committed");
+        assert!(
+            is_round_committed(conn, r1_id).unwrap(),
+            "R1 must be committed"
+        );
 
         // R2 must exist with 3 survivors
         let r2_id: i64 = conn
@@ -1828,7 +1997,11 @@ mod tests {
         // All 3 survivors must be undecided
         for &lp_id in &lp_ids[0..3] {
             let status = get_current_status(conn, lp_id);
-            assert_eq!(status, "undecided", "survivor {} must be undecided in R2", lp_id);
+            assert_eq!(
+                status, "undecided",
+                "survivor {} must be undecided in R2",
+                lp_id
+            );
         }
 
         // ── Step 3: R2 decisions with undo ──

@@ -177,7 +177,7 @@ pub fn get_round_status_batch(
             r.round_number,
             r.state,
             r.committed_at,
-            COUNT(lp.id)                                        AS total_photos,
+            COUNT(rp.logical_photo_id)                              AS total_photos,
             SUM(CASE WHEN lp.current_status = 'keep'      THEN 1 ELSE 0 END) AS kept,
             SUM(CASE WHEN lp.current_status = 'eliminate'  THEN 1 ELSE 0 END) AS eliminated
          FROM rounds r
@@ -187,7 +187,8 @@ pub fn get_round_status_batch(
              WHERE project_id = ?1 AND scope = 'stack' AND scope_id IN ({placeholders})
              GROUP BY scope_id
          ) latest ON r.id = latest.max_id
-         LEFT JOIN logical_photos lp ON lp.stack_id = r.scope_id
+         LEFT JOIN round_photos rp ON rp.round_id = r.id
+         LEFT JOIN logical_photos lp ON lp.id = rp.logical_photo_id
          GROUP BY r.id"
     );
 
@@ -246,24 +247,24 @@ pub fn get_round_status(
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )?;
 
-    // Count total logical photos in the stack
+    // Count total logical photos in the round (from round_photos, not logical_photos)
     let total_photos: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM logical_photos WHERE stack_id = ?1",
-        params![stack_id],
+        "SELECT COUNT(*) FROM round_photos WHERE round_id = ?1",
+        params![round_id],
         |row| row.get(0),
     )?;
 
-    // Count kept
+    // Count kept (join round_photos with logical_photos for current_status)
     let kept: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM logical_photos WHERE stack_id = ?1 AND current_status = 'keep'",
-        params![stack_id],
+        "SELECT COUNT(*) FROM round_photos rp JOIN logical_photos lp ON lp.id = rp.logical_photo_id WHERE rp.round_id = ?1 AND lp.current_status = 'keep'",
+        params![round_id],
         |row| row.get(0),
     )?;
 
     // Count eliminated
     let eliminated: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM logical_photos WHERE stack_id = ?1 AND current_status = 'eliminate'",
-        params![stack_id],
+        "SELECT COUNT(*) FROM round_photos rp JOIN logical_photos lp ON lp.id = rp.logical_photo_id WHERE rp.round_id = ?1 AND lp.current_status = 'eliminate'",
+        params![round_id],
         |row| row.get(0),
     )?;
 
@@ -281,6 +282,35 @@ pub fn get_round_status(
         undecided,
         committed_at,
     })
+}
+
+/// Get decision statuses for all photos in a specific round.
+/// Returns per-photo status derived from the decisions table for the given round,
+/// not from the materialized `current_status` cache on `logical_photos`.
+pub fn get_round_decisions(
+    conn: &Connection,
+    _stack_id: i64,
+    round_id: i64,
+) -> rusqlite::Result<Vec<super::model::PhotoDecisionStatus>> {
+    let mut stmt = conn.prepare(
+        "SELECT lp.id,
+                COALESCE(
+                    (SELECT d.action FROM decisions d
+                     WHERE d.logical_photo_id = lp.id AND d.round_id = ?1
+                     ORDER BY d.id DESC LIMIT 1),
+                    'undecided'
+                ) AS status
+         FROM round_photos rp
+         JOIN logical_photos lp ON lp.id = rp.logical_photo_id
+         WHERE rp.round_id = ?1",
+    )?;
+    let rows = stmt.query_map(params![round_id], |row| {
+        Ok(super::model::PhotoDecisionStatus {
+            logical_photo_id: row.get(0)?,
+            current_status: row.get(1)?,
+        })
+    })?;
+    rows.collect()
 }
 
 /// Undo the last decision for a logical photo in the current open round.
@@ -1360,6 +1390,183 @@ mod tests {
              but get_photo_detail looks for thumb_{}.jpg instead",
             lp_id,
             lp_id
+        );
+    }
+
+    // ── Sprint 10 Phase A: Unified round-scoping RED tests ──────────────
+
+    #[test]
+    fn test_s10a1_get_round_status_counts_from_round_photos_not_logical_photos() {
+        // Phase A, Item 1: After committing round 1 (3 photos, 1 eliminated → 2 survivors),
+        // get_round_status for round 2 must show total_photos=2, not total_photos=3.
+        //
+        // BUG: Current get_round_status counts from logical_photos WHERE stack_id,
+        // which always returns ALL photos in the stack regardless of round membership.
+        // It must count from round_photos WHERE round_id instead.
+        let (project, project_id, stack_id, lp_ids) = setup_test_db(3);
+        let conn = &project.conn;
+
+        // Create round 1 and make decisions: keep 2, eliminate 1
+        let (round_id, _) = find_or_create_round(conn, project_id, stack_id).unwrap();
+        record_decision(conn, lp_ids[0], round_id, &DecisionAction::Keep).unwrap();
+        record_decision(conn, lp_ids[1], round_id, &DecisionAction::Keep).unwrap();
+        record_decision(conn, lp_ids[2], round_id, &DecisionAction::Eliminate).unwrap();
+
+        // Commit round 1 → creates round 2 with 2 survivors
+        commit_round(conn, round_id).unwrap();
+
+        // Get round status for round 2 (the latest/open round)
+        let status = get_round_status(conn, project_id, stack_id).unwrap();
+
+        assert_eq!(status.round_number, 2, "must be round 2 after commit");
+        assert_eq!(status.state, "open", "round 2 must be open");
+        // THIS ASSERTION WILL FAIL: current code counts from logical_photos (3),
+        // but round 2 only has 2 survivors in round_photos
+        assert_eq!(
+            status.total_photos, 2,
+            "round 2 total_photos must be 2 (survivors only), not 3 (all stack photos)"
+        );
+    }
+
+    #[test]
+    fn test_s10a3_get_round_decisions_returns_round_scoped_statuses() {
+        // Phase A, Item 3: get_round_decisions returns per-photo statuses derived
+        // from the decisions table for a specific round, not from the materialized
+        // current_status cache.
+        //
+        // After round 1 commit (keep+eliminate), get_round_decisions for round 1
+        // must show those historical decisions. get_round_decisions for round 2
+        // must show all undecided (fresh round, no decisions yet).
+        let (project, project_id, stack_id, lp_ids) = setup_test_db(3);
+        let conn = &project.conn;
+
+        // Round 1: keep photo 0, eliminate photo 1, keep photo 2
+        let (round1_id, _) = find_or_create_round(conn, project_id, stack_id).unwrap();
+        record_decision(conn, lp_ids[0], round1_id, &DecisionAction::Keep).unwrap();
+        record_decision(conn, lp_ids[1], round1_id, &DecisionAction::Eliminate).unwrap();
+        record_decision(conn, lp_ids[2], round1_id, &DecisionAction::Keep).unwrap();
+
+        // Commit round 1 → creates round 2 with survivors (photos 0 and 2)
+        commit_round(conn, round1_id).unwrap();
+
+        // Get round 2 id
+        let round2_id: i64 = conn
+            .query_row(
+                "SELECT id FROM rounds WHERE project_id = ?1 AND scope = 'stack' AND scope_id = ?2 AND round_number = 2",
+                params![project_id, stack_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        // get_round_decisions for round 1: must show historical decisions
+        // THIS WILL FAIL: get_round_decisions is a todo!() stub
+        let r1_decisions = get_round_decisions(conn, stack_id, round1_id).unwrap();
+        assert_eq!(r1_decisions.len(), 3, "round 1 must have 3 photo statuses");
+
+        let r1_photo0 = r1_decisions
+            .iter()
+            .find(|d| d.logical_photo_id == lp_ids[0])
+            .unwrap();
+        assert_eq!(
+            r1_photo0.current_status, "keep",
+            "photo 0 was kept in round 1"
+        );
+
+        let r1_photo1 = r1_decisions
+            .iter()
+            .find(|d| d.logical_photo_id == lp_ids[1])
+            .unwrap();
+        assert_eq!(
+            r1_photo1.current_status, "eliminate",
+            "photo 1 was eliminated in round 1"
+        );
+
+        // get_round_decisions for round 2: survivors start undecided
+        let r2_decisions = get_round_decisions(conn, stack_id, round2_id).unwrap();
+        assert_eq!(
+            r2_decisions.len(),
+            2,
+            "round 2 must have 2 photo statuses (survivors only)"
+        );
+
+        for d in &r2_decisions {
+            assert_eq!(
+                d.current_status, "undecided",
+                "all round 2 photos must be undecided (fresh round)"
+            );
+        }
+    }
+
+    #[test]
+    fn test_s10a4_undo_merge_blocked_after_round_1() {
+        // Phase A, Item 4: undo_merge is only allowed when the merged stack's
+        // latest round has round_number = 1. After committing and creating round 2,
+        // undo must fail with an error.
+        //
+        // Setup: create 2 stacks, merge them, make decisions, commit (creating round 2),
+        // then try to undo the merge → must fail.
+        use crate::photos::repository::{merge_stacks, undo_last_merge};
+
+        // Create 2 stacks with 2 photos each
+        let mut builder = TestLibraryBuilder::new();
+        for _ in 0..4 {
+            builder = builder.add_photo(PhotoSpec {
+                camera: Camera::Canon,
+                orientation: 1,
+                file_type: FileType::Jpeg,
+                capture_time: Some("2024:01:01 10:00:00".to_string()),
+                camera_params: None,
+            });
+        }
+        let project = builder.with_layout(&[2, 2]).build_db_only();
+        let conn = &project.conn;
+        let project_id = project.project_id;
+        let stack_ids = &project.stack_ids;
+
+        // Merge stack 0 and stack 1
+        let merge_result = merge_stacks(conn, project_id, stack_ids).unwrap();
+        let merged_stack_id = merge_result.merged_stack_id;
+
+        // Get all logical photos in merged stack
+        let merged_lp_ids: Vec<i64> = {
+            let mut stmt = conn
+                .prepare("SELECT id FROM logical_photos WHERE stack_id = ?1 ORDER BY id")
+                .unwrap();
+            stmt.query_map(params![merged_stack_id], |row| row.get(0))
+                .unwrap()
+                .filter_map(|r| r.ok())
+                .collect()
+        };
+
+        // Create round 1, make decisions, commit → round 2 created
+        let (round_id, _) = find_or_create_round(conn, project_id, merged_stack_id).unwrap();
+        record_decision(conn, merged_lp_ids[0], round_id, &DecisionAction::Keep).unwrap();
+        record_decision(conn, merged_lp_ids[1], round_id, &DecisionAction::Keep).unwrap();
+        record_decision(conn, merged_lp_ids[2], round_id, &DecisionAction::Eliminate).unwrap();
+        record_decision(conn, merged_lp_ids[3], round_id, &DecisionAction::Keep).unwrap();
+        commit_round(conn, round_id).unwrap();
+
+        // Verify round 2 exists
+        let max_round: i32 = conn
+            .query_row(
+                "SELECT MAX(round_number) FROM rounds WHERE scope = 'stack' AND scope_id = ?1",
+                params![merged_stack_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(max_round, 2, "round 2 must exist after commit");
+
+        // Try to undo merge → must fail because stack has progressed beyond round 1
+        let result = undo_last_merge(conn, project_id);
+        assert!(
+            result.is_err(),
+            "undo_merge must fail when stack has progressed beyond round 1, but it succeeded"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("round 1") || err_msg.contains("beyond"),
+            "error message must mention round restriction, got: {}",
+            err_msg
         );
     }
 }

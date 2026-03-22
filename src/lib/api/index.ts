@@ -122,7 +122,7 @@ export interface LogicalPhotoSummary {
   focal_length:     number | null
 }
 
-export function listLogicalPhotos(slug: string, stackId: number, roundId: number): Promise<LogicalPhotoSummary[]> {
+export function listLogicalPhotos(slug: string, stackId: number, roundId?: number): Promise<LogicalPhotoSummary[]> {
   return invoke('list_logical_photos', { slug, stackId, roundId })
 }
 

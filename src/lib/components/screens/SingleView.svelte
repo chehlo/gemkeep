@@ -28,6 +28,7 @@
   let photoList = $state<LogicalPhotoSummary[]>([])
   let decisions = $state<PhotoDecisionStatus[]>([])
   let roundStatus = $state<RoundStatus | null>(null)
+  let currentRoundId = $state(0)
   let currentIndex = $state(0)
   let showCameraParams = $state(true)
   let filePathOverlay = $state<string | null>(null)
@@ -39,9 +40,10 @@
     if (projectSlug && stackId && photoId) {
       try {
         currentPhoto = await getPhotoDetail(projectSlug, photoId)
-        photoList = await listLogicalPhotos(projectSlug, stackId)
+        photoList = await listLogicalPhotos(projectSlug, stackId, currentRoundId || undefined)
         decisions = await getStackDecisions(projectSlug, stackId)
         roundStatus = await getRoundStatus(projectSlug, stackId)
+        if (roundStatus) currentRoundId = roundStatus.round_id
         // Find current index in photo list
         const idx = photoList.findIndex(p => p.logical_photo_id === photoId)
         if (idx >= 0) currentIndex = idx

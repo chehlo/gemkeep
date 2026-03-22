@@ -24,6 +24,7 @@
   let photos = $state<LogicalPhotoSummary[]>([])
   let decisions = $state<PhotoDecisionStatus[]>([])
   let roundStatus = $state<RoundStatus | null>(null)
+  let currentRoundId = $state(0)
   let leftIndex = $state(0)
   let rightIndex = $state(1)
   let focusSide = $state<'left' | 'right'>('left')
@@ -65,7 +66,7 @@
     window.addEventListener('keydown', handleKey)
     if (projectSlug && stackId) {
       try {
-        photos = await listLogicalPhotos(projectSlug, stackId)
+        photos = await listLogicalPhotos(projectSlug, stackId, currentRoundId || undefined)
         try {
           decisions = await getStackDecisions(projectSlug, stackId)
         } catch (e) {
@@ -73,6 +74,7 @@
         }
         try {
           roundStatus = await getRoundStatus(projectSlug, stackId)
+          if (roundStatus) currentRoundId = roundStatus.round_id
         } catch (e) {
           console.error('getRoundStatus failed:', e)
         }

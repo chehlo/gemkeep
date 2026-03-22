@@ -133,6 +133,14 @@ pub fn commit_round(conn: &Connection, round_id: i64) -> rusqlite::Result<()> {
         )?;
     }
 
+    // 7. If zero survivors, mark the stack as inactive
+    if survivor_ids.is_empty() {
+        conn.execute(
+            "UPDATE stacks SET active = 0 WHERE id = ?1",
+            params![stack_id],
+        )?;
+    }
+
     Ok(())
 }
 
@@ -144,6 +152,82 @@ pub fn is_round_committed(conn: &Connection, round_id: i64) -> rusqlite::Result<
         |row| row.get(0),
     )?;
     Ok(state == "committed")
+}
+
+/// Get round status for multiple stacks in a single SQL query.
+/// Returns a map from stack_id to RoundStatus. Stacks with no rounds are omitted.
+pub fn get_round_status_batch(
+    conn: &Connection,
+    project_id: i64,
+    stack_ids: &[i64],
+) -> rusqlite::Result<std::collections::HashMap<i64, RoundStatus>> {
+    use std::collections::HashMap;
+
+    if stack_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    // Single query: latest round per stack + decision counts
+    // Uses a subquery to find the latest round_id per stack, then joins for counts.
+    let placeholders: String = stack_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let sql = format!(
+        "SELECT
+            r.scope_id                                          AS stack_id,
+            r.id                                                AS round_id,
+            r.round_number,
+            r.state,
+            r.committed_at,
+            COUNT(lp.id)                                        AS total_photos,
+            SUM(CASE WHEN lp.current_status = 'keep'      THEN 1 ELSE 0 END) AS kept,
+            SUM(CASE WHEN lp.current_status = 'eliminate'  THEN 1 ELSE 0 END) AS eliminated
+         FROM rounds r
+         JOIN (
+             SELECT scope_id, MAX(id) AS max_id
+             FROM rounds
+             WHERE project_id = ?1 AND scope = 'stack' AND scope_id IN ({placeholders})
+             GROUP BY scope_id
+         ) latest ON r.id = latest.max_id
+         LEFT JOIN logical_photos lp ON lp.stack_id = r.scope_id
+         GROUP BY r.id"
+    );
+
+    // Build params: project_id first, then all stack_ids
+    let mut param_values: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    param_values.push(Box::new(project_id));
+    for &sid in stack_ids {
+        param_values.push(Box::new(sid));
+    }
+    let param_refs: Vec<&dyn rusqlite::ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(param_refs.as_slice(), |row| {
+        let stack_id: i64 = row.get(0)?;
+        let total_photos: i64 = row.get(5)?;
+        let kept: i64 = row.get(6)?;
+        let eliminated: i64 = row.get(7)?;
+        let decided = kept + eliminated;
+        Ok((
+            stack_id,
+            RoundStatus {
+                round_id: row.get(1)?,
+                round_number: row.get(2)?,
+                state: row.get(3)?,
+                committed_at: row.get(4)?,
+                total_photos,
+                decided,
+                kept,
+                eliminated,
+                undecided: total_photos - decided,
+            },
+        ))
+    })?;
+
+    let mut result = HashMap::new();
+    for row in rows {
+        let (stack_id, status) = row?;
+        result.insert(stack_id, status);
+    }
+    Ok(result)
 }
 
 /// Get round status with decision counts for a stack.

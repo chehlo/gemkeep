@@ -56,6 +56,7 @@ pub fn run() {
             commands::decisions::make_decision,
             commands::decisions::undo_decision,
             commands::decisions::get_round_status,
+            commands::decisions::get_stack_progress_batch,
             commands::decisions::commit_round,
             commands::decisions::get_photo_detail,
             commands::decisions::get_stack_decisions,

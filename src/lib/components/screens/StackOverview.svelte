@@ -8,7 +8,7 @@
     startIndexing, cancelIndexing, pauseIndexing, resumeIndexing,
     getIndexingStatus, listStacks, getThumbnailUrl, resumeThumbnails,
     getBurstGap, setBurstGap, restack, mergeStacks, undoLastMerge,
-    expandSourceScopes, getRoundStatus,
+    expandSourceScopes, getRoundStatus, getStackProgressBatch,
     type SourceFolder, type IndexingStatus, type StackSummary, type RoundStatus
   } from '$lib/api/index.js'
   import { formatDate } from '$lib/utils/date.js'
@@ -47,14 +47,17 @@
 
   async function loadStackProgress() {
     if (!projectSlug || stacks.length === 0) return
-    const progress = new Map<number, RoundStatus>()
-    for (const stack of stacks) {
-      try {
-        const rs = await getRoundStatus(projectSlug, stack.stack_id)
-        if (rs && rs.decided > 0) progress.set(stack.stack_id, rs)
-      } catch { /* no round yet — untouched stack */ }
+    try {
+      const stackIds = stacks.map(s => s.stack_id)
+      const batch = await getStackProgressBatch(projectSlug, stackIds)
+      const progress = new Map<number, RoundStatus>()
+      for (const [idStr, rs] of Object.entries(batch)) {
+        if (rs && rs.decided > 0) progress.set(Number(idStr), rs)
+      }
+      stackProgress = progress
+    } catch {
+      stackProgress = new Map()
     }
-    stackProgress = progress
   }
 
   // Load initial state

@@ -2249,3 +2249,38 @@ describe('StackOverview — S key toggle select', () => {
     expect(cards[0].className).not.toMatch(/ring-yellow|border-yellow/)
   })
 })
+
+// ── Contract: StackOverview uses batch progress API ─────────────────────
+
+describe('StackOverview — uses getStackProgressBatch instead of per-stack getRoundStatus', () => {
+  it('calls get_stack_progress_batch once instead of N × get_round_status', async () => {
+    const STACK_A = makeStack({ stack_id: 1, logical_photo_count: 5 })
+    const STACK_B = makeStack({ stack_id: 2, logical_photo_count: 3 })
+    const STACK_C = makeStack({ stack_id: 3, logical_photo_count: 2 })
+
+    setupNav()
+
+    mockInvoke.mockImplementation(mockStackOverviewRouter({
+      list_source_folders: [[FOLDER_A]],
+      list_stacks: [[STACK_A, STACK_B, STACK_C]],
+      get_indexing_status: DONE_STATUS,
+      get_stack_progress_batch: () => ({
+        '1': { round_id: 1, round_number: 1, state: 'open', total_photos: 5, decided: 2, kept: 1, eliminated: 1, undecided: 3, committed_at: null },
+        '3': { round_id: 3, round_number: 1, state: 'open', total_photos: 2, decided: 2, kept: 2, eliminated: 0, undecided: 0, committed_at: null },
+      }),
+    }))
+
+    render(StackOverview)
+    await waitFor(() => {
+      const cards = document.querySelectorAll('[data-stack-card]')
+      expect(cards.length).toBeGreaterThan(0)
+    })
+
+    // Must have called get_stack_progress_batch, not get_round_status
+    const batchCalls = mockInvoke.mock.calls.filter(c => c[0] === 'get_stack_progress_batch')
+    const perStackCalls = mockInvoke.mock.calls.filter(c => c[0] === 'get_round_status')
+
+    expect(batchCalls.length).toBeGreaterThanOrEqual(1)
+    expect(perStackCalls.length).toBe(0)
+  })
+})

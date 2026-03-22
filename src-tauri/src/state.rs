@@ -15,14 +15,20 @@ pub struct ProjectContext {
     pub thumbnails_done_counter: Arc<AtomicUsize>,
 }
 
-impl ProjectContext {
-    pub fn new() -> Self {
+impl Default for ProjectContext {
+    fn default() -> Self {
         Self {
             indexing_status: Arc::new(Mutex::new(IndexingStatus::default())),
             cancel_indexing: Arc::new(AtomicBool::new(false)),
             pause_indexing: Arc::new(AtomicBool::new(false)),
             thumbnails_done_counter: Arc::new(AtomicUsize::new(0)),
         }
+    }
+}
+
+impl ProjectContext {
+    pub fn new() -> Self {
+        Self::default()
     }
 }
 

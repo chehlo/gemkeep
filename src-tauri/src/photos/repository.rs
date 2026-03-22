@@ -140,9 +140,9 @@ pub fn clear_stacks_and_logical_photos(conn: &Connection, project_id: i64) -> ru
         "DELETE FROM logical_photos WHERE project_id = ?1",
         params![project_id],
     )?;
-    // 5. Delete stacks (no more FK references from logical_photos).
+    // 5. Mark stacks as inactive (soft-delete).
     conn.execute(
-        "DELETE FROM stacks WHERE project_id = ?1",
+        "UPDATE stacks SET active = 0 WHERE project_id = ?1",
         params![project_id],
     )?;
     Ok(())
@@ -164,7 +164,7 @@ pub fn list_stacks_summary(
          FROM stacks s
          JOIN logical_photos lp ON lp.stack_id = s.id
          LEFT JOIN photos p ON p.logical_photo_id = lp.id
-         WHERE s.project_id = ?1
+         WHERE s.project_id = ?1 AND s.active = 1
          GROUP BY s.id
          ORDER BY earliest_capture ASC NULLS LAST, s.id ASC",
         params![project_id],
@@ -729,7 +729,7 @@ pub fn merge_stacks(
     // 2. Verify all stacks exist for this project
     for &sid in stack_ids {
         let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM stacks WHERE id = ?1 AND project_id = ?2",
+            "SELECT COUNT(*) FROM stacks WHERE id = ?1 AND project_id = ?2 AND active = 1",
             params![sid, project_id],
             |row| row.get(0),
         )?;
@@ -795,11 +795,12 @@ pub fn merge_stacks(
             update_params.iter().map(|p| p.as_ref()).collect();
         conn.execute(&update_sql, update_refs.as_slice())?;
 
-        // 7. DELETE FROM stacks WHERE id IN (source_ids)
-        // Rounds for source stacks become orphaned but harmless —
-        // AUTOINCREMENT on stacks table prevents ID reuse.
-        let delete_sql = format!("DELETE FROM stacks WHERE id IN ({})", placeholders);
-        conn.execute(&delete_sql, param_refs.as_slice())?;
+        // 7. Mark source stacks as inactive (soft-delete)
+        let deactivate_sql = format!(
+            "UPDATE stacks SET active = 0 WHERE id IN ({})",
+            placeholders
+        );
+        conn.execute(&deactivate_sql, param_refs.as_slice())?;
 
         // 8. Collect all LP IDs for the merge group
         let all_lp_ids: Vec<i64> = rows.iter().map(|(lp_id, _)| *lp_id).collect();
@@ -880,21 +881,32 @@ pub fn undo_last_merge(conn: &Connection, project_id: i64) -> anyhow::Result<()>
         .as_object()
         .ok_or_else(|| anyhow!("Missing photo_assignments in merge details"))?;
 
-    // 3. BEGIN TRANSACTION
+    // 3. Guard: check for decisions on the merged stack after the merge
+    let decision_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM decisions d
+         JOIN rounds r ON r.id = d.round_id
+         WHERE r.scope = 'stack' AND r.scope_id = ?1",
+        params![target_stack_id],
+        |row| row.get(0),
+    )?;
+    if decision_count > 0 {
+        return Err(anyhow!(
+            "Cannot undo merge: decisions have been made on the merged stack"
+        ));
+    }
+
+    // 4. BEGIN TRANSACTION
     conn.execute("BEGIN", [])?;
 
     let result = (|| -> anyhow::Result<()> {
         let now = chrono::Utc::now().to_rfc3339();
 
-        // 4. Recreate source stacks with original IDs
+        // 5. Reactivate source stacks
         for &sid in &source_stack_ids {
-            conn.execute(
-                "INSERT OR IGNORE INTO stacks (id, project_id, created_at) VALUES (?1, ?2, ?3)",
-                params![sid, project_id, now],
-            )?;
+            conn.execute("UPDATE stacks SET active = 1 WHERE id = ?1", params![sid])?;
         }
 
-        // 5. Move logical_photos back to original stacks per photo_assignments
+        // 6. Move logical_photos back to original stacks per photo_assignments
         for (lp_id_str, orig_stack_val) in photo_assignments {
             let lp_id: i64 = lp_id_str.parse()?;
             let orig_stack_id = orig_stack_val
@@ -906,8 +918,11 @@ pub fn undo_last_merge(conn: &Connection, project_id: i64) -> anyhow::Result<()>
             )?;
         }
 
-        // 6. Delete the merged stack
-        conn.execute("DELETE FROM stacks WHERE id = ?1", params![target_stack_id])?;
+        // 7. Deactivate the merged stack (soft-delete)
+        conn.execute(
+            "UPDATE stacks SET active = 0 WHERE id = ?1",
+            params![target_stack_id],
+        )?;
 
         // 7. Mark the specific manual_merges record as inactive
         if let Some(manual_merge_id) = details.get("manual_merge_id").and_then(|v| v.as_i64()) {
@@ -1042,15 +1057,13 @@ pub fn restack_merge_aware(
     let result = (|| -> anyhow::Result<()> {
         let now = chrono::Utc::now().to_rfc3339();
 
-        // 7. Delete all stacks for the project (NULL out stack_id first)
-        // Rounds for old stacks become orphaned but harmless —
-        // AUTOINCREMENT on stacks table prevents ID reuse.
+        // 7. Mark all existing stacks as inactive (soft-delete) and NULL out stack_id
         conn.execute(
             "UPDATE logical_photos SET stack_id = NULL WHERE project_id = ?1",
             params![project_id],
         )?;
         conn.execute(
-            "DELETE FROM stacks WHERE project_id = ?1",
+            "UPDATE stacks SET active = 0 WHERE project_id = ?1",
             params![project_id],
         )?;
 
@@ -1246,7 +1259,7 @@ mod tests {
     /// Check if a stack exists in the DB.
     fn stack_exists(conn: &Connection, stack_id: i64) -> bool {
         conn.query_row(
-            "SELECT COUNT(*) FROM stacks WHERE id = ?1",
+            "SELECT COUNT(*) FROM stacks WHERE id = ?1 AND active = 1",
             params![stack_id],
             |row| row.get::<_, i64>(0),
         )
@@ -2144,7 +2157,7 @@ mod tests {
     /// the logical_photos in that stack. This must hold after any operation.
     fn assert_round_photo_invariant(conn: &Connection, project_id: i64) {
         let stacks: Vec<(i64, i64)> = conn
-            .prepare("SELECT s.id, COUNT(lp.id) FROM stacks s LEFT JOIN logical_photos lp ON lp.stack_id = s.id WHERE s.project_id = ?1 GROUP BY s.id")
+            .prepare("SELECT s.id, COUNT(lp.id) FROM stacks s LEFT JOIN logical_photos lp ON lp.stack_id = s.id WHERE s.project_id = ?1 AND s.active = 1 GROUP BY s.id")
             .unwrap()
             .query_map(params![project_id], |row| Ok((row.get(0)?, row.get(1)?)))
             .unwrap()
@@ -2212,7 +2225,7 @@ mod tests {
             .unwrap();
         let lps_in_stacks: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM logical_photos lp JOIN stacks s ON s.id = lp.stack_id WHERE s.project_id = ?1",
+                "SELECT COUNT(*) FROM logical_photos lp JOIN stacks s ON s.id = lp.stack_id WHERE s.project_id = ?1 AND s.active = 1",
                 params![project_id],
                 |row| row.get(0),
             )
@@ -2257,11 +2270,27 @@ mod tests {
         }
     }
 
+    // ── INVARIANT: inactive stacks are invisible to listing ────────────────
+
+    fn assert_active_stacks_invariant(conn: &Connection, project_id: i64) {
+        // list_stacks_summary must return only active stacks
+        let listed = list_stacks_summary(conn, project_id).unwrap();
+        for stack in &listed {
+            assert_eq!(
+                get_stack_active(conn, stack.stack_id),
+                1,
+                "INVARIANT VIOLATED: list_stacks_summary returned inactive stack {}",
+                stack.stack_id
+            );
+        }
+    }
+
     /// Assert ALL invariants at once — call after every mutation
     fn assert_all_invariants(conn: &Connection, project_id: i64) {
         assert_round_photo_invariant(conn, project_id);
         assert_stack_membership_invariant(conn, project_id);
         assert_decision_status_invariant(conn, project_id);
+        assert_active_stacks_invariant(conn, project_id);
     }
 
     #[test]
@@ -2298,18 +2327,60 @@ mod tests {
         }
         assert_all_invariants(conn, project_id);
 
-        // Step 6: merge stacks 0 and 1
+        // Step 6: merge stacks 0 and 1 — verify soft-delete
         let merge_ids = vec![stacks[0].0, stacks[1].0];
-        let _merge_result = merge_stacks(conn, project_id, &merge_ids).unwrap();
+        let merge_result = merge_stacks(conn, project_id, &merge_ids).unwrap();
         assert_all_invariants(conn, project_id);
+        assert_eq!(
+            get_stack_active(conn, stacks[0].0),
+            0,
+            "merged source must be inactive"
+        );
+        assert_eq!(
+            get_stack_active(conn, stacks[1].0),
+            0,
+            "merged source must be inactive"
+        );
+        assert_eq!(
+            get_stack_active(conn, merge_result.merged_stack_id),
+            1,
+            "merged target must be active"
+        );
 
-        // Step 7: undo merge
+        // Step 7: undo merge — verify reactivation
         undo_last_merge(conn, project_id).unwrap();
         assert_all_invariants(conn, project_id);
+        assert_eq!(
+            get_stack_active(conn, stacks[0].0),
+            1,
+            "unmerged source must be reactivated"
+        );
+        assert_eq!(
+            get_stack_active(conn, stacks[1].0),
+            1,
+            "unmerged source must be reactivated"
+        );
+        assert_eq!(
+            get_stack_active(conn, merge_result.merged_stack_id),
+            0,
+            "unmerged target must be inactive"
+        );
 
-        // Step 8: restack with a large gap (all photos → 1 stack)
+        // Step 8: restack with a large gap — verify old stacks inactive
+        let stacks_before_restack: Vec<i64> = list_stacks_summary(conn, project_id)
+            .unwrap()
+            .iter()
+            .map(|s| s.stack_id)
+            .collect();
         restack_merge_aware(conn, project_id, 3600).unwrap();
         assert_all_invariants(conn, project_id);
+        for old_sid in &stacks_before_restack {
+            assert_eq!(
+                get_stack_active(conn, *old_sid),
+                0,
+                "restacked old stack must be inactive"
+            );
+        }
 
         // Step 9: restack with tiny gap (many stacks)
         restack_merge_aware(conn, project_id, 1).unwrap();
@@ -2505,5 +2576,436 @@ mod tests {
                 lp_id
             );
         }
+    }
+
+    // ── Inactive stacks (soft-delete) tests ─────────────────────────────────
+
+    /// Helper: query the `active` column for a given stack.
+    fn get_stack_active(conn: &Connection, stack_id: i64) -> i64 {
+        conn.query_row(
+            "SELECT active FROM stacks WHERE id = ?1",
+            params![stack_id],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    /// Helper: count stacks with active=1 for a project.
+    fn count_active_stacks(conn: &Connection, project_id: i64) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM stacks WHERE project_id = ?1 AND active = 1",
+            params![project_id],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    /// Helper: count all stacks (active and inactive) for a project.
+    fn count_all_stacks(conn: &Connection, project_id: i64) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM stacks WHERE project_id = ?1",
+            params![project_id],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn test_merge_marks_source_stacks_inactive() {
+        let (project, project_id, stacks) = setup_merge_test_db(2, &[3, 4]);
+        let conn = &project.conn;
+        let stack_a = stacks[0].0;
+        let stack_b = stacks[1].0;
+
+        let result = merge_stacks(conn, project_id, &[stack_a, stack_b]).unwrap();
+        let stack_c = result.merged_stack_id;
+
+        // Source stacks must be inactive
+        assert_eq!(
+            get_stack_active(conn, stack_a),
+            0,
+            "source stack A must be inactive after merge"
+        );
+        assert_eq!(
+            get_stack_active(conn, stack_b),
+            0,
+            "source stack B must be inactive after merge"
+        );
+        // New stack must be active
+        assert_eq!(
+            get_stack_active(conn, stack_c),
+            1,
+            "merged stack C must be active"
+        );
+        // list_stacks_summary must return only the merged stack
+        let summaries = list_stacks_summary(conn, project_id).unwrap();
+        assert_eq!(
+            summaries.len(),
+            1,
+            "list_stacks_summary must return only the 1 active stack"
+        );
+        assert_eq!(summaries[0].stack_id, stack_c);
+    }
+
+    #[test]
+    fn test_undo_merge_reactivates_source_stacks() {
+        let (project, project_id, stacks) = setup_merge_test_db(2, &[3, 4]);
+        let conn = &project.conn;
+        let stack_a = stacks[0].0;
+        let stack_b = stacks[1].0;
+
+        let result = merge_stacks(conn, project_id, &[stack_a, stack_b]).unwrap();
+        let stack_c = result.merged_stack_id;
+
+        undo_last_merge(conn, project_id).unwrap();
+
+        // Source stacks reactivated
+        assert_eq!(
+            get_stack_active(conn, stack_a),
+            1,
+            "source stack A must be active after undo"
+        );
+        assert_eq!(
+            get_stack_active(conn, stack_b),
+            1,
+            "source stack B must be active after undo"
+        );
+        // Merged stack deactivated
+        assert_eq!(
+            get_stack_active(conn, stack_c),
+            0,
+            "merged stack C must be inactive after undo"
+        );
+    }
+
+    #[test]
+    fn test_undo_merge_blocked_when_new_rounds_exist_on_merged_stack() {
+        use crate::decisions::engine::{find_or_create_round, record_decision};
+        use crate::decisions::model::DecisionAction;
+
+        let (project, project_id, stacks) = setup_merge_test_db(2, &[3, 4]);
+        let conn = &project.conn;
+        let stack_a = stacks[0].0;
+        let stack_b = stacks[1].0;
+
+        let result = merge_stacks(conn, project_id, &[stack_a, stack_b]).unwrap();
+        let stack_c = result.merged_stack_id;
+
+        // Make a decision on the merged stack (creating activity)
+        let (round_id, _) = find_or_create_round(conn, project_id, stack_c).unwrap();
+        let first_lp = stacks[0].1[0];
+        record_decision(conn, first_lp, round_id, &DecisionAction::Keep).unwrap();
+
+        // Undo must be blocked
+        let undo_result = undo_last_merge(conn, project_id);
+        assert!(
+            undo_result.is_err(),
+            "undo_last_merge must fail when decisions exist on merged stack"
+        );
+
+        // All stacks must remain unchanged
+        assert_eq!(
+            get_stack_active(conn, stack_c),
+            1,
+            "merged stack C must still be active"
+        );
+    }
+
+    #[test]
+    fn test_restack_marks_old_stacks_inactive() {
+        let (project, project_id, stacks) = setup_merge_test_db(3, &[2, 2, 2]);
+        let conn = &project.conn;
+        let old_stack_ids: Vec<i64> = stacks.iter().map(|(id, _)| *id).collect();
+
+        restack_merge_aware(conn, project_id, 5).unwrap();
+
+        // Old stacks must be inactive
+        for &sid in &old_stack_ids {
+            assert_eq!(
+                get_stack_active(conn, sid),
+                0,
+                "old stack {} must be inactive after restack",
+                sid
+            );
+        }
+        // New stacks must be active
+        let active_count = count_active_stacks(conn, project_id);
+        assert!(
+            active_count > 0,
+            "there must be at least 1 active stack after restack"
+        );
+        // All active stacks must be NEW (not in old_stack_ids)
+        let summaries = list_stacks_summary(conn, project_id).unwrap();
+        for s in &summaries {
+            assert!(
+                !old_stack_ids.contains(&s.stack_id),
+                "active stack {} must not be one of the old stacks",
+                s.stack_id
+            );
+        }
+    }
+
+    #[test]
+    fn test_list_stacks_only_returns_active_stacks() {
+        // Create 5 stacks (one LP each)
+        let (project, project_id, stacks) = setup_merge_test_db(5, &[1, 1, 1, 1, 1]);
+        let conn = &project.conn;
+
+        // Mark 2 stacks as inactive
+        conn.execute(
+            "UPDATE stacks SET active = 0 WHERE id = ?1",
+            params![stacks[0].0],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE stacks SET active = 0 WHERE id = ?1",
+            params![stacks[1].0],
+        )
+        .unwrap();
+
+        let summaries = list_stacks_summary(conn, project_id).unwrap();
+        assert_eq!(
+            summaries.len(),
+            3,
+            "list_stacks_summary must return only 3 active stacks, not 5"
+        );
+        // Verify the inactive stack IDs are not in the results
+        let returned_ids: Vec<i64> = summaries.iter().map(|s| s.stack_id).collect();
+        assert!(
+            !returned_ids.contains(&stacks[0].0),
+            "inactive stack must not appear in list"
+        );
+        assert!(
+            !returned_ids.contains(&stacks[1].0),
+            "inactive stack must not appear in list"
+        );
+    }
+
+    #[test]
+    fn test_rounds_for_inactive_stacks_still_queryable() {
+        let (project, project_id, stacks) = setup_merge_test_db(2, &[3, 4]);
+        let conn = &project.conn;
+        let stack_a = stacks[0].0;
+
+        // Init a round for stack A
+        let round_id = init_round_for_stack(conn, project_id, stack_a).unwrap();
+        let round_photo_count = count_round_photos(conn, round_id);
+        assert_eq!(round_photo_count, 3, "stack A round must have 3 photos");
+
+        // Mark stack A as inactive
+        conn.execute(
+            "UPDATE stacks SET active = 0 WHERE id = ?1",
+            params![stack_a],
+        )
+        .unwrap();
+
+        // Rounds and round_photos must still be queryable
+        let rounds_count = count_rounds_for_stack(conn, project_id, stack_a);
+        assert_eq!(
+            rounds_count, 1,
+            "rounds for inactive stack must still be queryable"
+        );
+        let photos_after = count_round_photos(conn, round_id);
+        assert_eq!(
+            photos_after, 3,
+            "round_photos for inactive stack must still be queryable"
+        );
+    }
+
+    #[test]
+    fn test_schema_migration_defaults_existing_stacks_to_active() {
+        let (project, project_id, stacks) = setup_merge_test_db(3, &[2, 2, 2]);
+        let conn = &project.conn;
+
+        // All stacks created by setup must have active=1
+        for (stack_id, _) in &stacks {
+            let active = get_stack_active(conn, *stack_id);
+            assert_eq!(
+                active, 1,
+                "stack {} must default to active=1 after migration",
+                stack_id
+            );
+        }
+        // Total active count must equal total stack count
+        let active_count = count_active_stacks(conn, project_id);
+        let total_count = count_all_stacks(conn, project_id);
+        assert_eq!(
+            active_count, total_count,
+            "all existing stacks must be active after migration"
+        );
+    }
+
+    #[test]
+    fn test_commit_with_zero_survivors_marks_stack_inactive() {
+        use crate::decisions::engine::{commit_round, find_or_create_round, record_decision};
+        use crate::decisions::model::DecisionAction;
+
+        let (project, project_id, stacks) = setup_merge_test_db(1, &[3]);
+        let conn = &project.conn;
+        let stack_id = stacks[0].0;
+        let lp_ids = &stacks[0].1;
+
+        // Create round and eliminate ALL photos
+        let (round_id, _) = find_or_create_round(conn, project_id, stack_id).unwrap();
+        for &lp_id in lp_ids {
+            record_decision(conn, lp_id, round_id, &DecisionAction::Eliminate).unwrap();
+        }
+
+        // Commit the round — all photos eliminated, zero survivors
+        commit_round(conn, round_id).unwrap();
+
+        // Stack must be marked inactive
+        assert_eq!(
+            get_stack_active(conn, stack_id),
+            0,
+            "stack with zero survivors after commit must be marked inactive"
+        );
+    }
+
+    // ── get_round_status_batch: single-query batch returns correct data ──────
+
+    #[test]
+    fn test_get_round_status_batch_returns_correct_data() {
+        use crate::decisions::engine::{
+            find_or_create_round, get_round_status_batch, record_decision,
+        };
+        use crate::decisions::model::DecisionAction;
+
+        let (project, project_id, stacks) = setup_merge_test_db(3, &[3, 4, 2]);
+        let conn = &project.conn;
+
+        // Init rounds for all stacks
+        for (stack_id, _) in &stacks {
+            init_round_for_stack(conn, project_id, *stack_id).unwrap();
+        }
+
+        // Make decisions on stack 0: 1 keep, 1 eliminate
+        let (round_id, _) = find_or_create_round(conn, project_id, stacks[0].0).unwrap();
+        record_decision(conn, stacks[0].1[0], round_id, &DecisionAction::Keep).unwrap();
+        record_decision(conn, stacks[0].1[1], round_id, &DecisionAction::Eliminate).unwrap();
+
+        let stack_ids: Vec<i64> = stacks.iter().map(|(id, _)| *id).collect();
+        let batch = get_round_status_batch(conn, project_id, &stack_ids).unwrap();
+
+        // All 3 stacks should be in the result
+        assert_eq!(batch.len(), 3, "batch must return status for all 3 stacks");
+
+        // Stack 0: 3 photos, 2 decided
+        let s0 = batch.get(&stacks[0].0).expect("stack 0 must be in batch");
+        assert_eq!(s0.total_photos, 3);
+        assert_eq!(s0.decided, 2);
+        assert_eq!(s0.kept, 1);
+        assert_eq!(s0.eliminated, 1);
+        assert_eq!(s0.undecided, 1);
+
+        // Stack 1: 4 photos, 0 decided
+        let s1 = batch.get(&stacks[1].0).expect("stack 1 must be in batch");
+        assert_eq!(s1.total_photos, 4);
+        assert_eq!(s1.decided, 0);
+
+        // Stack 2: 2 photos, 0 decided
+        let s2 = batch.get(&stacks[2].0).expect("stack 2 must be in batch");
+        assert_eq!(s2.total_photos, 2);
+        assert_eq!(s2.decided, 0);
+    }
+
+    #[test]
+    fn test_get_round_status_batch_empty_input() {
+        use crate::decisions::engine::get_round_status_batch;
+
+        let (project, project_id, _stacks) = setup_merge_test_db(1, &[3]);
+        let conn = &project.conn;
+
+        let batch = get_round_status_batch(conn, project_id, &[]).unwrap();
+        assert!(batch.is_empty(), "empty input must return empty result");
+    }
+
+    // ── batch vs per-stack equivalence ────────────────────────────────────
+
+    #[test]
+    fn test_get_round_status_batch_matches_per_stack() {
+        use crate::decisions::engine::{
+            find_or_create_round, get_round_status, get_round_status_batch, record_decision,
+        };
+        use crate::decisions::model::DecisionAction;
+
+        let (project, project_id, stacks) = setup_merge_test_db(3, &[3, 4, 2]);
+        let conn = &project.conn;
+
+        for (stack_id, _) in &stacks {
+            init_round_for_stack(conn, project_id, *stack_id).unwrap();
+        }
+
+        // Make varied decisions: stack 0 gets keep+eliminate, stack 1 gets keep, stack 2 untouched
+        let (r0, _) = find_or_create_round(conn, project_id, stacks[0].0).unwrap();
+        record_decision(conn, stacks[0].1[0], r0, &DecisionAction::Keep).unwrap();
+        record_decision(conn, stacks[0].1[1], r0, &DecisionAction::Eliminate).unwrap();
+        let (r1, _) = find_or_create_round(conn, project_id, stacks[1].0).unwrap();
+        record_decision(conn, stacks[1].1[0], r1, &DecisionAction::Keep).unwrap();
+
+        let stack_ids: Vec<i64> = stacks.iter().map(|(id, _)| *id).collect();
+        let batch = get_round_status_batch(conn, project_id, &stack_ids).unwrap();
+
+        // Compare each batch entry against the per-stack call
+        for &sid in &stack_ids {
+            let per_stack = get_round_status(conn, project_id, sid).unwrap();
+            let from_batch = batch
+                .get(&sid)
+                .unwrap_or_else(|| panic!("batch missing stack {}", sid));
+
+            assert_eq!(
+                per_stack.round_id, from_batch.round_id,
+                "stack {}: round_id mismatch (per_stack={}, batch={})",
+                sid, per_stack.round_id, from_batch.round_id
+            );
+            assert_eq!(
+                per_stack.total_photos, from_batch.total_photos,
+                "stack {}: total_photos mismatch (per_stack={}, batch={})",
+                sid, per_stack.total_photos, from_batch.total_photos
+            );
+            assert_eq!(
+                per_stack.kept, from_batch.kept,
+                "stack {}: kept mismatch (per_stack={}, batch={})",
+                sid, per_stack.kept, from_batch.kept
+            );
+            assert_eq!(
+                per_stack.eliminated, from_batch.eliminated,
+                "stack {}: eliminated mismatch (per_stack={}, batch={})",
+                sid, per_stack.eliminated, from_batch.eliminated
+            );
+            assert_eq!(
+                per_stack.undecided, from_batch.undecided,
+                "stack {}: undecided mismatch (per_stack={}, batch={})",
+                sid, per_stack.undecided, from_batch.undecided
+            );
+            assert_eq!(
+                per_stack.state, from_batch.state,
+                "stack {}: state mismatch (per_stack={}, batch={})",
+                sid, per_stack.state, from_batch.state
+            );
+        }
+    }
+
+    // ── merge inactive stacks must be rejected ──────────────────────────────
+
+    #[test]
+    fn test_merge_inactive_stacks_rejected() {
+        let (project, project_id, stacks) = setup_merge_test_db(3, &[3, 4, 2]);
+        let conn = &project.conn;
+
+        for (stack_id, _) in &stacks {
+            init_round_for_stack(conn, project_id, *stack_id).unwrap();
+        }
+
+        // Merge stacks 0 and 1 — this deactivates them
+        let merge_ids = vec![stacks[0].0, stacks[1].0];
+        merge_stacks(conn, project_id, &merge_ids).unwrap();
+
+        // Try to merge the now-inactive stack 0 with active stack 2
+        let bad_merge = merge_stacks(conn, project_id, &[stacks[0].0, stacks[2].0]);
+        assert!(
+            bad_merge.is_err(),
+            "merging an inactive stack must return error"
+        );
     }
 }

@@ -233,6 +233,10 @@ export async function getRoundStatus(slug: string, stackId: number): Promise<Rou
   return invoke('get_round_status', { slug, stackId })
 }
 
+export async function getStackProgressBatch(slug: string, stackIds: number[]): Promise<Record<string, RoundStatus>> {
+  return invoke('get_stack_progress_batch', { slug, stackIds })
+}
+
 export async function commitRound(slug: string, stackId: number): Promise<void> {
   return invoke('commit_round', { slug, stackId })
 }

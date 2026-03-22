@@ -138,6 +138,20 @@ pub fn get_round_status(
     })
 }
 
+/// Get round status for multiple stacks in one call (batch).
+#[tauri::command]
+pub fn get_stack_progress_batch(
+    slug: String,
+    stack_ids: Vec<i64>,
+    state: State<'_, AppState>,
+) -> Result<std::collections::HashMap<i64, RoundStatus>, String> {
+    let (db_guard, project_guard) = with_open_project(&state, &slug)?;
+    let conn = db_guard.as_ref().unwrap();
+    let project = project_guard.as_ref().unwrap();
+
+    engine::get_round_status_batch(conn, project.id, &stack_ids).map_err(|e| e.to_string())
+}
+
 /// Commit (seal) the current open round for a stack.
 #[tauri::command]
 pub fn commit_round(slug: String, stack_id: i64, state: State<'_, AppState>) -> Result<(), String> {

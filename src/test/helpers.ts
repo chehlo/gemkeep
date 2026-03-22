@@ -208,6 +208,7 @@ export function mockStackOverviewRouter(overrides?: Record<string, MockRouterVal
     pause_indexing: undefined,
     resume_indexing: undefined,
     get_round_status: null,
+    get_stack_progress_batch: () => ({}),
     merge_stacks: undefined,
     undo_last_merge: undefined,
     list_stack_transactions: () => [],

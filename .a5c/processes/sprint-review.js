@@ -1,18 +1,16 @@
 /**
  * @process gemkeep/sprint-review
- * @description Retrospective review process for already-committed sprint work.
- *              Assesses spec quality (including goal clarity), test coverage against
- *              testing-philosophy.md, anti-pattern scan, architecture compliance,
- *              success criteria verification, and iterative fix cycle.
- *
- *              Use after sprint phases are committed but before moving to next phase
- *              or before final sprint merge.
+ * @description Sequential retrospective review of already-committed sprint work.
+ *              Each review step completes (including fixes) before the next starts.
+ *              Step 1: Requirements — spec quality + gap fixes
+ *              Step 2: Architecture — anti-patterns + compliance fixes
+ *              Step 3: Tests — coverage audit + success criteria + test fixes
+ *              Step 4: Final gate
  *
  * Inputs:
  *   sprintNumber     - Sprint number being reviewed
  *   sprintSpecPath   - Path to sprint spec (default: auto from sprintNumber)
  *   phases           - Which phases to review (e.g., ["A", "B", "C"])
- *   commitRange      - Git range to review (default: auto-detect from sprint commits)
  *   testCommand      - Rust test command (default: cargo test)
  *   frontendTestCommand - Frontend test command (default: npm test)
  *   improvementsPath - Path to code-improvements.md
@@ -32,7 +30,6 @@ export async function process(inputs, ctx) {
     sprintNumber,
     sprintSpecPath = `docs/sprints/sprint-${String(sprintNumber).padStart(2, '0')}.md`,
     phases = [],
-    commitRange = '',
     testCommand = 'cargo test --manifest-path src-tauri/Cargo.toml',
     frontendTestCommand = 'npm test',
     improvementsPath = 'docs/code-improvements.md',
@@ -42,24 +39,25 @@ export async function process(inputs, ctx) {
   const phaseLabel = phases.length > 0 ? ` (Phases ${phases.join(', ')})` : '';
 
   // ════════════════════════════════════════════════════════════════════════
-  // PHASE 1: SCOPE — identify what was committed and what to review
+  // STEP 0: SCOPE — identify what was committed
   // ════════════════════════════════════════════════════════════════════════
 
-  ctx.log('info', `Phase 1: Scope — Sprint ${sprintNumber}${phaseLabel}`);
+  ctx.log('info', `Step 0: Scope — Sprint ${sprintNumber}${phaseLabel}`);
 
   const scope = await ctx.task(reviewScopeTask, {
     sprintNumber,
     sprintSpecPath,
     phases,
-    commitRange,
   });
   ctx.log('info', `Scope: ${scope.summary}`);
 
   // ════════════════════════════════════════════════════════════════════════
-  // PHASE 2: SPEC QUALITY — is the goal clear, is the spec well-defined?
+  // STEP 1: REQUIREMENTS REVIEW
+  // Assess spec quality → present findings → fix spec → commit
+  // Must complete before architecture review (spec changes affect what code should exist)
   // ════════════════════════════════════════════════════════════════════════
 
-  ctx.log('info', 'Phase 2: Spec quality assessment (retrospective)');
+  ctx.log('info', 'Step 1: Requirements review');
 
   const specQuality = await ctx.task(retrospectiveSpecQualityTask, {
     sprintNumber,
@@ -70,13 +68,81 @@ export async function process(inputs, ctx) {
   });
   ctx.log('info', `Spec quality: ${specQuality.summary}`);
 
+  // Present findings + get user decision on spec changes
+  const specReview = await ctx.breakpoint({
+    tag: 'requirements-review',
+    question: [
+      `Step 1: Requirements Review — Sprint ${sprintNumber}${phaseLabel}`,
+      '',
+      `Spec quality: ${specQuality.score}/100`,
+      `  Goal clarity: ${specQuality.goalClarityScore || '?'}/20`,
+      `  Completeness: ${specQuality.completenessScore || '?'}/20`,
+      `  Testability: ${specQuality.testabilityScore || '?'}/20`,
+      `  Architecture: ${specQuality.architectureScore || '?'}/20`,
+      `  Implementability: ${specQuality.implementabilityScore || '?'}/20`,
+      '',
+      'Gaps found:',
+      ...(specQuality.gaps || []).map(g => `  - ${g}`),
+      '',
+      'Spec vs reality drift:',
+      ...(specQuality.specVsRealityDrift || []).map(d => `  - ${d}`),
+      '',
+      'Recommendations:',
+      ...(specQuality.recommendations || []).map(r => `  - ${r}`),
+      '',
+      'Review the findings. Provide spec changes to apply, or "No changes needed".',
+      'The spec MUST be correct before we review architecture and tests.',
+    ].join('\n'),
+    title: 'Requirements Review',
+  });
+
+  // If user provided spec changes, apply them
+  const specResponse = specReview?.response || specReview?.output || '';
+  const noSpecChanges = !specResponse ||
+    specResponse.toLowerCase().includes('no change') ||
+    specResponse.toLowerCase().trim() === 'approve' ||
+    specResponse.toLowerCase().trim() === 'approved';
+
+  if (!noSpecChanges) {
+    ctx.log('info', 'Step 1b: Applying spec changes');
+
+    const specFix = await ctx.task(applySpecChangesTask, {
+      sprintNumber,
+      sprintSpecPath,
+      userFeedback: specResponse,
+      specQuality,
+    });
+    ctx.log('info', `Spec changes applied: ${specFix.summary}`);
+
+    // Commit spec changes
+    const specCommit = await ctx.task(commitChangesTask, {
+      message: `docs: Sprint ${sprintNumber} spec refinement from review`,
+      phase: 'SPEC-FIX',
+    });
+    ctx.log('info', `Spec committed: ${specCommit.summary}`);
+
+    // Confirm spec changes with user
+    await ctx.breakpoint({
+      tag: 'spec-changes-review',
+      question: [
+        'Spec changes applied and committed.',
+        '',
+        `Changes: ${specFix.summary}`,
+        '',
+        'Approve to proceed to architecture review.',
+      ].join('\n'),
+      title: 'Spec Changes Applied',
+    });
+  }
+
   // ════════════════════════════════════════════════════════════════════════
-  // PHASE 3: QUALITY GATES — anti-patterns, architecture, test coverage
+  // STEP 2: ARCHITECTURE REVIEW
+  // Anti-pattern scan + compliance check → present → fix → commit
+  // Depends on Step 1 (correct spec determines what code should exist)
   // ════════════════════════════════════════════════════════════════════════
 
-  ctx.log('info', 'Phase 3: Quality gates');
+  ctx.log('info', 'Step 2: Architecture review');
 
-  // 3.1: Anti-pattern scan on touched modules
   const antiPatternScan = await ctx.task(scanAntiPatternsTask, {
     improvementsPath,
     sprintSpecPath,
@@ -84,7 +150,6 @@ export async function process(inputs, ctx) {
   });
   ctx.log('info', `Anti-pattern scan: ${antiPatternScan.summary}`);
 
-  // 3.2: Architecture compliance
   const archCheck = await ctx.task(architectureComplianceTask, {
     sprintPlanPath,
     sprintNumber,
@@ -92,7 +157,93 @@ export async function process(inputs, ctx) {
   });
   ctx.log('info', `Architecture check: ${archCheck.summary}`);
 
-  // 3.3: Test coverage audit against testing-philosophy.md
+  const archIssues = [];
+  for (const issue of (antiPatternScan.relevantIssues || [])) {
+    if (issue.action !== 'defer') {
+      archIssues.push(`ANTIPATTERN: ${issue.id} [${issue.severity}] — ${issue.title}`);
+    }
+  }
+  for (const v of (archCheck.violations || [])) {
+    archIssues.push(`ARCH: ${v}`);
+  }
+
+  const archReview = await ctx.breakpoint({
+    tag: 'architecture-review',
+    question: [
+      `Step 2: Architecture Review — Sprint ${sprintNumber}${phaseLabel}`,
+      '',
+      `Anti-patterns: ${antiPatternScan.relevantIssueCount || 0} issues`,
+      `Architecture violations: ${archCheck.violationCount || 0}`,
+      '',
+      archIssues.length > 0
+        ? archIssues.map((issue, i) => `  ${i + 1}. ${issue}`).join('\n')
+        : '  No issues found.',
+      '',
+      archIssues.length > 0
+        ? 'Provide fix instructions (which issues to fix now, which to defer), or "No fixes needed".'
+        : 'Approve to proceed to test review.',
+    ].join('\n'),
+    title: 'Architecture Review',
+  });
+
+  // If user wants arch fixes, implement them
+  const archResponse = archReview?.response || archReview?.output || '';
+  const noArchFixes = !archResponse ||
+    archResponse.toLowerCase().includes('no fix') ||
+    archResponse.toLowerCase().includes('no change') ||
+    archResponse.toLowerCase().trim() === 'approve' ||
+    archResponse.toLowerCase().trim() === 'approved';
+
+  if (!noArchFixes && archIssues.length > 0) {
+    ctx.log('info', 'Step 2b: Applying architecture fixes');
+
+    const archFixPlan = await ctx.task(planArchFixesTask, {
+      issues: archIssues,
+      userGuidance: archResponse,
+      sprintNumber,
+      sprintSpecPath,
+      testCommand,
+    });
+    ctx.log('info', `Arch fix plan: ${archFixPlan.summary}`);
+
+    for (const fix of (archFixPlan.fixes || [])) {
+      ctx.log('info', `Fixing: ${fix.description}`);
+      const fixResult = await tddProcess({
+        feature: fix.description,
+        behaviors: fix.behaviors || [],
+        impactedTests: fix.impactedTests || [],
+        testCommand,
+        mode: 'new',
+        phase: 'feature',
+      }, ctx);
+      ctx.log('info', `Fix complete: ${fixResult.greenCommit || 'done'}`);
+    }
+
+    await ctx.breakpoint({
+      tag: 'arch-fixes-review',
+      question: [
+        'Architecture fixes applied.',
+        '',
+        `Fixes: ${(archFixPlan.fixes || []).map(f => f.description).join('; ')}`,
+        '',
+        'Approve to proceed to test review.',
+      ].join('\n'),
+      title: 'Architecture Fixes Applied',
+    });
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  // STEP 3: TEST REVIEW
+  // Coverage audit + success criteria verification → present → fix → commit
+  // Depends on Step 1 (correct spec) and Step 2 (correct architecture)
+  // ════════════════════════════════════════════════════════════════════════
+
+  ctx.log('info', 'Step 3: Test review');
+
+  // Run full test suite first to establish baseline
+  const testRun = await ctx.task(runFullTestSuiteTask, { testCommand });
+  ctx.log('info', `Test suite: ${testRun.summary}`);
+
   const coverageAudit = await ctx.task(testCoverageAuditTask, {
     sprintNumber,
     sprintSpecPath,
@@ -103,16 +254,6 @@ export async function process(inputs, ctx) {
   });
   ctx.log('info', `Test coverage audit: ${coverageAudit.summary}`);
 
-  // 3.4: Full test suite run
-  const testRun = await ctx.task(runFullTestSuiteTask, { testCommand });
-  ctx.log('info', `Test suite: ${testRun.summary}`);
-
-  // ════════════════════════════════════════════════════════════════════════
-  // PHASE 4: SUCCESS CRITERIA VERIFICATION
-  // ════════════════════════════════════════════════════════════════════════
-
-  ctx.log('info', 'Phase 4: Success criteria verification');
-
   const criteriaCheck = await ctx.task(successCriteriaVerificationTask, {
     sprintNumber,
     sprintSpecPath,
@@ -121,167 +262,86 @@ export async function process(inputs, ctx) {
   });
   ctx.log('info', `Success criteria: ${criteriaCheck.summary}`);
 
-  // ════════════════════════════════════════════════════════════════════════
-  // PHASE 5: ISSUE COLLECTION — present all findings
-  // ════════════════════════════════════════════════════════════════════════
-
-  ctx.log('info', 'Phase 5: Issue collection');
-
-  const allIssues = [];
-
-  // Spec quality issues
-  if (specQuality.score < 80) {
-    allIssues.push(`SPEC: Score ${specQuality.score}/100 — ${(specQuality.gaps || []).join('; ')}`);
-  }
-
-  // Anti-pattern issues
-  for (const issue of (antiPatternScan.relevantIssues || [])) {
-    if (issue.action !== 'defer') {
-      allIssues.push(`ANTIPATTERN: ${issue.id} [${issue.severity}] — ${issue.title}`);
-    }
-  }
-
-  // Architecture violations
-  for (const v of (archCheck.violations || [])) {
-    allIssues.push(`ARCH: ${v}`);
-  }
-
-  // Test coverage gaps
+  const testIssues = [];
   for (const gap of (coverageAudit.gaps || [])) {
-    allIssues.push(`COVERAGE: ${gap}`);
+    testIssues.push(`COVERAGE: ${gap}`);
   }
-
-  // Success criteria failures
   for (const fail of (criteriaCheck.failures || [])) {
-    allIssues.push(`CRITERIA: ${fail}`);
+    testIssues.push(`CRITERIA: ${fail}`);
   }
 
-  await ctx.breakpoint({
-    tag: 'review-findings',
+  const testReview = await ctx.breakpoint({
+    tag: 'test-review',
     question: [
-      `Sprint ${sprintNumber}${phaseLabel} — Review Findings`,
+      `Step 3: Test Review — Sprint ${sprintNumber}${phaseLabel}`,
       '',
-      `Spec quality: ${specQuality.score}/100`,
-      `  Goal clarity: ${specQuality.goalClarityScore || '?'}/20`,
-      `  Completeness: ${specQuality.completenessScore || '?'}/20`,
-      `  Testability: ${specQuality.testabilityScore || '?'}/20`,
-      `  Architecture: ${specQuality.architectureScore || '?'}/20`,
-      `  Implementability: ${specQuality.implementabilityScore || '?'}/20`,
-      '',
-      `Anti-patterns: ${antiPatternScan.relevantIssueCount || 0} issues`,
-      `Architecture violations: ${archCheck.violationCount || 0}`,
-      `Test coverage gaps: ${(coverageAudit.gaps || []).length}`,
+      `Tests: ${testRun.summary}`,
+      `Coverage gaps: ${(coverageAudit.gaps || []).length}`,
       `Success criteria: ${criteriaCheck.metCount || 0}/${criteriaCheck.totalCount || 0} met`,
       '',
-      `Total issues found: ${allIssues.length}`,
-      '',
-      allIssues.length > 0
-        ? allIssues.map((issue, i) => `  ${i + 1}. ${issue}`).join('\n')
+      testIssues.length > 0
+        ? testIssues.map((issue, i) => `  ${i + 1}. ${issue}`).join('\n')
         : '  No issues found.',
       '',
-      allIssues.length > 0
-        ? 'Approve to enter fix cycle, or provide prioritization guidance.'
-        : 'Approve to finalize review (no issues to fix).',
+      testIssues.length > 0
+        ? 'Provide fix instructions (which gaps to fill, which to defer), or "No fixes needed".'
+        : 'Approve to finalize.',
     ].join('\n'),
-    title: 'Review Findings',
+    title: 'Test Review',
   });
 
-  // ════════════════════════════════════════════════════════════════════════
-  // PHASE 6: FIX CYCLE — iterative fix + re-verify
-  // ════════════════════════════════════════════════════════════════════════
+  // If user wants test fixes, implement them
+  const testResponse = testReview?.response || testReview?.output || '';
+  const noTestFixes = !testResponse ||
+    testResponse.toLowerCase().includes('no fix') ||
+    testResponse.toLowerCase().includes('no change') ||
+    testResponse.toLowerCase().trim() === 'approve' ||
+    testResponse.toLowerCase().trim() === 'approved';
 
-  if (allIssues.length > 0) {
-    let fixRound = 0;
-    const maxFixRounds = 5;
+  if (!noTestFixes && testIssues.length > 0) {
+    ctx.log('info', 'Step 3b: Applying test fixes');
 
-    while (fixRound < maxFixRounds) {
-      fixRound++;
-      ctx.log('info', `Phase 6.${fixRound}: Fix cycle round ${fixRound}`);
+    const testFixPlan = await ctx.task(planTestFixesTask, {
+      issues: testIssues,
+      userGuidance: testResponse,
+      sprintNumber,
+      sprintSpecPath,
+      testCommand,
+      frontendTestCommand,
+    });
+    ctx.log('info', `Test fix plan: ${testFixPlan.summary}`);
 
-      // 6.a: Plan fixes for current issues
-      const fixPlan = await ctx.task(planFixesTask, {
-        issues: allIssues,
-        sprintNumber,
-        sprintSpecPath,
+    for (const fix of (testFixPlan.fixes || [])) {
+      ctx.log('info', `Fixing: ${fix.description}`);
+      const fixResult = await tddProcess({
+        feature: fix.description,
+        behaviors: fix.behaviors || [],
+        impactedTests: fix.impactedTests || [],
         testCommand,
-        frontendTestCommand,
-      });
-      ctx.log('info', `Fix plan: ${fixPlan.summary}`);
-
-      // 6.b: Review fix plan
-      await ctx.breakpoint({
-        tag: `fix-plan-${fixRound}`,
-        question: [
-          `Fix Plan (Round ${fixRound})`,
-          '',
-          `Issues to address: ${(fixPlan.fixes || []).length}`,
-          ...(fixPlan.fixes || []).map((f, i) => `  ${i + 1}. ${f.description} — ${f.approach}`),
-          '',
-          `Deferred: ${(fixPlan.deferred || []).length}`,
-          ...(fixPlan.deferred || []).map(d => `  - ${d}`),
-          '',
-          'Approve to implement fixes, or provide corrections.',
-        ].join('\n'),
-        title: `Fix Plan: Round ${fixRound}`,
-      });
-
-      // 6.c: Implement each fix via behavioral TDD
-      for (const fix of (fixPlan.fixes || [])) {
-        ctx.log('info', `Fixing: ${fix.description}`);
-
-        const fixResult = await tddProcess({
-          feature: fix.description,
-          behaviors: fix.behaviors || [],
-          impactedTests: fix.impactedTests || [],
-          testCommand,
-          mode: 'new',
-          phase: 'feature',
-        }, ctx);
-
-        ctx.log('info', `Fix complete: RED=${fixResult.redCommit}, GREEN=${fixResult.greenCommit}`);
-      }
-
-      // 6.d: Re-verify — run all quality gates again
-      const reTestRun = await ctx.task(runFullTestSuiteTask, { testCommand });
-      ctx.log('info', `Re-verify tests: ${reTestRun.summary}`);
-
-      const reCriteriaCheck = await ctx.task(successCriteriaVerificationTask, {
-        sprintNumber,
-        sprintSpecPath,
-        phases,
-        scope,
-      });
-      ctx.log('info', `Re-verify criteria: ${reCriteriaCheck.summary}`);
-
-      // 6.e: Check if issues remain
-      const remainingIssues = (reCriteriaCheck.failures || []).length;
-
-      await ctx.breakpoint({
-        tag: `fix-round-${fixRound}-complete`,
-        question: [
-          `Fix Round ${fixRound} Complete`,
-          '',
-          `Tests: ${reTestRun.summary}`,
-          `Success criteria: ${reCriteriaCheck.metCount || 0}/${reCriteriaCheck.totalCount || 0} met`,
-          `Remaining failures: ${remainingIssues}`,
-          '',
-          remainingIssues > 0
-            ? 'Approve to continue fixing, or "No more fixes" to finalize.'
-            : 'All issues resolved. Approve to finalize review.',
-        ].join('\n'),
-        title: `Fix Round ${fixRound} Complete`,
-      });
-
-      // Check if user wants to stop
-      if (remainingIssues === 0) break;
+        mode: 'new',
+        phase: 'feature',
+      }, ctx);
+      ctx.log('info', `Fix complete: ${fixResult.greenCommit || 'done'}`);
     }
+
+    await ctx.breakpoint({
+      tag: 'test-fixes-review',
+      question: [
+        'Test fixes applied.',
+        '',
+        `Fixes: ${(testFixPlan.fixes || []).map(f => f.description).join('; ')}`,
+        '',
+        'Approve to finalize.',
+      ].join('\n'),
+      title: 'Test Fixes Applied',
+    });
   }
 
   // ════════════════════════════════════════════════════════════════════════
-  // PHASE 7: FINAL GATE
+  // STEP 4: FINAL GATE
   // ════════════════════════════════════════════════════════════════════════
 
-  ctx.log('info', 'Phase 7: Final quality gate');
+  ctx.log('info', 'Step 4: Final quality gate');
 
   const finalTests = await ctx.task(runFullTestSuiteTask, { testCommand });
   ctx.log('info', `Final tests: ${finalTests.summary}`);
@@ -304,13 +364,12 @@ export async function process(inputs, ctx) {
     sprintNumber,
     phases,
     specQuality: specQuality.score,
-    issuesFound: allIssues.length,
     finalTests: finalTests.summary,
   };
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// TASK DEFINITIONS — review-specific tasks
+// TASK DEFINITIONS
 // ════════════════════════════════════════════════════════════════════════════
 
 export const reviewScopeTask = defineTask('review-scope', (args, taskCtx) => ({
@@ -322,52 +381,25 @@ export const reviewScopeTask = defineTask('review-scope', (args, taskCtx) => ({
       role: 'Sprint review analyst for GemKeep (Tauri + Svelte + Rust)',
       task: [
         `Identify the scope of Sprint ${args.sprintNumber} review.`,
-        args.phases.length > 0
-          ? `Reviewing phases: ${args.phases.join(', ')}`
-          : 'Reviewing entire sprint.',
+        args.phases.length > 0 ? `Reviewing phases: ${args.phases.join(', ')}` : 'Reviewing entire sprint.',
         '',
-        'Your job:',
         '1. Read the sprint spec to understand what was supposed to be built',
         '2. Use git log to find all commits for this sprint',
-        '3. Identify which files were touched',
-        '4. Identify which Rust modules and Svelte components were modified',
-        '5. Count tests added vs tests modified',
-        '',
-        'If commitRange is provided, use it. Otherwise scan git log for commits',
-        'mentioning "Sprint N" or "sprint-N" or "S10" etc.',
+        '3. Identify which files and modules were touched',
+        '4. Count tests added vs modified',
       ].join('\n'),
-      context: {
-        sprintNumber: args.sprintNumber,
-        phases: args.phases,
-        commitRange: args.commitRange,
-      },
+      context: { sprintNumber: args.sprintNumber, phases: args.phases },
       instructions: [
         `Read: ${args.sprintSpecPath}`,
-        'Run: git log --oneline --since="2 weeks ago" to find sprint commits',
-        'Run: git diff --stat <first_commit>..HEAD to identify touched files',
-        'Categorize touched files by module (decisions, photos, commands, frontend)',
-        'Count new test functions added',
+        'Run: git log --oneline --since="2 weeks ago"',
+        'Categorize touched files by module',
         'Return structured scope',
       ],
-      outputFormat: 'JSON with commits (array of {hash, message}), touchedFiles (array), touchedModules (array of string), newTestCount (number), modifiedTestCount (number), summary (string)',
+      outputFormat: 'JSON with commits (array of {hash, message}), touchedFiles (array), touchedModules (array of string), newTestCount (number), summary (string)',
     },
-    outputSchema: {
-      type: 'object',
-      required: ['touchedModules', 'summary'],
-      properties: {
-        commits: { type: 'array' },
-        touchedFiles: { type: 'array', items: { type: 'string' } },
-        touchedModules: { type: 'array', items: { type: 'string' } },
-        newTestCount: { type: 'number' },
-        modifiedTestCount: { type: 'number' },
-        summary: { type: 'string' },
-      },
-    },
+    outputSchema: { type: 'object', required: ['touchedModules', 'summary'] },
   },
-  io: {
-    inputJsonPath: `tasks/${taskCtx.effectId}/input.json`,
-    outputJsonPath: `tasks/${taskCtx.effectId}/result.json`,
-  },
+  io: { inputJsonPath: `tasks/${taskCtx.effectId}/input.json`, outputJsonPath: `tasks/${taskCtx.effectId}/result.json` },
 }));
 
 export const retrospectiveSpecQualityTask = defineTask('retro-spec-quality', (args, taskCtx) => ({
@@ -379,73 +411,151 @@ export const retrospectiveSpecQualityTask = defineTask('retro-spec-quality', (ar
       role: 'Sprint spec quality auditor (retrospective review)',
       task: [
         `Evaluate Sprint ${args.sprintNumber} specification quality RETROSPECTIVELY.`,
-        'This is a review of already-committed work. Score the spec on how well it guided implementation.',
-        '',
         'Score 0-100 across 5 dimensions (20 points each):',
         '',
-        'GOAL CLARITY (0-20):',
-        '- Is the WHY stated? What user problem does this sprint solve?',
-        '- Can someone unfamiliar with the codebase understand what the sprint achieves?',
-        '- Do the features form a coherent unit or unrelated changes bundled together?',
-        '- Is there a clear "done" definition from the user perspective?',
-        '- RETROSPECTIVE: Did the implementation match the stated goal, or did it drift?',
+        'GOAL CLARITY (0-20): WHY stated? Coherent unit? Clear done definition?',
+        'COMPLETENESS (0-20): Success criteria? Edge cases? Test layers?',
+        'TESTABILITY (0-20): Automatable? Specific values? RETRO: Do tests cover criteria?',
+        'ARCHITECTURE ALIGNMENT (0-20): References constraints? Specifies modules?',
+        'IMPLEMENTABILITY (0-20): Realistic scope? Clear dependencies?',
         '',
-        'COMPLETENESS (0-20):',
-        '- Does each feature have clear success criteria with observable outcomes?',
-        '- Are edge cases mentioned (error paths, empty states)?',
-        '- Does it specify test layers per feature?',
-        '- RETROSPECTIVE: Were features implemented that are NOT in the spec? Were spec features missed?',
-        '',
-        'TESTABILITY (0-20):',
-        '- Can each success criterion be verified with an automated test?',
-        '- Are expected values specific enough for assertions?',
-        '- RETROSPECTIVE: Do the actual tests cover the success criteria, or are there gaps?',
-        '',
-        'ARCHITECTURE ALIGNMENT (0-20):',
-        '- Does it reference sprint-plan.md constraints?',
-        '- Does it specify modules/files to touch?',
-        '- RETROSPECTIVE: Did the implementation follow the specified architecture, or deviate?',
-        '',
-        'IMPLEMENTABILITY (0-20):',
-        '- Is scope realistic? Are dependencies clear?',
-        '- RETROSPECTIVE: Were there surprises during implementation the spec should have anticipated?',
+        'For each dimension, add RETROSPECTIVE check: did implementation match spec?',
+        'List gaps, spec-vs-reality drift, and actionable recommendations.',
       ].join('\n'),
-      context: {
-        sprintNumber: args.sprintNumber,
-        phases: args.phases,
-        touchedModules: (args.scope?.touchedModules || []),
-      },
+      context: { sprintNumber: args.sprintNumber, phases: args.phases, touchedModules: (args.scope?.touchedModules || []) },
       instructions: [
         `Read: ${args.sprintSpecPath}`,
         `Read: ${args.sprintPlanPath}`,
-        'Read the actual committed code (git diff or key files) to compare spec vs reality',
-        'Score each dimension with retrospective awareness',
-        'List gaps between spec and implementation',
+        'Compare spec intent vs actual committed code',
         'Return structured assessment',
       ],
-      outputFormat: 'JSON with score (number 0-100), goalClarityScore (number 0-20), completenessScore (number 0-20), testabilityScore (number 0-20), architectureScore (number 0-20), implementabilityScore (number 0-20), gaps (array of string), specVsRealityDrift (array of string), recommendations (array of string), summary (string)',
+      outputFormat: 'JSON with score, goalClarityScore, completenessScore, testabilityScore, architectureScore, implementabilityScore (all numbers), gaps (array), specVsRealityDrift (array), recommendations (array), summary (string)',
     },
-    outputSchema: {
-      type: 'object',
-      required: ['score', 'summary'],
-      properties: {
-        score: { type: 'number' },
-        goalClarityScore: { type: 'number' },
-        completenessScore: { type: 'number' },
-        testabilityScore: { type: 'number' },
-        architectureScore: { type: 'number' },
-        implementabilityScore: { type: 'number' },
-        gaps: { type: 'array', items: { type: 'string' } },
-        specVsRealityDrift: { type: 'array', items: { type: 'string' } },
-        recommendations: { type: 'array', items: { type: 'string' } },
-        summary: { type: 'string' },
-      },
+    outputSchema: { type: 'object', required: ['score', 'summary'] },
+  },
+  io: { inputJsonPath: `tasks/${taskCtx.effectId}/input.json`, outputJsonPath: `tasks/${taskCtx.effectId}/result.json` },
+}));
+
+export const applySpecChangesTask = defineTask('apply-spec-changes', (args, taskCtx) => ({
+  kind: 'agent',
+  title: `Apply spec changes: Sprint ${args.sprintNumber}`,
+  agent: {
+    name: 'general-purpose',
+    prompt: {
+      role: 'Sprint spec editor for GemKeep',
+      task: [
+        `Apply the user's requested changes to Sprint ${args.sprintNumber} spec.`,
+        '',
+        'User feedback:',
+        args.userFeedback,
+        '',
+        'Quality assessment gaps:',
+        ...(args.specQuality.gaps || []).map(g => `- ${g}`),
+        '',
+        'RULES:',
+        '1. Edit the sprint spec file directly',
+        '2. Update success criteria numbers if criteria are removed/added',
+        '3. Update the status table if phase scope changes',
+        '4. Keep existing valid content — only change what the user requested',
+        '5. Update edge cases table if affected',
+      ].join('\n'),
+      context: { sprintNumber: args.sprintNumber },
+      instructions: [
+        `Read: ${args.sprintSpecPath}`,
+        'Apply requested changes',
+        'Report what was changed',
+      ],
+      outputFormat: 'JSON with changesApplied (array of string), summary (string)',
     },
+    outputSchema: { type: 'object', required: ['summary'] },
   },
-  io: {
-    inputJsonPath: `tasks/${taskCtx.effectId}/input.json`,
-    outputJsonPath: `tasks/${taskCtx.effectId}/result.json`,
+  io: { inputJsonPath: `tasks/${taskCtx.effectId}/input.json`, outputJsonPath: `tasks/${taskCtx.effectId}/result.json` },
+}));
+
+export const commitChangesTask = defineTask('commit-changes', (args, taskCtx) => ({
+  kind: 'agent',
+  title: `Commit: ${args.phase}`,
+  agent: {
+    name: 'general-purpose',
+    prompt: {
+      role: 'Git operator',
+      task: 'Stage changed files and create a git commit.',
+      context: { message: args.message, phase: args.phase },
+      instructions: [
+        'Run git status to see changed files',
+        'Stage relevant files (use -f for .gitignore overrides if needed)',
+        `Commit with message: "${args.message}"`,
+        'Return the commit hash',
+      ],
+      outputFormat: 'JSON with commitHash (string), filesCommitted (array), summary (string)',
+    },
+    outputSchema: { type: 'object', required: ['summary'] },
   },
+  io: { inputJsonPath: `tasks/${taskCtx.effectId}/input.json`, outputJsonPath: `tasks/${taskCtx.effectId}/result.json` },
+}));
+
+export const planArchFixesTask = defineTask('plan-arch-fixes', (args, taskCtx) => ({
+  kind: 'agent',
+  title: 'Plan architecture fixes',
+  agent: {
+    name: 'general-purpose',
+    prompt: {
+      role: 'Fix planner for architecture issues',
+      task: [
+        'Plan fixes for architecture issues found during review.',
+        '',
+        'User guidance on what to fix:',
+        args.userGuidance,
+        '',
+        'Issues:',
+        ...(args.issues || []).map((issue, i) => `${i + 1}. ${issue}`),
+        '',
+        'For each fix: describe approach, extract behavioral contract, estimate scope.',
+        'Respect user guidance on which to fix vs defer.',
+      ].join('\n'),
+      context: { sprintNumber: args.sprintNumber },
+      instructions: [
+        `Read: ${args.sprintSpecPath}`,
+        'Read relevant source files',
+        'Plan minimal fixes with behavioral contracts',
+      ],
+      outputFormat: 'JSON with fixes (array of {description, approach, scope, behaviors: [{trigger, expectedOutcome, testLayer}], impactedTests: []}), deferred (array), summary (string)',
+    },
+    outputSchema: { type: 'object', required: ['fixes', 'summary'] },
+  },
+  io: { inputJsonPath: `tasks/${taskCtx.effectId}/input.json`, outputJsonPath: `tasks/${taskCtx.effectId}/result.json` },
+}));
+
+export const planTestFixesTask = defineTask('plan-test-fixes', (args, taskCtx) => ({
+  kind: 'agent',
+  title: 'Plan test fixes',
+  agent: {
+    name: 'general-purpose',
+    prompt: {
+      role: 'Fix planner for test coverage issues',
+      task: [
+        'Plan fixes for test coverage gaps found during review.',
+        '',
+        'User guidance:',
+        args.userGuidance,
+        '',
+        'Issues:',
+        ...(args.issues || []).map((issue, i) => `${i + 1}. ${issue}`),
+        '',
+        'For each fix: describe what test to add, which layer, behavioral contract.',
+        'Respect user guidance on which to fix vs defer.',
+      ].join('\n'),
+      context: { sprintNumber: args.sprintNumber },
+      instructions: [
+        `Read: ${args.sprintSpecPath}`,
+        'Read docs/testing-philosophy.md',
+        'Plan test additions with behavioral contracts',
+      ],
+      outputFormat: 'JSON with fixes (array of {description, approach, scope, behaviors: [{trigger, expectedOutcome, testLayer}], impactedTests: []}), deferred (array), summary (string)',
+    },
+    outputSchema: { type: 'object', required: ['fixes', 'summary'] },
+  },
+  io: { inputJsonPath: `tasks/${taskCtx.effectId}/input.json`, outputJsonPath: `tasks/${taskCtx.effectId}/result.json` },
 }));
 
 export const testCoverageAuditTask = defineTask('test-coverage-audit', (args, taskCtx) => ({
@@ -457,69 +567,25 @@ export const testCoverageAuditTask = defineTask('test-coverage-audit', (args, ta
       role: 'Test coverage auditor enforcing docs/testing-philosophy.md',
       task: [
         `Audit test coverage for Sprint ${args.sprintNumber} against testing-philosophy.md.`,
-        '',
-        'Read docs/testing-philosophy.md IN FULL — all 20 rules, the testing pyramid,',
-        'integration seam testing, and the pre-sprint-done checklist.',
-        '',
-        'Then audit the ACTUAL tests written for this sprint:',
-        '',
-        '1. RULE COMPLIANCE: For each rule in testing-philosophy.md, check if the sprint',
-        '   tests comply. Flag violations with rule number and specific test.',
-        '',
-        '2. COVERAGE GAPS: For each success criterion in the sprint spec, check if there',
-        '   is at least one test that verifies it. List criteria without tests.',
-        '',
-        '3. LAYER CORRECTNESS: Check that tests are in the right layer:',
-        '   - Visual assertions (colors, borders) must be in .browser.test.ts',
-        '   - DOM presence checks can be in .test.ts (jsdom)',
-        '   - DB operations must be tested in Rust (not mocked in frontend)',
-        '   - E2E journeys in Playwright',
-        '',
-        '4. TEST QUALITY: Check for:',
-        '   - assert!(false) or artificial failures (Rule 2 violation)',
-        '   - Tests that pass by coincidence (mock matches both old+new behavior)',
-        '   - Test names that promise more than assertions verify (Rule 20)',
-        '   - Missing negative tests (error paths, edge cases)',
-        '',
-        '5. TEST INFRASTRUCTURE: Check Rule 16 compliance:',
-        '   - Are TestProject/TestLibraryBuilder used for photo tests?',
-        '   - Are shared fixtures/helpers reused (not duplicated)?',
+        'Read docs/testing-philosophy.md IN FULL. Then audit:',
+        '1. RULE COMPLIANCE per testing-philosophy.md rule',
+        '2. COVERAGE GAPS — success criteria without tests',
+        '3. LAYER CORRECTNESS — visual in browser, DOM in jsdom, DB in Rust',
+        '4. TEST QUALITY — no artificial failures, honest names, no coincidental passes',
+        '5. TEST INFRASTRUCTURE — Rule 16 compliance',
       ].join('\n'),
-      context: {
-        sprintNumber: args.sprintNumber,
-        phases: args.phases,
-        touchedModules: (args.scope?.touchedModules || []),
-        newTestCount: args.scope?.newTestCount || 0,
-      },
+      context: { sprintNumber: args.sprintNumber, phases: args.phases, touchedModules: (args.scope?.touchedModules || []) },
       instructions: [
-        'Read: docs/testing-philosophy.md — the ENTIRE document',
-        `Read: ${args.sprintSpecPath} — extract success criteria`,
-        'Search for new test functions in sprint commits (grep for test_s10 or describe blocks)',
-        'Read the actual test files to audit assertions',
-        'Cross-reference success criteria with actual test coverage',
-        'Check each applicable rule from testing-philosophy.md',
-        'Return gaps and violations',
+        'Read: docs/testing-philosophy.md',
+        `Read: ${args.sprintSpecPath}`,
+        'Search for sprint test functions',
+        'Cross-reference criteria with tests',
       ],
-      outputFormat: 'JSON with gaps (array of string — uncovered success criteria or missing test layers), violations (array of {rule, test, description}), layerIssues (array of string), qualityIssues (array of string), coveredCriteria (number), totalCriteria (number), summary (string)',
+      outputFormat: 'JSON with gaps (array of string), violations (array), layerIssues (array), qualityIssues (array), coveredCriteria (number), totalCriteria (number), summary (string)',
     },
-    outputSchema: {
-      type: 'object',
-      required: ['gaps', 'summary'],
-      properties: {
-        gaps: { type: 'array', items: { type: 'string' } },
-        violations: { type: 'array' },
-        layerIssues: { type: 'array', items: { type: 'string' } },
-        qualityIssues: { type: 'array', items: { type: 'string' } },
-        coveredCriteria: { type: 'number' },
-        totalCriteria: { type: 'number' },
-        summary: { type: 'string' },
-      },
-    },
+    outputSchema: { type: 'object', required: ['gaps', 'summary'] },
   },
-  io: {
-    inputJsonPath: `tasks/${taskCtx.effectId}/input.json`,
-    outputJsonPath: `tasks/${taskCtx.effectId}/result.json`,
-  },
+  io: { inputJsonPath: `tasks/${taskCtx.effectId}/input.json`, outputJsonPath: `tasks/${taskCtx.effectId}/result.json` },
 }));
 
 export const successCriteriaVerificationTask = defineTask('verify-criteria', (args, taskCtx) => ({
@@ -531,93 +597,19 @@ export const successCriteriaVerificationTask = defineTask('verify-criteria', (ar
       role: 'Success criteria verifier for GemKeep',
       task: [
         `Verify each success criterion from Sprint ${args.sprintNumber} spec is actually met.`,
-        '',
-        'For each criterion in the sprint spec "Success criteria" section:',
-        '1. Read the criterion',
-        '2. Find the code that implements it (search for relevant functions/components)',
-        '3. Find the test that verifies it',
-        '4. Determine: MET (code exists + test exists), PARTIAL (code exists, no test),',
-        '   or UNMET (code missing or incorrect)',
-        '',
-        'Be thorough — read actual source code, not just test names.',
-        'A criterion is UNMET if the behavior described does not actually work.',
+        'For each criterion: find implementing code + verifying test.',
+        'Mark: MET (code + test), PARTIAL (code but no test), UNMET (missing).',
+        'Read actual source code, not just test names.',
       ].join('\n'),
-      context: {
-        sprintNumber: args.sprintNumber,
-        phases: args.phases,
-      },
-      instructions: [
-        `Read: ${args.sprintSpecPath} — extract all numbered success criteria`,
-        'For each criterion, search the codebase for the implementing code',
-        'For each criterion, search test files for the verifying test',
-        'Report MET/PARTIAL/UNMET for each with evidence',
-        'Return structured verification',
-      ],
-      outputFormat: 'JSON with criteria (array of {number, description, status: "met"|"partial"|"unmet", evidence, test}), metCount (number), partialCount (number), unmetCount (number), totalCount (number), failures (array of string — unmet/partial descriptions), summary (string)',
-    },
-    outputSchema: {
-      type: 'object',
-      required: ['criteria', 'metCount', 'totalCount', 'summary'],
-      properties: {
-        criteria: { type: 'array' },
-        metCount: { type: 'number' },
-        partialCount: { type: 'number' },
-        unmetCount: { type: 'number' },
-        totalCount: { type: 'number' },
-        failures: { type: 'array', items: { type: 'string' } },
-        summary: { type: 'string' },
-      },
-    },
-  },
-  io: {
-    inputJsonPath: `tasks/${taskCtx.effectId}/input.json`,
-    outputJsonPath: `tasks/${taskCtx.effectId}/result.json`,
-  },
-}));
-
-export const planFixesTask = defineTask('plan-fixes', (args, taskCtx) => ({
-  kind: 'agent',
-  title: 'Plan fixes for review issues',
-  agent: {
-    name: 'general-purpose',
-    prompt: {
-      role: 'Fix planner for GemKeep sprint review',
-      task: [
-        'Plan fixes for the issues found during sprint review.',
-        '',
-        'For each issue:',
-        '1. Determine if it needs a code fix, a test addition, or a doc update',
-        '2. Estimate scope (trivial / small / medium)',
-        '3. Extract behavioral contract if code fix needed',
-        '4. Determine if it can be bundled with other fixes',
-        '',
-        'Prioritize: CRITERIA failures > COVERAGE gaps > ARCH violations > ANTIPATTERNS',
-        'Defer items that are low-impact or would require significant refactoring.',
-      ].join('\n'),
-      context: {
-        issues: args.issues,
-        sprintNumber: args.sprintNumber,
-      },
+      context: { sprintNumber: args.sprintNumber, phases: args.phases },
       instructions: [
         `Read: ${args.sprintSpecPath}`,
-        'Read relevant source files for each issue',
-        'Plan minimal fixes with behavioral contracts',
-        'Return structured fix plan',
+        'For each criterion, search codebase for implementation + test',
+        'Return structured verification',
       ],
-      outputFormat: 'JSON with fixes (array of {description, approach, scope, behaviors: [{trigger, expectedOutcome, testLayer}], impactedTests: []}), deferred (array of string), summary (string)',
+      outputFormat: 'JSON with criteria (array of {number, description, status, evidence, test}), metCount (number), partialCount (number), unmetCount (number), totalCount (number), failures (array), summary (string)',
     },
-    outputSchema: {
-      type: 'object',
-      required: ['fixes', 'summary'],
-      properties: {
-        fixes: { type: 'array' },
-        deferred: { type: 'array', items: { type: 'string' } },
-        summary: { type: 'string' },
-      },
-    },
+    outputSchema: { type: 'object', required: ['criteria', 'metCount', 'totalCount', 'summary'] },
   },
-  io: {
-    inputJsonPath: `tasks/${taskCtx.effectId}/input.json`,
-    outputJsonPath: `tasks/${taskCtx.effectId}/result.json`,
-  },
+  io: { inputJsonPath: `tasks/${taskCtx.effectId}/input.json`, outputJsonPath: `tasks/${taskCtx.effectId}/result.json` },
 }));

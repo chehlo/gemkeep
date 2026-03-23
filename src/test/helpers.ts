@@ -232,6 +232,7 @@ export function mockStackFocusRouter(overrides?: Record<string, MockRouterValue>
     commit_round: undefined,
     get_photo_detail: PHOTO_DETAIL,
     list_stacks: [[]],
+    list_rounds: [OPEN_ROUND],
     ...overrides,
   })
 }

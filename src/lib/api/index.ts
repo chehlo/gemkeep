@@ -261,3 +261,31 @@ export async function undoLastMerge(slug: string): Promise<void> {
 export async function listStackTransactions(slug: string): Promise<StackTransaction[]> {
   return invoke('list_stack_transactions', { slug })
 }
+
+// Sprint 10 Phase C: Multi-round navigation types and commands
+
+export interface RoundSummary {
+  round_id: number
+  round_number: number
+  state: RoundState
+  total_photos: number
+  decided: number
+  kept: number
+  eliminated: number
+  undecided: number
+  committed_at: string | null
+}
+
+export interface PhotoSnapshot {
+  logical_photo_id: number
+  status_in_round: DecisionStatus
+  thumbnail_path: string | null
+}
+
+export async function listRounds(slug: string, stackId: number): Promise<RoundSummary[]> {
+  return invoke('list_rounds', { slug, stackId })
+}
+
+export async function getRoundSnapshot(slug: string, stackId: number, roundId: number): Promise<PhotoSnapshot[]> {
+  return invoke('get_round_snapshot', { slug, stackId, roundId })
+}

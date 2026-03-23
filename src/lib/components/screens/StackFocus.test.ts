@@ -4,7 +4,7 @@ import { render, screen, waitFor, fireEvent } from '@testing-library/svelte'
 import { invoke, convertFileSrc } from '@tauri-apps/api/core'
 import { navigate, navigation } from '$lib/stores/navigation.svelte.js'
 import type { LogicalPhotoSummary } from '$lib/api/index.js'
-import { PHOTO_1, PHOTO_2, PHOTO_3, makeDecisionResult, makePhotoList, OPEN_ROUND } from '$test/fixtures'
+import { PHOTO_1, PHOTO_2, PHOTO_3, makeDecisionResult, makePhotoList, OPEN_ROUND, THREE_ROUND_LIST, ROUND_1_COMMITTED, ROUND_3_OPEN, makeRoundStatus } from '$test/fixtures'
 import { mockStackFocusRouter } from '$test/helpers'
 import { DECISION_SELECTORS } from '$test/decision-helpers'
 import StackFocus from './StackFocus.svelte'
@@ -1828,5 +1828,113 @@ describe('StackFocus — rejects round_id 0 (no "no round" state)', () => {
       return args.roundId === 0
     })
     expect(callsWithZeroRound).toHaveLength(0)
+  })
+})
+
+// ── Sprint 10 Phase C: Multi-round navigation ───────────────────────────────
+
+describe('StackFocus — Sprint 10 Phase C: multi-round navigation', () => {
+  it('calls list_rounds on mount', async () => {
+    mockInvoke.mockImplementation(mockStackFocusRouter({
+      list_logical_photos: [mockPhotos],
+      list_rounds: THREE_ROUND_LIST,
+    }))
+
+    render(StackFocus)
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith('list_rounds', {
+        slug: 'test-project', stackId: 1,
+      })
+    })
+  })
+
+  it('bracket left navigates to previous round', async () => {
+    // Start on round 3 (the open round), rounds list has [1,2,3]
+    mockInvoke.mockImplementation(mockStackFocusRouter({
+      list_logical_photos: [mockPhotos],
+      list_rounds: THREE_ROUND_LIST,
+      get_round_status: {
+        round_id: 3, round_number: 3, state: 'open',
+        total_photos: 3, decided: 0, kept: 0, eliminated: 0, undecided: 3, committed_at: null,
+      },
+    }))
+
+    render(StackFocus)
+    await waitFor(() => screen.getAllByTestId('photo-card'))
+
+    // Press [ to go to previous round (round 2)
+    await fireEvent.keyDown(document, { key: '[' })
+
+    // After navigating to round 2, listLogicalPhotos should be re-called with roundId=2
+    await waitFor(() => {
+      const listCalls = mockInvoke.mock.calls.filter(c => c[0] === 'list_logical_photos')
+      const callsWithRound2 = listCalls.filter(c => {
+        const args = c[1] as Record<string, unknown>
+        return args.roundId === 2
+      })
+      expect(callsWithRound2.length).toBeGreaterThanOrEqual(1)
+    })
+  })
+
+  it('bracket right navigates to next round', async () => {
+    // Start on round 1 (committed), rounds list has [1,2,3]
+    mockInvoke.mockImplementation(mockStackFocusRouter({
+      list_logical_photos: [mockPhotos],
+      list_rounds: THREE_ROUND_LIST,
+      get_round_status: {
+        round_id: 1, round_number: 1, state: 'committed',
+        total_photos: 5, decided: 5, kept: 3, eliminated: 2, undecided: 0, committed_at: '2024-01-15T12:00:00Z',
+      },
+    }))
+
+    render(StackFocus)
+    await waitFor(() => screen.getAllByTestId('photo-card'))
+
+    // Press ] to go to next round (round 2)
+    await fireEvent.keyDown(document, { key: ']' })
+
+    // After navigating to round 2, listLogicalPhotos should be re-called with roundId=2
+    await waitFor(() => {
+      const listCalls = mockInvoke.mock.calls.filter(c => c[0] === 'list_logical_photos')
+      const callsWithRound2 = listCalls.filter(c => {
+        const args = c[1] as Record<string, unknown>
+        return args.roundId === 2
+      })
+      expect(callsWithRound2.length).toBeGreaterThanOrEqual(1)
+    })
+  })
+
+  it('decision keys disabled for committed round — Y does not call make_decision', async () => {
+    const COMMITTED_ROUND = makeRoundStatus({
+      round_id: 1, round_number: 1, state: 'committed',
+      total_photos: 3, decided: 3, kept: 2, eliminated: 1, undecided: 0,
+      committed_at: '2024-01-15T12:00:00Z',
+    })
+
+    mockInvoke.mockImplementation(mockStackFocusRouter({
+      list_logical_photos: [mockPhotos],
+      list_rounds: [ROUND_1_COMMITTED],
+      get_round_status: COMMITTED_ROUND,
+      get_stack_decisions: [[
+        { logical_photo_id: 1, current_status: 'keep' },
+        { logical_photo_id: 2, current_status: 'keep' },
+        { logical_photo_id: 3, current_status: 'eliminate' },
+      ]],
+    }))
+
+    render(StackFocus)
+    await waitFor(() => screen.getAllByTestId('photo-card'))
+
+    // Press Y — should NOT call make_decision because round is committed
+    await fireEvent.keyDown(document, { key: 'y' })
+
+    // Wait a tick then check make_decision was never called
+    await new Promise(r => setTimeout(r, 50))
+    const decisionCalls = mockInvoke.mock.calls.filter(c => c[0] === 'make_decision')
+    expect(decisionCalls).toHaveLength(0)
+
+    // Should show a warning that round is read-only
+    expect(screen.getByText(/read-only/i)).toBeInTheDocument()
   })
 })

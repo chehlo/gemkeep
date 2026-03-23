@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor, fireEvent } from '@testing-library/svelte'
 import { invoke, convertFileSrc } from '@tauri-apps/api/core'
 import { navigate, navigation } from '$lib/stores/navigation.svelte.js'
-import { PHOTO_1, PHOTO_2, PHOTO_3, makePhoto, makeDecisionResult, OPEN_ROUND, UNDECIDED_DECISIONS } from '$test/fixtures'
+import { PHOTO_1, PHOTO_2, PHOTO_3, makePhoto, makeDecisionResult, OPEN_ROUND, UNDECIDED_DECISIONS, makeRoundStatus } from '$test/fixtures'
 import { resetInvokeMock } from '$test/helpers'
 import { DECISION_SELECTORS } from '$lib/constants/decisions'
 import type { LogicalPhotoSummary } from '$lib/api/index.js'
@@ -551,5 +551,38 @@ describe('ComparisonView — DecisionIndicator shows keep after Y key', () => {
       const left = screen.getByTestId('comparison-left')
       expect(left.querySelector(DECISION_SELECTORS.keep)).not.toBeNull()
     })
+  })
+})
+
+// ── Sprint 10 Phase C: roundId passed to listLogicalPhotos ──────────────────
+
+describe('ComparisonView — Sprint 10 Phase C: roundId scoping', () => {
+  it('passes currentRoundId to listLogicalPhotos', async () => {
+    const ROUND_2 = makeRoundStatus({
+      round_id: 2, round_number: 2, state: 'open',
+      total_photos: 3, decided: 0, kept: 0, eliminated: 0, undecided: 3,
+    })
+
+    // ComparisonView mount: list_logical_photos, get_stack_decisions, get_round_status
+    // After getRoundStatus sets currentRoundId=2, a re-fetch of list_logical_photos
+    // should pass roundId=2
+    resetInvokeMock()
+    mockInvoke.mockResolvedValueOnce(mockPhotos)         // list_logical_photos (initial, roundId=0/undefined)
+    mockInvoke.mockResolvedValueOnce(UNDECIDED_DECISIONS) // get_stack_decisions
+    mockInvoke.mockResolvedValueOnce(ROUND_2)             // get_round_status
+
+    render(ComparisonView)
+
+    await waitFor(() => {
+      screen.getByTestId('comparison-left')
+    })
+
+    // Verify that list_logical_photos was called with roundId=2 at some point
+    const listCalls = mockInvoke.mock.calls.filter(c => c[0] === 'list_logical_photos')
+    const callsWithRound2 = listCalls.filter(c => {
+      const args = c[1] as Record<string, unknown>
+      return args.roundId === 2
+    })
+    expect(callsWithRound2.length).toBeGreaterThanOrEqual(1)
   })
 })

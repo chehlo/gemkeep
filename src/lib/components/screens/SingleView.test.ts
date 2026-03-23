@@ -946,3 +946,32 @@ describe('SingleView — back navigation', () => {
     expect(navigation.current.kind).toBe('stack-focus')
   })
 })
+
+// ── Sprint 10 Phase C: roundId passed to listLogicalPhotos ──────────────────
+
+describe('SingleView — Sprint 10 Phase C: roundId scoping', () => {
+  it('passes currentRoundId to listLogicalPhotos after round status is known', async () => {
+    const ROUND_2 = makeRoundStatus({
+      round_id: 2, round_number: 2, state: 'open',
+      total_photos: 3, decided: 0, kept: 0, eliminated: 0, undecided: 3,
+    })
+
+    mockInvoke.mockImplementation(mockSingleViewRouter({
+      get_round_status: ROUND_2,
+    }))
+
+    render(SingleView)
+
+    await waitFor(() => {
+      screen.getByRole('img')
+    })
+
+    // Verify that list_logical_photos was called with roundId=2 at some point
+    const listCalls = mockInvoke.mock.calls.filter(c => c[0] === 'list_logical_photos')
+    const callsWithRound2 = listCalls.filter(c => {
+      const args = c[1] as Record<string, unknown>
+      return args.roundId === 2
+    })
+    expect(callsWithRound2.length).toBeGreaterThanOrEqual(1)
+  })
+})

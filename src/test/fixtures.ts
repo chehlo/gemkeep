@@ -11,6 +11,7 @@ import type {
   DecisionResult,
   PhotoDetail,
   DecisionStatus,
+  RoundSummary,
 } from '$lib/api/index.js'
 
 // ─── IndexingStatus fixtures ────────────────────────────────────────────────
@@ -211,3 +212,62 @@ export function makeDecisionResult(overrides?: Partial<DecisionResult>): Decisio
     ...overrides,
   }
 }
+
+// ─── RoundSummary fixtures + factory ─────────────────────────────────────────
+
+export const ROUND_1_COMMITTED: RoundSummary = {
+  round_id: 1,
+  round_number: 1,
+  state: 'committed',
+  total_photos: 5,
+  decided: 5,
+  kept: 3,
+  eliminated: 2,
+  undecided: 0,
+  committed_at: '2024-01-15T12:00:00Z',
+}
+
+export const ROUND_2_COMMITTED: RoundSummary = {
+  round_id: 2,
+  round_number: 2,
+  state: 'committed',
+  total_photos: 3,
+  decided: 3,
+  kept: 2,
+  eliminated: 1,
+  undecided: 0,
+  committed_at: '2024-01-15T13:00:00Z',
+}
+
+export const ROUND_3_OPEN: RoundSummary = {
+  round_id: 3,
+  round_number: 3,
+  state: 'open',
+  total_photos: 2,
+  decided: 0,
+  kept: 0,
+  eliminated: 0,
+  undecided: 2,
+  committed_at: null,
+}
+
+export function makeRoundSummary(overrides?: Partial<RoundSummary>): RoundSummary {
+  return {
+    round_id: 1,
+    round_number: 1,
+    state: 'open',
+    total_photos: 3,
+    decided: 0,
+    kept: 0,
+    eliminated: 0,
+    undecided: 3,
+    committed_at: null,
+    ...overrides,
+  }
+}
+
+export const THREE_ROUND_LIST: RoundSummary[] = [
+  ROUND_1_COMMITTED,
+  ROUND_2_COMMITTED,
+  ROUND_3_OPEN,
+]

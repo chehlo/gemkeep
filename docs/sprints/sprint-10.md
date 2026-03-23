@@ -1,8 +1,8 @@
 # Sprint 10 — Multi-Round Engine & Restoration
 
-**User Stories:** §8 (all: multi-round, immutable snapshots, overrides, restoration, round navigation, commit/finalize), §5.1 (show only active photos in current round), §14.1 (crash resilience for round decisions)
+**User Stories:** §8 (multi-round, immutable snapshots, overrides, round navigation), §5.1 (show only active photos in current round), §14.1 (crash resilience for round decisions) (Phases A-C delivered; Phase D deferred: restoration, commit/finalize)
 
-**Goal:** The user can do multiple refinement passes on a stack and reconsider earlier decisions. Round history is immutable and navigable. Eliminated photos can be restored.
+**Goal:** The user can do multiple refinement passes on a stack and reconsider earlier decisions. Round history is immutable and navigable. Phases A-C: round-scoping, multi-round progression, overrides, snapshots, and navigation. Phase D (deferred): restoration of eliminated photos and finalize/reopen.
 
 **Branch:** `sprint-10`
 **Depends on:** S1–S9
@@ -42,6 +42,8 @@ Despite Sprint 9 defining roundId as mandatory in the TypeScript API, the Rust c
 This API reads `current_status` from the `logical_photos` table — a flat materialized cache that only reflects the LATEST decision across ALL rounds. For round 2+, this shows round-1 decisions mixed with round-2 decisions.
 
 **Fix:** Rename to `get_round_decisions(slug, stack_id, round_id)`. Query decisions for the specific round: derive status from `decisions WHERE round_id = ?` instead of reading `logical_photos.current_status`. The materialized `current_status` remains as a performance cache but is NOT the source of truth for per-round views.
+
+**Deprecation:** `get_stack_decisions` is deprecated. All callers should use `get_round_decisions(slug, stack_id, round_id)` instead.
 
 #### 3. `get_round_status` — counts from `logical_photos`, not `round_photos`
 
@@ -106,11 +108,11 @@ Each committed round is a frozen snapshot. Navigating to a past round shows the 
 
 #### F5: Round navigation `[` `]` keys
 
-`[` moves to the previous round, `]` moves to the next round. Wraps: pressing `]` on the latest round is a no-op. Pressing `[` on Round 1 is a no-op. These keys work in StackFocus, SingleView, and ComparisonView. When navigating to a committed round, the view enters read-only mode.
+`[` moves to the previous round, `]` moves to the next round. Wraps: pressing `]` on the latest round is a no-op. Pressing `[` on Round 1 is a no-op. These keys work in StackFocus only. SingleView and ComparisonView inherit the round context but do not switch rounds. When navigating to a committed round, the view enters read-only mode.
 
 **Read-only mode indicators:**
 - Decision keys (Y/X/U) are disabled with an inline warning: "Round N is committed — read-only"
-- The round tab has a lock icon or "committed" label
+- The round tab has a "committed" label
 - Photo borders show the historical decision state (green/red) but are non-interactive
 
 ### Phase D — Restoration & finalize
@@ -156,7 +158,7 @@ A "Finalize stack" action marks the stack as done. Its survivors are locked unti
 - Restoration works via a keyboard shortcut (`R`) on a visible (but dimmed) eliminated photo after pressing `E` to show eliminated. Not drag-and-drop.
 - Finalize confirmation is a non-modal inline message ("Stack finalized. N survivors."), not a dialog box.
 - Round snapshots are derived from the decisions log via SQL queries — no separate snapshot tables needed.
-- The round tab bar is plain text tabs (`R1 R2 R3*`), not a styled component. Functional over pretty.
+- The round tab bar is plain text tabs (`R1 R2 R3*`), not a styled component. Functional over pretty. For 10+ rounds, show first 3 + last 2 with ellipsis: `R1 R2 R3 ... R9 R10*`.
 - Read-only mode for past rounds disables keys and shows a warning. No visual graying of the entire UI.
 - `list_eliminated_photos` returns a flat list. No grouping by "which round eliminated them" in the UI — just a label per photo.
 
@@ -164,34 +166,34 @@ A "Finalize stack" action marks the stack as done. Its survivors are locked unti
 
 ## Success criteria
 
-1. After committing Round 1, the user can make decisions in Round 2 which shows only Round 1 survivors
-2. Round 2 photo list does not include photos eliminated in Round 1
-3. Navigating to Round 1 (via `[` key or tab click) shows the original decisions in read-only mode
-4. Y/X/U keys are disabled when viewing a committed round; an inline warning is shown
-5. A photo kept in Round 1 can be eliminated in Round 2 without altering Round 1's snapshot
-6. Viewing Round 1 after a Round 2 override still shows the photo as "keep" in Round 1
-7. `get_round_status` returns correct counts scoped to round members (not all stack photos)
-8. `get_round_status` for Round 2 shows only survivor counts, not Round 1 eliminated photos
-9. ComparisonView passes `roundId` to `listLogicalPhotos` — only shows current round's photos
-10. SingleView passes `roundId` to `listLogicalPhotos` — arrow navigation stays within round members
-11. Pressing `E` in StackFocus toggles visibility of eliminated photos from prior rounds
-12. Eliminated photos appear dimmed with "Eliminated in Round N" labels
-13. Pressing `R` on a dimmed eliminated photo restores it to the current open round as undecided
-14. Restored photo appears in the StackFocus grid and is eligible for Y/X decisions
-15. `Ctrl+Shift+Enter` finalizes the stack; shows inline confirmation with survivor count
-16. Finalized stacks show a distinct badge in StackOverview (checkmark + "Finalized")
-17. Entering a finalized stack shows survivors in read-only mode with a "Reopen" option
-18. Reopening a finalized stack allows new decisions (new round auto-created on first Y/X)
-19. `list_rounds` returns all rounds for a stack with correct summary counts per round
-20. Round tab bar displays in StackFocus header; clicking a tab navigates to that round
-21. `[` and `]` keys cycle through rounds in StackFocus, SingleView, and ComparisonView
-22. Crash during Round 2 preserves all Round 2 decisions on restart (auto-save)
-23. `current_status` correctly derives from the latest decision in the current open round
-24. Undo in Round 2 correctly resets to undecided (not Round 1's decision)
-25. `cargo test` passes: round-scoped counts, multi-round progression, override logic, restoration, snapshot immutability, finalize/reopen state, undo across rounds
-26. `npm test` passes: round tab bar, read-only mode, show-eliminated toggle, restore action, finalize flow, round navigation keys
-27. Restoring a photo that is already a member of the current round is a no-op (not duplicated)
-28. Finalizing a stack with no rounds returns an error
+1. [Phase A] After committing Round 1, the user can make decisions in Round 2 which shows only Round 1 survivors
+2. [Phase A] Round 2 photo list does not include photos eliminated in Round 1
+3. [Phase A] Navigating to Round 1 (via `[` key or tab click) shows the original decisions in read-only mode
+4. [Phase A] Y/X/U keys are disabled when viewing a committed round; an inline warning is shown
+5. [Phase A] A photo kept in Round 1 can be eliminated in Round 2 without altering Round 1's snapshot
+6. [Phase A] Viewing Round 1 after a Round 2 override still shows the photo as "keep" in Round 1
+7. [Phase A] `get_round_status` returns correct counts scoped to round members (not all stack photos)
+8. [Phase A] `get_round_status` for Round 2 shows only survivor counts, not Round 1 eliminated photos
+9. [Phase A] ComparisonView passes `roundId` to `listLogicalPhotos` — only shows current round's photos
+10. [Phase A] SingleView passes `roundId` to `listLogicalPhotos` — arrow navigation stays within round members
+11. [Phase D — deferred] Pressing `E` in StackFocus toggles visibility of eliminated photos from prior rounds
+12. [Phase D — deferred] Eliminated photos appear dimmed with "Eliminated in Round N" labels
+13. [Phase D — deferred] Pressing `R` on a dimmed eliminated photo restores it to the current open round as undecided
+14. [Phase D — deferred] Restored photo appears in the StackFocus grid and is eligible for Y/X decisions
+15. [Phase D — deferred] `Ctrl+Shift+Enter` finalizes the stack; shows inline confirmation with survivor count
+16. [Phase D — deferred] Finalized stacks show a distinct badge in StackOverview (checkmark + "Finalized")
+17. [Phase D — deferred] Entering a finalized stack shows survivors in read-only mode with a "Reopen" option
+18. [Phase D — deferred] Reopening a finalized stack allows new decisions (new round auto-created on first Y/X)
+19. [Phase C] `list_rounds` returns all rounds for a stack with correct summary counts per round
+20. [Phase C] Round tab bar displays in StackFocus header; clicking a tab navigates to that round
+21. [Phase C] `[` and `]` keys cycle through rounds in StackFocus. SingleView and ComparisonView inherit round context.
+22. [Phase B] Crash during Round 2 preserves all Round 2 decisions on restart (auto-save)
+23. [Phase B] `current_status` correctly derives from the latest decision in the current open round
+24. [Phase B] Undo in Round 2 correctly resets to undecided (not Round 1's decision)
+25. [Phase B] `cargo test` passes: round-scoped counts, multi-round progression, override logic, undo across rounds
+26. [Phase B] `npm test` passes: round tab bar, read-only mode, round navigation keys
+27. [Phase D — deferred] Restoring a photo that is already a member of the current round is a no-op (not duplicated)
+28. [Phase D — deferred] Finalizing a stack with no rounds returns an error
 
 ---
 
@@ -246,7 +248,7 @@ Per `sprint-plan.md` cross-sprint standards:
 |------|---------|
 | `src-tauri/src/decisions/engine.rs` | Fix `get_round_status` to use `round_photos` instead of `logical_photos WHERE stack_id`. Fix `get_round_status_batch` similarly. Add `list_rounds()`, `get_round_snapshot()`, `restore_eliminated_photo()`, `list_eliminated_photos()`, `finalize_stack()`, `reopen_stack()`. |
 | `src-tauri/src/decisions/model.rs` | Add `RoundSummary` struct (for `list_rounds`), `RoundSnapshot` struct (photo list + decisions for a committed round), `EliminatedPhoto` struct (photo info + eliminated_in_round), `FinalizeResult` struct. Extend `RoundState` type if needed. |
-| `src-tauri/src/commands/decisions.rs` | Add 6 new command functions: `list_rounds`, `get_round_snapshot`, `restore_eliminated_photo`, `finalize_stack`, `reopen_stack`, `list_eliminated_photos`. Fix `make_decision` to find open round correctly (not reject after committed round). |
+| `src-tauri/src/commands/decisions.rs` | Add `get_round_decisions` command. Add 6 new command functions: `list_rounds`, `get_round_snapshot`, `restore_eliminated_photo`, `finalize_stack`, `reopen_stack`, `list_eliminated_photos`. Fix `make_decision` to find open round correctly (not reject after committed round). Deprecate `get_stack_decisions`. |
 | `src-tauri/src/db/migrations.rs` | Add migration: `ALTER TABLE stacks ADD COLUMN state TEXT NOT NULL DEFAULT 'active'` |
 | `src-tauri/src/lib.rs` | Register 6 new IPC commands |
 
@@ -254,10 +256,10 @@ Per `sprint-plan.md` cross-sprint standards:
 
 | File | Changes |
 |------|---------|
-| `src/lib/api/index.ts` | Add 6 new API functions + types (`RoundSummary`, `RoundSnapshot`, `EliminatedPhoto`, `FinalizeResult`). Add `RoundState` value `'finalized'` if needed. |
+| `src/lib/api/index.ts` | Add `getRoundDecisions` function. Add 6 new API functions + types (`RoundSummary`, `RoundSnapshot`, `EliminatedPhoto`, `FinalizeResult`). Add `RoundState` value `'finalized'` if needed. |
 | `src/lib/components/screens/StackFocus.svelte` | Round tab bar, `[`/`]` key handlers, show-eliminated toggle (`E`), restore key (`R`), finalize (`Ctrl+Shift+Enter`), read-only mode for committed rounds, "Reopen" action for finalized stacks |
-| `src/lib/components/screens/ComparisonView.svelte` | Pass `roundId` to `listLogicalPhotos` (BUG-12 fix). Round navigation keys. Read-only mode. |
-| `src/lib/components/screens/SingleView.svelte` | Pass `roundId` to `listLogicalPhotos` (BUG-13 fix). Round navigation keys. Read-only mode. |
+| `src/lib/components/screens/ComparisonView.svelte` | Pass `roundId` to `listLogicalPhotos` (BUG-12 fix). Read-only mode. Inherits round context from StackFocus. |
+| `src/lib/components/screens/SingleView.svelte` | Pass `roundId` to `listLogicalPhotos` (BUG-13 fix). Read-only mode. Inherits round context from StackFocus. |
 | `src/lib/components/screens/StackOverview.svelte` | Finalized badge on stack cards. |
 | `src/lib/components/RoundTabBar.svelte` | **NEW** — reusable round tab bar component (round numbers, active indicator, click handler, committed/open state) |
 | `src/lib/stores/navigation.svelte.ts` | Add `roundId` to `StackFocusScreen`, `SingleViewScreen`, `ComparisonViewScreen` types for round-aware navigation |
@@ -341,7 +343,7 @@ HAVING d.id = MAX(d.id)
 
 9. **StackFocus round navigation** — Integrate `RoundTabBar`, `[`/`]` key handlers, round-switching logic (re-fetch photos for selected round), read-only mode for committed rounds.
 
-10. **SingleView + ComparisonView round navigation** — Same `[`/`]` keys, read-only mode, round-aware photo lists.
+10. **SingleView + ComparisonView round context** — Inherit round context from StackFocus (no `[`/`]` keys), read-only mode, round-aware photo lists.
 
 11. **Navigation state update** — Add `roundId` to screen types in `navigation.svelte.ts`. All screen transitions preserve round context.
 

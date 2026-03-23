@@ -40,10 +40,10 @@
     if (projectSlug && stackId && photoId) {
       try {
         currentPhoto = await getPhotoDetail(projectSlug, photoId)
-        photoList = await listLogicalPhotos(projectSlug, stackId, currentRoundId || undefined)
-        decisions = await getStackDecisions(projectSlug, stackId)
         roundStatus = await getRoundStatus(projectSlug, stackId)
         if (roundStatus) currentRoundId = roundStatus.round_id
+        photoList = await listLogicalPhotos(projectSlug, stackId, currentRoundId || undefined)
+        decisions = await getStackDecisions(projectSlug, stackId)
         // Find current index in photo list
         const idx = photoList.findIndex(p => p.logical_photo_id === photoId)
         if (idx >= 0) currentIndex = idx

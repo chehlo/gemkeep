@@ -1,7 +1,6 @@
 <script lang="ts">
   import type { RoundSummary } from '$lib/api/index.js'
 
-  // Props — to be implemented in GREEN phase
   let {
     rounds = [],
     currentRoundId = 0,
@@ -13,4 +12,6 @@
   } = $props()
 </script>
 
-<!-- Stub: renders nothing yet — tests will fail because expected DOM elements are missing -->
+{#each rounds as round, i}
+  <button onclick={() => onClick(round.round_id)}>R{round.round_number}{#if round.round_id === currentRoundId}*{/if}</button>
+{/each}

@@ -74,7 +74,11 @@
         }
         try {
           roundStatus = await getRoundStatus(projectSlug, stackId)
-          if (roundStatus) currentRoundId = roundStatus.round_id
+          if (roundStatus) {
+            currentRoundId = roundStatus.round_id
+            // Re-fetch photos scoped to the correct round
+            photos = await listLogicalPhotos(projectSlug, stackId, currentRoundId)
+          }
         } catch (e) {
           console.error('getRoundStatus failed:', e)
         }

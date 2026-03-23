@@ -3,10 +3,11 @@
   import { navigation, navigate } from '$lib/stores/navigation.svelte.js'
   import {
     listLogicalPhotos, getThumbnailUrl, getStackDecisions, getRoundStatus,
-    makeDecision, commitRound, undoDecision, getPhotoDetail, listStacks,
-    type LogicalPhotoSummary, type PhotoDecisionStatus, type RoundStatus, type DecisionStatus
+    makeDecision, commitRound, undoDecision, getPhotoDetail, listStacks, listRounds,
+    type LogicalPhotoSummary, type PhotoDecisionStatus, type RoundStatus, type DecisionStatus, type RoundSummary
   } from '$lib/api/index.js'
   import PhotoFrame from '$lib/components/PhotoFrame.svelte'
+  import RoundTabBar from '$lib/components/RoundTabBar.svelte'
   import { updateDecisionState as _updateDecisionState, getDecisionStatus as _getDecisionStatus } from '$lib/utils/photos.js'
   import { createTimedError } from '$lib/utils/errors.js'
   import { createSelection, toggleSelect, extendSelection, clearSelection, getSelectedIds, type SelectionState } from '$lib/utils/selection.js'
@@ -29,6 +30,7 @@
   let roundStatus = $state<RoundStatus | null>(null)
   let currentRoundId = $state(0)
   let actionError = $state<string | null>(null)
+  let rounds = $state<RoundSummary[]>([])
   let roundError = $state<string | null>(null)
   const { show: showActionError, cleanup: cleanupErrorTimer } = createTimedError(3000, (v) => { actionError = v })
   let autoAdvance = $state(false)
@@ -42,6 +44,10 @@
 
   const decidedCount = $derived(
     decisions.filter(d => d.current_status !== 'undecided').length
+  )
+
+  const isCommittedRound = $derived(
+    roundStatus !== null && roundStatus.state === 'committed'
   )
 
   const stackComplete = $derived(
@@ -74,6 +80,11 @@
           decisions = await getStackDecisions(projectSlug, stackId)
         } catch (e) {
           console.error('getStackDecisions failed:', e)
+        }
+        try {
+          rounds = await listRounds(projectSlug, stackId)
+        } catch (e) {
+          console.error('listRounds failed:', e)
         }
       } catch (e) {
         console.error('listLogicalPhotos failed:', e)
@@ -221,7 +232,28 @@
       return
     }
 
+    if (e.key === '[' && currentRoundId > 1) {
+      currentRoundId = currentRoundId - 1
+      try {
+        photos = await listLogicalPhotos(projectSlug, stackId, currentRoundId)
+        decisions = await getStackDecisions(projectSlug, stackId)
+        roundStatus = await getRoundStatus(projectSlug, stackId)
+      } catch (err) { console.error('Round navigation failed:', err) }
+      return
+    }
+
+    if (e.key === ']') {
+      currentRoundId = currentRoundId + 1
+      try {
+        photos = await listLogicalPhotos(projectSlug, stackId, currentRoundId)
+        decisions = await getStackDecisions(projectSlug, stackId)
+        roundStatus = await getRoundStatus(projectSlug, stackId)
+      } catch (err) { console.error('Round navigation failed:', err) }
+      return
+    }
+
     if ((e.key === 'y' || e.key === 'Y') && photos.length > 0) {
+      if (isCommittedRound) return
       try {
         await makeDecision(projectSlug, photos[focusedIndex].logical_photo_id, 'keep')
         updateDecisionState(photos[focusedIndex].logical_photo_id, 'keep')
@@ -235,6 +267,7 @@
     }
 
     if ((e.key === 'x' || e.key === 'X') && photos.length > 0) {
+      if (isCommittedRound) return
       try {
         await makeDecision(projectSlug, photos[focusedIndex].logical_photo_id, 'eliminate')
         updateDecisionState(photos[focusedIndex].logical_photo_id, 'eliminate')
@@ -248,6 +281,7 @@
     }
 
     if ((e.key === 'u' || e.key === 'U') && photos.length > 0) {
+      if (isCommittedRound) return
       try {
         await undoDecision(projectSlug, photos[focusedIndex].logical_photo_id)
         updateDecisionState(photos[focusedIndex].logical_photo_id, 'undecided')
@@ -365,7 +399,7 @@
     {#if decisions?.length > 0}
       <span class="text-sm text-gray-400 ml-2">{decidedCount}/{photos.length} decided</span>
       {#if roundStatus}
-        <span class="text-sm text-gray-400 ml-1">&middot; {roundStatus.kept} kept &middot; {roundStatus.eliminated} eliminated &middot; {roundStatus.undecided} undecided &middot; Round {roundStatus.round_number}{#if roundStatus.state === 'committed'} (read-only){/if}</span>
+        <span class="text-sm text-gray-400 ml-1">&middot; {roundStatus.kept} kept &middot; {roundStatus.eliminated} eliminated &middot; {roundStatus.undecided} undecided &middot; Round {roundStatus.round_number}</span>
       {/if}
     {/if}
     {#if autoAdvance}
@@ -379,9 +413,50 @@
       <div class="text-sm text-red-400" data-testid="round-error">{roundError}</div>
     {:else if loading}
       <div class="text-sm text-gray-500 animate-pulse" data-testid="loading-indicator">Loading...</div>
+    {:else if isCommittedRound}
+      {#if rounds.length > 0}
+        <RoundTabBar {rounds} {currentRoundId} onClick={(roundId) => {
+          currentRoundId = roundId
+          getRoundStatus(projectSlug, stackId).then(rs => { roundStatus = rs })
+          listLogicalPhotos(projectSlug, stackId, roundId).then(p => { photos = p })
+          getStackDecisions(projectSlug, stackId).then(d => { decisions = d })
+        }} />
+      {/if}
+      <div class="text-sm text-yellow-400">Round {roundStatus?.round_number} is committed — read-only</div>
+      <div class="grid grid-cols-4 gap-3">
+        {#each photos as photo, i (photo.logical_photo_id)}
+          {@const status = getDecisionStatus(photo.logical_photo_id)}
+          {@const isSelected = selection.selected.has(photo.logical_photo_id)}
+          <div
+            data-testid="photo-card"
+            role="button"
+            tabindex="0"
+            onclick={() => { focusedIndex = i }}
+            onkeydown={(e) => { if (e.key === 'Enter') focusedIndex = i }}
+          >
+            <PhotoFrame
+              layout="card"
+              focused={i === focusedIndex}
+              selected={isSelected}
+              {photo}
+              {status}
+              imageUrl={photo.thumbnail_path ? getThumbnailUrl(photo.thumbnail_path) : null}
+              alt="Photo {i + 1} thumbnail"
+            />
+          </div>
+        {/each}
+      </div>
     {:else if photos.length === 0}
       <div class="text-sm text-gray-500">No photos in this stack.</div>
     {:else}
+      {#if rounds.length > 0}
+        <RoundTabBar {rounds} {currentRoundId} onClick={(roundId) => {
+          currentRoundId = roundId
+          getRoundStatus(projectSlug, stackId).then(rs => { roundStatus = rs })
+          listLogicalPhotos(projectSlug, stackId, roundId).then(p => { photos = p })
+          getStackDecisions(projectSlug, stackId).then(d => { decisions = d })
+        }} />
+      {/if}
       <!-- Photo grid -->
       <div class="grid grid-cols-4 gap-3">
         {#each photos as photo, i (photo.logical_photo_id)}

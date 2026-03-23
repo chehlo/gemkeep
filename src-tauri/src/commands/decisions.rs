@@ -1,6 +1,7 @@
 use crate::decisions::engine;
 use crate::decisions::model::{
-    DecisionAction, DecisionResult, PhotoDecisionStatus, PhotoDetail, RoundStatus,
+    DecisionAction, DecisionResult, PhotoDecisionStatus, PhotoDetail, PhotoSnapshot, RoundStatus,
+    RoundSummary,
 };
 use crate::projects::manager;
 use crate::state::AppState;
@@ -195,4 +196,31 @@ pub fn get_stack_decisions(
     results
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())
+}
+
+/// List all rounds for a stack with summary counts.
+#[tauri::command]
+pub fn list_rounds(
+    slug: String,
+    stack_id: i64,
+    state: State<'_, AppState>,
+) -> Result<Vec<RoundSummary>, String> {
+    let (db_guard, project_guard) = with_open_project(&state, &slug)?;
+    let conn = db_guard.as_ref().unwrap();
+    let project = project_guard.as_ref().unwrap();
+
+    engine::list_rounds(conn, project.id, stack_id).map_err(|e| e.to_string())
+}
+
+/// Get a snapshot of all photos in a specific round with their historical statuses.
+#[tauri::command]
+pub fn get_round_snapshot(
+    slug: String,
+    round_id: i64,
+    state: State<'_, AppState>,
+) -> Result<Vec<PhotoSnapshot>, String> {
+    let (db_guard, _project_guard) = with_open_project(&state, &slug)?;
+    let conn = db_guard.as_ref().unwrap();
+
+    engine::get_round_snapshot(conn, round_id).map_err(|e| e.to_string())
 }

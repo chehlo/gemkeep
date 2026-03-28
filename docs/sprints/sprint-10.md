@@ -13,13 +13,13 @@
 
 | Feature | Status |
 |---------|--------|
-| Phase A: Unified round-scoping — all APIs require roundId + undo guard | --- |
-| F1: Multi-round progression (Round 1 survivors become Round 2 members) | --- |
-| F2: Immutable round snapshots + round navigation | --- |
-| F3: Decision overrides in later rounds | --- |
-| F4: Restoration of eliminated photos | --- |
-| F5: Round navigation `[` `]` keys + round tab bar | --- |
-| F6: Finalize stack `Ctrl+Shift+Enter` | --- |
+| Phase A: Unified round-scoping — all APIs require roundId + undo guard | DONE |
+| F1: Multi-round progression (Round 1 survivors become Round 2 members) | DONE |
+| F2: Immutable round snapshots + round navigation | DONE |
+| F3: Decision overrides in later rounds | DONE |
+| F4: Restoration of eliminated photos | Phase D (pending) |
+| F5: Round navigation `[` `]` keys + round tab bar | DONE |
+| F6: Finalize stack `Ctrl+Shift+Enter` | Phase D (pending) |
 
 ---
 
@@ -37,13 +37,9 @@ Despite Sprint 9 defining roundId as mandatory in the TypeScript API, the Rust c
 
 **Fix:** Change Rust `round_id: Option<i64>` to `round_id: i64` (required). ComparisonView and SingleView must obtain roundId from `getRoundStatus` before calling. Remove the `query_logical_photos_by_stack` fallback path — always use `query_logical_photos_by_round`.
 
-#### 2. `get_stack_decisions` — has NO roundId parameter at all
+#### 2. ~~`get_stack_decisions`~~ → `get_round_decisions` — DONE
 
-This API reads `current_status` from the `logical_photos` table — a flat materialized cache that only reflects the LATEST decision across ALL rounds. For round 2+, this shows round-1 decisions mixed with round-2 decisions.
-
-**Fix:** Rename to `get_round_decisions(slug, stack_id, round_id)`. Query decisions for the specific round: derive status from `decisions WHERE round_id = ?` instead of reading `logical_photos.current_status`. The materialized `current_status` remains as a performance cache but is NOT the source of truth for per-round views.
-
-**Deprecation:** `get_stack_decisions` is deprecated. All callers should use `get_round_decisions(slug, stack_id, round_id)` instead.
+Replaced `get_stack_decisions` (which read the flat `current_status` cache) with `get_round_decisions(slug, stack_id, round_id)` that queries decisions for a specific round. The old command, API export, and all test references have been fully deleted — zero remaining references in the codebase.
 
 #### 3. `get_round_status` — counts from `logical_photos`, not `round_photos`
 
@@ -55,10 +51,9 @@ Queries `SELECT COUNT(*) FROM logical_photos WHERE stack_id` for total/kept/elim
 
 | Caller | Current | Fix |
 |--------|---------|-----|
-| ComparisonView.svelte (line 68) | `listLogicalPhotos(slug, stackId)` | Get roundId from getRoundStatus first |
-| SingleView.svelte (line 42) | `listLogicalPhotos(slug, stackId)` | Same — get roundId first |
-| ComparisonView.svelte (line 70) | `getStackDecisions(slug, stackId)` | Use new `getRoundDecisions(slug, stackId, roundId)` |
-| StackFocus.svelte (line 74) | `getStackDecisions(slug, stackId)` | Same |
+| ComparisonView.svelte | `listLogicalPhotos(slug, stackId)` | DONE — gets roundId from getRoundStatus first |
+| SingleView.svelte | `listLogicalPhotos(slug, stackId)` | DONE — same |
+| All components | `getStackDecisions(slug, stackId)` | DONE — replaced with `getRoundDecisions(slug, stackId, roundId)` everywhere |
 
 #### 4. `undo_merge` guard: only allowed in round 1
 

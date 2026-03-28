@@ -340,7 +340,7 @@ Duplicated helper functions and setup patterns across test files.
 
 **Effort:** SMALL
 **Dependencies:** None
-**Affected tests:** `test_ipc_get_round_status_json_shape`, `test_ipc_get_photo_detail_json_shape`, `test_ipc_get_stack_decisions_json_shape`, `test_ipc_commit_round_then_decision_rejected`, `test_ipc_make_decision_json_shape`
+**Affected tests:** `test_ipc_get_round_status_json_shape`, `test_ipc_get_photo_detail_json_shape`, `test_ipc_get_round_decisions_json_shape`, `test_ipc_commit_round_then_decision_rejected`, `test_ipc_make_decision_json_shape`
 
 ---
 
@@ -491,7 +491,7 @@ Mock dedup, factory extraction, setup consolidation for Vitest tests.
 
 **Files:** `src/lib/components/screens/StackFocus.test.ts`, `src/lib/components/screens/StackFocus.browser.test.ts`, `src/lib/components/screens/SingleView.test.ts`
 
-**Current:** Nearly identical mock setup for mounting StackFocus — mocks `list_logical_photos`, `get_round_status`, `get_stack_decisions`.
+**Current:** Nearly identical mock setup for mounting StackFocus — mocks `list_logical_photos`, `get_round_status`, `get_round_decisions`.
 
 **Fix:** Extract to shared helper module.
 

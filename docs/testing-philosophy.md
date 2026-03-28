@@ -854,12 +854,12 @@ only need one line added to the router defaults — zero test changes.
 ```typescript
 // BAD — fragile ordered queue, breaks when component adds new API calls
 mockInvoke.mockResolvedValueOnce(photos)    // hope this is list_logical_photos
-mockInvoke.mockResolvedValueOnce(decisions) // hope this is get_stack_decisions
+mockInvoke.mockResolvedValueOnce(decisions) // hope this is get_round_decisions
 
 // GOOD — name-based router, resilient to new API calls
 mockInvoke.mockImplementation(mockStackFocusRouter({
   list_logical_photos: [photos],
-  get_stack_decisions: [decisions],
+  get_round_decisions: [decisions],
 }))
 ```
 

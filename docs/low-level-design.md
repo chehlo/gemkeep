@@ -536,7 +536,7 @@ All return `Result<T, String>` at the IPC boundary.
 | `list_stacks` | `commands/import.rs:575` | Single JOIN query + readdir for thumbnails |
 | `list_logical_photos` | `commands/import.rs:614` | Photos in stack + thumbnail enrichment |
 | `get_photo_detail` | `commands/decisions.rs:171` | Full photo detail with camera params + file paths |
-| `get_stack_decisions` | `commands/decisions.rs:188` | Decision status for all LPs in a stack |
+| `get_round_decisions` | `commands/decisions.rs` | Decision status for all LPs in a round |
 
 ### Decisions
 

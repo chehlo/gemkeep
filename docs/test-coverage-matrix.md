@@ -213,7 +213,7 @@
 | SF-39 | scrollIntoView on arrow navigation | S3.2 | No | -- | none | pw | NOT-IMPLEMENTED |
 | SF-40 | Decision visuals via shared DecisionIndicator.svelte | S3.2 | No | -- | none | jsdom | NOT-IMPLEMENTED |
 | SF-41 | Decision re-decidable: Y/X overwrites decision | keyboard-map | Yes | -- | none | jsdom | UNTESTED |
-| SF-42 | Error handling: getStackDecisions/getRoundStatus fail | CLAUDE.md | Yes | -- | none | jsdom | UNTESTED |
+| SF-42 | Error handling: getRoundDecisions/getRoundStatus fail | CLAUDE.md | Yes | -- | none | jsdom | UNTESTED |
 | SF-43 | Error handling: makeDecision fails (Y/X key) | CLAUDE.md | Yes | -- | none | jsdom | UNTESTED |
 | SF-44 | Keyboard listener cleanup on component destroy | implicit | Yes | -- | none | jsdom | UNTESTED |
 | SF-45 | Full culling journey (E2E) | S3.1/S4.1 | Yes | Sprint 7-J3: Full culling flow... | pw | pw | TESTED-VISUAL |
@@ -369,7 +369,7 @@
 
 | ID | Screen | Behavior | Correct Tech |
 |----|--------|----------|--------------|
-| SF-42 | StackFocus | Error handling: getStackDecisions/getRoundStatus fail | jsdom |
+| SF-42 | StackFocus | Error handling: getRoundDecisions/getRoundStatus fail | jsdom |
 | SF-43 | StackFocus | Error handling: makeDecision fails (Y/X key) | jsdom |
 | SF-47 | StackFocus | No-op when photos empty for Y/X/Enter/arrows | jsdom |
 | PL-16 | ProjectList | Create form: error displayed on failure | jsdom |

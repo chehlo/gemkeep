@@ -313,6 +313,16 @@ pub fn get_round_decisions(
     rows.collect()
 }
 
+/// Look up the stack_id for a logical photo.
+/// Used by IPC commands to resolve stack context before calling engine functions.
+pub fn get_stack_id_for_photo(
+    _conn: &Connection,
+    _project_id: i64,
+    _logical_photo_id: i64,
+) -> rusqlite::Result<i64> {
+    todo!("get_stack_id_for_photo: extract inline SQL from commands/decisions.rs")
+}
+
 /// Undo the last decision for a logical photo in the current open round.
 /// Recomputes current_status from remaining decisions in the same round.
 pub fn undo_decision(
@@ -2125,6 +2135,34 @@ mod tests {
             err_msg.contains("round 1") || err_msg.contains("beyond"),
             "error message must mention round restriction, got: {}",
             err_msg
+        );
+    }
+
+    // ─── Sprint 10B: get_stack_id_for_photo (extracted from commands/decisions.rs) ───
+
+    #[test]
+    fn test_get_stack_id_for_photo() {
+        let (project, project_id, stack_id, lp_ids) = setup_test_db(2);
+        let conn = &project.conn;
+
+        let result = get_stack_id_for_photo(conn, project_id, lp_ids[0]);
+        assert!(result.is_ok(), "get_stack_id_for_photo should succeed for existing photo");
+        assert_eq!(
+            result.unwrap(),
+            stack_id,
+            "should return the correct stack_id for the logical photo"
+        );
+    }
+
+    #[test]
+    fn test_get_stack_id_for_photo_not_found() {
+        let (project, project_id, _stack_id, _lp_ids) = setup_test_db(1);
+        let conn = &project.conn;
+
+        let result = get_stack_id_for_photo(conn, project_id, 99999);
+        assert!(
+            result.is_err(),
+            "get_stack_id_for_photo should return error for non-existent photo"
         );
     }
 }

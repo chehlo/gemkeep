@@ -1938,3 +1938,47 @@ describe('StackFocus — Sprint 10 Phase C: multi-round navigation', () => {
     expect(screen.getByText(/read-only/i)).toBeInTheDocument()
   })
 })
+
+describe('StackFocus — Sprint 10B: getRoundDecisions replaces getStackDecisions', () => {
+  it('uses getRoundDecisions instead of getStackDecisions on mount', async () => {
+    const roundDecisions = [
+      { logical_photo_id: 1, current_status: 'keep' },
+      { logical_photo_id: 2, current_status: 'undecided' },
+      { logical_photo_id: 3, current_status: 'eliminate' },
+    ]
+    const roundStatus = {
+      round_id: 3, round_number: 2, state: 'open' as const,
+      total_photos: 3, decided: 2, kept: 1, eliminated: 1, undecided: 1, committed_at: null,
+    }
+
+    const calls: string[] = []
+    mockInvoke.mockImplementation(mockStackFocusRouter({
+      list_logical_photos: [mockPhotos],
+      get_round_decisions: [roundDecisions],
+      get_round_status: roundStatus,
+      get_stack_decisions: () => { throw new Error('getStackDecisions should not be called — use getRoundDecisions') },
+    }))
+    // Wrap to track command names
+    const originalImpl = mockInvoke.getMockImplementation()!
+    mockInvoke.mockImplementation((cmd: string, ...args: unknown[]) => {
+      calls.push(cmd)
+      return originalImpl(cmd, ...args)
+    })
+
+    render(StackFocus)
+
+    await waitFor(() => {
+      const cards = screen.getAllByTestId('photo-card')
+      expect(cards).toHaveLength(3)
+    })
+
+    // Assert: getRoundDecisions was called (with slug, stackId, roundId)
+    expect(calls).toContain('get_round_decisions')
+    // Assert: getStackDecisions was NOT called
+    expect(calls).not.toContain('get_stack_decisions')
+
+    // Verify the round-scoped decisions were applied (photo 1 = keep)
+    const cards = screen.getAllByTestId('photo-card')
+    expect(cards[0].querySelector(DECISION_SELECTORS.keep)).toBeInTheDocument()
+  })
+})

@@ -4,7 +4,7 @@ import { render, screen, waitFor, fireEvent } from '@testing-library/svelte'
 import { invoke, convertFileSrc } from '@tauri-apps/api/core'
 import { navigate, navigation } from '$lib/stores/navigation.svelte.js'
 import type { LogicalPhotoSummary } from '$lib/api/index.js'
-import { PHOTO_1, PHOTO_2, PHOTO_3, makeDecisionResult, makePhotoList, OPEN_ROUND, THREE_ROUND_LIST, ROUND_1_COMMITTED, ROUND_3_OPEN, makeRoundStatus } from '$test/fixtures'
+import { PHOTO_1, PHOTO_2, PHOTO_3, makeDecisionResult, makePhotoList, OPEN_ROUND, THREE_ROUND_LIST, ROUND_1_COMMITTED, ROUND_3_OPEN, makeRoundStatus, makeRoundSummary } from '$test/fixtures'
 import { mockStackFocusRouter } from '$test/helpers'
 import { DECISION_SELECTORS } from '$test/decision-helpers'
 import StackFocus from './StackFocus.svelte'
@@ -1980,5 +1980,157 @@ describe('StackFocus — Sprint 10B: getRoundDecisions replaces getStackDecision
     // Verify the round-scoped decisions were applied (photo 1 = keep)
     const cards = screen.getAllByTestId('photo-card')
     expect(cards[0].querySelector(DECISION_SELECTORS.keep)).toBeInTheDocument()
+  })
+})
+
+// ── Sprint 10 review: navigation bug fixes ───────────────────────────────────
+
+describe('StackFocus — Sprint 10 review: navigation bug fixes', () => {
+  const TWO_ROUND_LIST = [
+    makeRoundSummary({ round_id: 1, round_number: 1, state: 'committed', committed_at: '2024-01-15T12:00:00Z' }),
+    makeRoundSummary({ round_id: 2, round_number: 2, state: 'open' }),
+  ]
+
+  it('[ key calls getRoundDecisions with round_id from rounds list, not getStackDecisions', async () => {
+    // Start on round 2 (open), rounds list has [1 (committed), 2 (open)]
+    const calls: Array<{ cmd: string; args: unknown }> = []
+
+    mockInvoke.mockImplementation(mockStackFocusRouter({
+      list_logical_photos: [mockPhotos],
+      list_rounds: TWO_ROUND_LIST,
+      get_round_status: makeRoundStatus({
+        round_id: 2, round_number: 2, state: 'open',
+        total_photos: 3, decided: 0, kept: 0, eliminated: 0, undecided: 3,
+      }),
+      get_round_decisions: [[
+        { logical_photo_id: 1, current_status: 'undecided' },
+        { logical_photo_id: 2, current_status: 'undecided' },
+        { logical_photo_id: 3, current_status: 'undecided' },
+      ]],
+    }))
+
+    // Wrap to track all commands + args
+    const originalImpl = mockInvoke.getMockImplementation()!
+    mockInvoke.mockImplementation((cmd: string, ...args: unknown[]) => {
+      calls.push({ cmd, args: args[0] })
+      return originalImpl(cmd, ...args)
+    })
+
+    render(StackFocus)
+    await waitFor(() => screen.getAllByTestId('photo-card'))
+
+    // Clear mount calls, then press [
+    calls.length = 0
+    await fireEvent.keyDown(document, { key: '[' })
+
+    // Wait for navigation effects
+    await waitFor(() => {
+      const roundDecisionCalls = calls.filter(c => c.cmd === 'get_round_decisions')
+      expect(roundDecisionCalls.length).toBeGreaterThanOrEqual(1)
+    })
+
+    // Assert: get_round_decisions was called (not get_stack_decisions)
+    const roundDecisionCalls = calls.filter(c => c.cmd === 'get_round_decisions')
+    expect(roundDecisionCalls.length).toBeGreaterThanOrEqual(1)
+
+    // Assert: the call used round_id=1 from the rounds list, not arithmetic
+    const rdArgs = roundDecisionCalls[0].args as Record<string, unknown>
+    expect(rdArgs.roundId).toBe(1)
+
+    // Assert: get_stack_decisions was NOT called
+    const stackDecisionCalls = calls.filter(c => c.cmd === 'get_stack_decisions')
+    expect(stackDecisionCalls).toHaveLength(0)
+  })
+
+  it('] key on last round does not increment past it', async () => {
+    // Start on round 2 (the last/open round)
+    const calls: Array<{ cmd: string; args: unknown }> = []
+
+    mockInvoke.mockImplementation(mockStackFocusRouter({
+      list_logical_photos: [mockPhotos],
+      list_rounds: TWO_ROUND_LIST,
+      get_round_status: makeRoundStatus({
+        round_id: 2, round_number: 2, state: 'open',
+        total_photos: 3, decided: 0, kept: 0, eliminated: 0, undecided: 3,
+      }),
+    }))
+
+    // Wrap to track all commands + args
+    const originalImpl = mockInvoke.getMockImplementation()!
+    mockInvoke.mockImplementation((cmd: string, ...args: unknown[]) => {
+      calls.push({ cmd, args: args[0] })
+      return originalImpl(cmd, ...args)
+    })
+
+    render(StackFocus)
+    await waitFor(() => screen.getAllByTestId('photo-card'))
+
+    // Clear mount calls, then press ]
+    calls.length = 0
+    await fireEvent.keyDown(document, { key: ']' })
+
+    // Wait a tick for any async effects
+    await new Promise(r => setTimeout(r, 50))
+
+    // No get_round_decisions or get_stack_decisions should be called —
+    // pressing ] on the last round should be a no-op
+    const roundDecisionCalls = calls.filter(c => c.cmd === 'get_round_decisions')
+    const stackDecisionCalls = calls.filter(c => c.cmd === 'get_stack_decisions')
+    const listPhotoCalls = calls.filter(c => c.cmd === 'list_logical_photos')
+    expect(roundDecisionCalls).toHaveLength(0)
+    expect(stackDecisionCalls).toHaveLength(0)
+    expect(listPhotoCalls).toHaveLength(0)
+  })
+
+  it('RoundTabBar click calls getRoundDecisions with clicked round id', async () => {
+    // Mount with 2 rounds, currently on round 2
+    const calls: Array<{ cmd: string; args: unknown }> = []
+
+    mockInvoke.mockImplementation(mockStackFocusRouter({
+      list_logical_photos: [mockPhotos],
+      list_rounds: [TWO_ROUND_LIST],
+      get_round_status: makeRoundStatus({
+        round_id: 2, round_number: 2, state: 'open',
+        total_photos: 3, decided: 0, kept: 0, eliminated: 0, undecided: 3,
+      }),
+      get_round_decisions: [[
+        { logical_photo_id: 1, current_status: 'undecided' },
+        { logical_photo_id: 2, current_status: 'undecided' },
+        { logical_photo_id: 3, current_status: 'undecided' },
+      ]],
+    }))
+
+    // Wrap to track all commands + args
+    const originalImpl = mockInvoke.getMockImplementation()!
+    mockInvoke.mockImplementation((cmd: string, ...args: unknown[]) => {
+      calls.push({ cmd, args: args[0] })
+      return originalImpl(cmd, ...args)
+    })
+
+    render(StackFocus)
+    await waitFor(() => screen.getAllByTestId('photo-card'))
+
+    // Clear mount calls
+    calls.length = 0
+
+    // Click the tab for round 1 (R1 button in RoundTabBar)
+    const round1Tab = screen.getByText('R1')
+    await fireEvent.click(round1Tab)
+
+    // Wait for navigation effects
+    await waitFor(() => {
+      const roundDecisionCalls = calls.filter(c => c.cmd === 'get_round_decisions')
+      expect(roundDecisionCalls.length).toBeGreaterThanOrEqual(1)
+    })
+
+    // Assert: get_round_decisions was called with roundId=1
+    const roundDecisionCalls = calls.filter(c => c.cmd === 'get_round_decisions')
+    expect(roundDecisionCalls.length).toBeGreaterThanOrEqual(1)
+    const rdArgs = roundDecisionCalls[0].args as Record<string, unknown>
+    expect(rdArgs.roundId).toBe(1)
+
+    // Assert: get_stack_decisions was NOT called
+    const stackDecisionCalls = calls.filter(c => c.cmd === 'get_stack_decisions')
+    expect(stackDecisionCalls).toHaveLength(0)
   })
 })

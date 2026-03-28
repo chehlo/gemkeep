@@ -58,6 +58,7 @@ mod tests {
                 commit_round,
                 get_photo_detail,
                 get_stack_decisions,
+                get_round_decisions,
             ])
             .build(mock_context(noop_assets()))
             .unwrap()
@@ -906,6 +907,74 @@ mod tests {
         assert!(
             !arr.is_empty(),
             "get_stack_decisions must return at least 1 entry for a stack with photos"
+        );
+
+        // Verify shape of each entry matches PhotoDecisionStatus
+        for entry in arr {
+            assert!(
+                entry["logical_photo_id"].is_number(),
+                "logical_photo_id must be a number"
+            );
+            assert!(
+                entry["current_status"].is_string(),
+                "current_status must be a string"
+            );
+        }
+    }
+
+    #[test]
+    fn test_ipc_get_round_decisions_json_shape() {
+        // Contract test — verify get_round_decisions returns JSON
+        // matching the TypeScript PhotoDecisionStatus[] interface.
+        let (_tmp, _app, wv, stack_id, lp_ids) = setup_ipc_with_photos(3);
+
+        // Make a decision first (auto-creates Round 1) so there's data to query
+        let decision_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req(
+                "make_decision",
+                serde_json::json!({
+                    "slug": "test",
+                    "logicalPhotoId": lp_ids[0],
+                    "action": "keep"
+                }),
+            ),
+        );
+        assert!(
+            decision_result.is_ok(),
+            "make_decision must succeed: {:?}",
+            decision_result
+        );
+        let decision_val: serde_json::Value = decision_result.unwrap().deserialize().unwrap();
+        let round_id = decision_val["round_id"].as_i64().expect("round_id must be a number");
+
+        // Call get_round_decisions
+        let result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req(
+                "get_round_decisions",
+                serde_json::json!({
+                    "slug": "test",
+                    "stackId": stack_id,
+                    "roundId": round_id
+                }),
+            ),
+        );
+        assert!(
+            result.is_ok(),
+            "get_round_decisions must succeed: {:?}",
+            result
+        );
+        let val: serde_json::Value = result.unwrap().deserialize().unwrap();
+
+        // Must be an array
+        let arr = val
+            .as_array()
+            .expect("get_round_decisions must return an array");
+        assert_eq!(
+            arr.len(),
+            lp_ids.len(),
+            "get_round_decisions must return one entry per photo in the round"
         );
 
         // Verify shape of each entry matches PhotoDecisionStatus

@@ -4,7 +4,7 @@ import { render, screen, waitFor, fireEvent } from '@testing-library/svelte'
 import { invoke, convertFileSrc } from '@tauri-apps/api/core'
 import { navigate, navigation } from '$lib/stores/navigation.svelte.js'
 import type { PhotoDetail, RoundStatus, LogicalPhotoSummary, PhotoDecisionStatus } from '$lib/api/index.js'
-import { OPEN_ROUND, makeRoundStatus, makeDecisionResult, makeDecisionStatus, makePhotoDetail, PHOTO_DETAIL, SINGLE_VIEW_PHOTO_LIST } from '$test/fixtures'
+import { OPEN_ROUND, ROUND_2_PHOTOS, makeRoundStatus, makeDecisionResult, makeDecisionStatus, makePhotoDetail, PHOTO_DETAIL, SINGLE_VIEW_PHOTO_LIST } from '$test/fixtures'
 import { mockSingleViewRouter } from '$test/helpers'
 import { ELIMINATE_BORDER_SELECTOR, DIM_OVERLAY_SELECTOR } from '$test/decision-helpers'
 import SingleView from './SingleView.svelte'
@@ -947,17 +947,34 @@ describe('SingleView — back navigation', () => {
   })
 })
 
-// ── Sprint 10 Phase C: roundId passed to listLogicalPhotos ──────────────────
+// ── Sprint 10 Phase C: round-scoped photo display ────────────────────────────
 
 describe('SingleView — Sprint 10 Phase C: roundId scoping', () => {
-  it('passes currentRoundId to listLogicalPhotos after round status is known', async () => {
+  it('displays round-scoped photo when round 2 is active', async () => {
     const ROUND_2 = makeRoundStatus({
       round_id: 2, round_number: 2, state: 'open',
-      total_photos: 3, decided: 0, kept: 0, eliminated: 0, undecided: 3,
+      total_photos: 2, decided: 0, kept: 0, eliminated: 0, undecided: 2,
     })
+    const ROUND_2_DECISIONS = [
+      { logical_photo_id: 10, current_status: 'undecided' as const },
+      { logical_photo_id: 11, current_status: 'undecided' as const },
+    ]
+
+    // Navigate to photo 10 (a round-2 photo)
+    navigate({ kind: 'single-view', projectSlug: 'test-project', projectName: 'Test', stackId: 1, photoId: 10 })
 
     mockInvoke.mockImplementation(mockSingleViewRouter({
       get_round_status: ROUND_2,
+      get_photo_detail: makePhotoDetail({
+        logical_photo_id: 10,
+        thumbnail_path: '/cache/round2_10.jpg',
+        jpeg_path: '/photos/round2_10.jpg',
+      }),
+      list_logical_photos: (_cmd: unknown, args: unknown) => {
+        const { roundId } = args as { roundId?: number }
+        return roundId === 2 ? ROUND_2_PHOTOS : SINGLE_VIEW_PHOTO_LIST
+      },
+      get_round_decisions: ROUND_2_DECISIONS,
     }))
 
     render(SingleView)
@@ -966,12 +983,8 @@ describe('SingleView — Sprint 10 Phase C: roundId scoping', () => {
       screen.getByRole('img')
     })
 
-    // Verify that list_logical_photos was called with roundId=2 at some point
-    const listCalls = mockInvoke.mock.calls.filter(c => c[0] === 'list_logical_photos')
-    const callsWithRound2 = listCalls.filter(c => {
-      const args = c[1] as Record<string, unknown>
-      return args.roundId === 2
-    })
-    expect(callsWithRound2.length).toBeGreaterThanOrEqual(1)
+    // The displayed image should be the round-2 photo, not a round-1 photo
+    const img = screen.getByRole('img')
+    expect(img.getAttribute('src')).toContain('round2_10')
   })
 })

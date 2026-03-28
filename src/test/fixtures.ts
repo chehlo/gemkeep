@@ -120,6 +120,12 @@ export function makePhotoList(count: number): LogicalPhotoSummary[] {
   )
 }
 
+/** Photos with IDs 10, 11 — distinct from default PHOTO_1/2/3 for round-scoping tests. */
+export const ROUND_2_PHOTOS: LogicalPhotoSummary[] = [
+  makePhoto({ logical_photo_id: 10, thumbnail_path: '/cache/round2_10.jpg', capture_time: '2024-01-15T14:00:00Z' }),
+  makePhoto({ logical_photo_id: 11, thumbnail_path: '/cache/round2_11.jpg', capture_time: '2024-01-15T14:01:00Z' }),
+]
+
 // ─── RoundStatus fixtures + factory ─────────────────────────────────────────
 
 export const OPEN_ROUND: RoundStatus = {

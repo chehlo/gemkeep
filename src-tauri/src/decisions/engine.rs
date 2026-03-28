@@ -2172,4 +2172,116 @@ mod tests {
             "get_stack_id_for_photo should return error for non-existent photo"
         );
     }
+
+    #[test]
+    fn test_s10_crash_recovery_round2_decisions_persist_after_reconnect() {
+        // Crash recovery: Round 2 decisions survive connection drop + reconnect.
+        // Uses a file-based DB (not in-memory) so we can reopen after drop.
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().expect("cannot create temp dir");
+        let db_path = tmp.path().join("test.db");
+
+        // Record IDs we need after the connection is dropped
+        let (project_id, stack_id, lp_ids, round2_id, decisions_before);
+
+        {
+            // -- First connection: set up schema, data, and make Round 2 decisions --
+            let conn = Connection::open(&db_path).unwrap();
+            crate::db::run_migrations(&conn).unwrap();
+
+            // Create project, stack, and 3 logical photos (mirrors setup_test_db)
+            conn.execute(
+                "INSERT INTO projects (name, slug, created_at) VALUES ('crash-test', 'crash-test', '2024-01-01T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+            project_id = conn.last_insert_rowid();
+
+            let now = chrono::Utc::now().to_rfc3339();
+            conn.execute(
+                "INSERT INTO stacks (project_id, created_at) VALUES (?1, ?2)",
+                params![project_id, now],
+            )
+            .unwrap();
+            stack_id = conn.last_insert_rowid();
+
+            let mut ids = Vec::new();
+            for _ in 0..3 {
+                conn.execute(
+                    "INSERT INTO logical_photos (project_id, stack_id, current_status) VALUES (?1, ?2, 'undecided')",
+                    params![project_id, stack_id],
+                )
+                .unwrap();
+                ids.push(conn.last_insert_rowid());
+            }
+            lp_ids = ids;
+
+            // Round 1: keep photo 0, eliminate photo 1, keep photo 2
+            let (round1_id, _) = find_or_create_round(&conn, project_id, stack_id).unwrap();
+            record_decision(&conn, lp_ids[0], round1_id, &DecisionAction::Keep).unwrap();
+            record_decision(&conn, lp_ids[1], round1_id, &DecisionAction::Eliminate).unwrap();
+            record_decision(&conn, lp_ids[2], round1_id, &DecisionAction::Keep).unwrap();
+
+            // Commit Round 1 -> creates Round 2 with survivors (photos 0 and 2)
+            commit_round(&conn, round1_id).unwrap();
+
+            // Find Round 2
+            let rounds = list_rounds(&conn, project_id, stack_id).unwrap();
+            round2_id = rounds
+                .iter()
+                .find(|r| r.round_number == 2)
+                .expect("Round 2 must exist after commit")
+                .round_id;
+
+            // Make a decision in Round 2: eliminate photo 0
+            record_decision(&conn, lp_ids[0], round2_id, &DecisionAction::Eliminate).unwrap();
+
+            // Snapshot Round 2 decisions before "crash"
+            let mut before = get_round_decisions(&conn, stack_id, round2_id).unwrap();
+            before.sort_by_key(|d| d.logical_photo_id);
+            decisions_before = before;
+
+            assert_eq!(decisions_before.len(), 2, "Round 2 should have 2 survivors");
+        }
+        // Connection is now dropped — simulates a crash
+
+        // -- Second connection: reopen the same DB file --
+        let conn2 = Connection::open(&db_path).unwrap();
+
+        // Verify Round 2 decisions survived the "crash"
+        let mut decisions_after = get_round_decisions(&conn2, stack_id, round2_id).unwrap();
+        decisions_after.sort_by_key(|d| d.logical_photo_id);
+
+        assert_eq!(
+            decisions_after.len(),
+            decisions_before.len(),
+            "Round 2 decision count must match after reconnect"
+        );
+
+        for (before, after) in decisions_before.iter().zip(decisions_after.iter()) {
+            assert_eq!(
+                before.logical_photo_id, after.logical_photo_id,
+                "logical_photo_id must match after reconnect"
+            );
+            assert_eq!(
+                before.current_status, after.current_status,
+                "decision status for photo {} must survive crash",
+                before.logical_photo_id
+            );
+        }
+
+        // Verify specific values: photo 0 = eliminate, photo 2 = undecided
+        let photo0_status = decisions_after
+            .iter()
+            .find(|d| d.logical_photo_id == lp_ids[0])
+            .expect("photo 0 must be in round 2");
+        assert_eq!(photo0_status.current_status, "eliminate");
+
+        let photo2_status = decisions_after
+            .iter()
+            .find(|d| d.logical_photo_id == lp_ids[2])
+            .expect("photo 2 must be in round 2");
+        assert_eq!(photo2_status.current_status, "undecided");
+    }
 }

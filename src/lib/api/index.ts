@@ -249,6 +249,10 @@ export async function getStackDecisions(slug: string, stackId: number): Promise<
   return invoke('get_stack_decisions', { slug, stackId })
 }
 
+export async function getRoundDecisions(slug: string, stackId: number, roundId: number): Promise<PhotoDecisionStatus[]> {
+  return invoke('get_round_decisions', { slug, stackId, roundId })
+}
+
 // Sprint 7: Stack merge commands
 export async function mergeStacks(slug: string, stackIds: number[]): Promise<MergeResult> {
   return invoke('merge_stacks', { slug, stackIds })

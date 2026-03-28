@@ -166,6 +166,21 @@ pub fn get_photo_detail(
     engine::get_photo_detail(conn, logical_photo_id, &cache_dir).map_err(|e| e.to_string())
 }
 
+/// Get round-scoped decisions for all photos in a specific round.
+/// Derives status from the decisions table per round, not from the materialized cache.
+#[tauri::command]
+pub fn get_round_decisions(
+    slug: String,
+    stack_id: i64,
+    round_id: i64,
+    state: State<'_, AppState>,
+) -> Result<Vec<PhotoDecisionStatus>, String> {
+    let (db_guard, _project_guard) = with_open_project(&state, &slug)?;
+    let conn = db_guard.as_ref().unwrap();
+
+    engine::get_round_decisions(conn, stack_id, round_id).map_err(|e| e.to_string())
+}
+
 /// Get decisions for all logical photos in a stack (for the current round).
 #[tauri::command]
 pub fn get_stack_decisions(

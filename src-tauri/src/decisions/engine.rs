@@ -316,11 +316,15 @@ pub fn get_round_decisions(
 /// Look up the stack_id for a logical photo.
 /// Used by IPC commands to resolve stack context before calling engine functions.
 pub fn get_stack_id_for_photo(
-    _conn: &Connection,
+    conn: &Connection,
     _project_id: i64,
-    _logical_photo_id: i64,
+    logical_photo_id: i64,
 ) -> rusqlite::Result<i64> {
-    todo!("get_stack_id_for_photo: extract inline SQL from commands/decisions.rs")
+    conn.query_row(
+        "SELECT stack_id FROM logical_photos WHERE id = ?1",
+        params![logical_photo_id],
+        |row| row.get(0),
+    )
 }
 
 /// Undo the last decision for a logical photo in the current open round.
@@ -2146,7 +2150,10 @@ mod tests {
         let conn = &project.conn;
 
         let result = get_stack_id_for_photo(conn, project_id, lp_ids[0]);
-        assert!(result.is_ok(), "get_stack_id_for_photo should succeed for existing photo");
+        assert!(
+            result.is_ok(),
+            "get_stack_id_for_photo should succeed for existing photo"
+        );
         assert_eq!(
             result.unwrap(),
             stack_id,

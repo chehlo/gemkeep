@@ -223,9 +223,15 @@ export function mockStackOverviewRouter(overrides?: Record<string, MockRouterVal
  * make_decision, undo_decision, commit_round, get_photo_detail, list_stacks
  */
 export function mockStackFocusRouter(overrides?: Record<string, MockRouterValue>): (cmd: string, ...args: unknown[]) => Promise<unknown> {
+  // When get_stack_decisions is overridden but get_round_decisions is not,
+  // cascade the override so callers using either API get the same data.
+  const roundDecisions = overrides?.get_round_decisions
+    ?? overrides?.get_stack_decisions
+    ?? [UNDECIDED_DECISIONS]
   return createMockRouter({
     list_logical_photos: [[]],
     get_stack_decisions: [UNDECIDED_DECISIONS],
+    get_round_decisions: roundDecisions,
     get_round_status: OPEN_ROUND,
     make_decision: undefined,
     undo_decision: undefined,

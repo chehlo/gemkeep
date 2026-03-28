@@ -2,7 +2,7 @@
   import { onMount, onDestroy, tick } from 'svelte'
   import { navigation, navigate } from '$lib/stores/navigation.svelte.js'
   import {
-    listLogicalPhotos, getThumbnailUrl, getStackDecisions, getRoundStatus,
+    listLogicalPhotos, getThumbnailUrl, getStackDecisions, getRoundDecisions, getRoundStatus,
     makeDecision, commitRound, undoDecision, getPhotoDetail, listStacks, listRounds,
     type LogicalPhotoSummary, type PhotoDecisionStatus, type RoundStatus, type DecisionStatus, type RoundSummary
   } from '$lib/api/index.js'
@@ -77,9 +77,9 @@
         }
         photos = await listLogicalPhotos(projectSlug, stackId, currentRoundId)
         try {
-          decisions = await getStackDecisions(projectSlug, stackId)
+          decisions = await getRoundDecisions(projectSlug, stackId, currentRoundId)
         } catch (e) {
-          console.error('getStackDecisions failed:', e)
+          console.error('getRoundDecisions failed:', e)
         }
         try {
           rounds = await listRounds(projectSlug, stackId)
@@ -114,14 +114,16 @@
       // Re-fetch everything for the new round
       try {
         // Concurrent fetch: list uses old roundId; getRoundStatus provides new roundId
-        const [, newDecisions, newRoundStatus] = await Promise.all([
+        const [, newRoundStatus] = await Promise.all([
           listLogicalPhotos(projectSlug, stackId, currentRoundId),
-          getStackDecisions(projectSlug, stackId),
           getRoundStatus(projectSlug, stackId),
         ])
-        // Update roundId and re-fetch photos scoped to the new round
+        // Update roundId and re-fetch photos + decisions scoped to the new round
         currentRoundId = newRoundStatus.round_id
-        const newPhotos = await listLogicalPhotos(projectSlug, stackId, currentRoundId)
+        const [newPhotos, newDecisions] = await Promise.all([
+          listLogicalPhotos(projectSlug, stackId, currentRoundId),
+          getRoundDecisions(projectSlug, stackId, currentRoundId),
+        ])
         photos = newPhotos
         decisions = newDecisions
         roundStatus = newRoundStatus

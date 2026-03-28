@@ -23,7 +23,7 @@ function mockComparisonMount(
   roundStatus = OPEN_ROUND,
 ) {
   mockInvoke.mockResolvedValueOnce(photos)       // list_logical_photos
-  mockInvoke.mockResolvedValueOnce(decisions)     // get_stack_decisions
+  mockInvoke.mockResolvedValueOnce(decisions)     // get_round_decisions
   mockInvoke.mockResolvedValueOnce(roundStatus)   // get_round_status
 }
 
@@ -563,12 +563,12 @@ describe('ComparisonView — Sprint 10 Phase C: roundId scoping', () => {
       total_photos: 3, decided: 0, kept: 0, eliminated: 0, undecided: 3,
     })
 
-    // ComparisonView mount: list_logical_photos, get_stack_decisions, get_round_status
+    // ComparisonView mount: list_logical_photos, get_round_decisions, get_round_status
     // After getRoundStatus sets currentRoundId=2, a re-fetch of list_logical_photos
     // should pass roundId=2
     resetInvokeMock()
     mockInvoke.mockResolvedValueOnce(mockPhotos)         // list_logical_photos (initial, roundId=0/undefined)
-    mockInvoke.mockResolvedValueOnce(UNDECIDED_DECISIONS) // get_stack_decisions
+    mockInvoke.mockResolvedValueOnce(UNDECIDED_DECISIONS) // get_round_decisions
     mockInvoke.mockResolvedValueOnce(ROUND_2)             // get_round_status
 
     render(ComparisonView)

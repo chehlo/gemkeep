@@ -57,7 +57,6 @@ mod tests {
                 get_round_status,
                 commit_round,
                 get_photo_detail,
-                get_stack_decisions,
                 get_round_decisions,
             ])
             .build(mock_context(noop_assets()))
@@ -880,49 +879,6 @@ mod tests {
     }
 
     #[test]
-    fn test_ipc_get_stack_decisions_json_shape() {
-        // Sprint 7 §16.5: Contract test — verify get_stack_decisions returns JSON
-        // matching the TypeScript PhotoDecisionStatus[] interface.
-        let (_tmp, _app, wv, stack_id, _lp_ids) = setup_ipc_with_photos(3);
-
-        // Call get_stack_decisions
-        let result = tauri::test::get_ipc_response(
-            &wv,
-            invoke_req(
-                "get_stack_decisions",
-                serde_json::json!({ "slug": "test", "stackId": stack_id }),
-            ),
-        );
-        assert!(
-            result.is_ok(),
-            "get_stack_decisions must succeed: {:?}",
-            result
-        );
-        let val: serde_json::Value = result.unwrap().deserialize().unwrap();
-
-        // Must be an array
-        let arr = val
-            .as_array()
-            .expect("get_stack_decisions must return an array");
-        assert!(
-            !arr.is_empty(),
-            "get_stack_decisions must return at least 1 entry for a stack with photos"
-        );
-
-        // Verify shape of each entry matches PhotoDecisionStatus
-        for entry in arr {
-            assert!(
-                entry["logical_photo_id"].is_number(),
-                "logical_photo_id must be a number"
-            );
-            assert!(
-                entry["current_status"].is_string(),
-                "current_status must be a string"
-            );
-        }
-    }
-
-    #[test]
     fn test_ipc_get_round_decisions_json_shape() {
         // Contract test — verify get_round_decisions returns JSON
         // matching the TypeScript PhotoDecisionStatus[] interface.
@@ -946,7 +902,9 @@ mod tests {
             decision_result
         );
         let decision_val: serde_json::Value = decision_result.unwrap().deserialize().unwrap();
-        let round_id = decision_val["round_id"].as_i64().expect("round_id must be a number");
+        let round_id = decision_val["round_id"]
+            .as_i64()
+            .expect("round_id must be a number");
 
         // Call get_round_decisions
         let result = tauri::test::get_ipc_response(

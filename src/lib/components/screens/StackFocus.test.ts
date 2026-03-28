@@ -122,7 +122,7 @@ describe('StackFocus — Sprint 7: decision badges', () => {
   it('kept photo has decision-keep indicator element', async () => {
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
-      get_stack_decisions: [[
+      get_round_decisions: [[
         { logical_photo_id: 1, current_status: 'keep' },
         { logical_photo_id: 2, current_status: 'eliminate' },
         { logical_photo_id: 3, current_status: 'undecided' },
@@ -144,7 +144,7 @@ describe('StackFocus — Sprint 7: decision badges', () => {
   it('V2: keep indicator has border-green-500 class on container', async () => {
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
-      get_stack_decisions: [[
+      get_round_decisions: [[
         { logical_photo_id: 1, current_status: 'keep' },
         { logical_photo_id: 2, current_status: 'undecided' },
         { logical_photo_id: 3, current_status: 'undecided' },
@@ -169,7 +169,7 @@ describe('StackFocus — Sprint 7: decision badges', () => {
   it('V2: eliminate indicator has border-red-500 class on container', async () => {
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
-      get_stack_decisions: [[
+      get_round_decisions: [[
         { logical_photo_id: 1, current_status: 'eliminate' },
         { logical_photo_id: 2, current_status: 'undecided' },
         { logical_photo_id: 3, current_status: 'undecided' },
@@ -195,7 +195,7 @@ describe('StackFocus — Sprint 7: decision badges', () => {
   it('eliminated photo has decision-eliminate indicator element', async () => {
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
-      get_stack_decisions: [[
+      get_round_decisions: [[
         { logical_photo_id: 1, current_status: 'undecided' },
         { logical_photo_id: 2, current_status: 'eliminate' },
         { logical_photo_id: 3, current_status: 'undecided' },
@@ -217,7 +217,7 @@ describe('StackFocus — Sprint 7: decision badges', () => {
   it('displays progress counter "decided/total"', async () => {
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
-      get_stack_decisions: [[
+      get_round_decisions: [[
         { logical_photo_id: 1, current_status: 'keep' },
         { logical_photo_id: 2, current_status: 'eliminate' },
         { logical_photo_id: 3, current_status: 'undecided' },
@@ -272,7 +272,7 @@ describe('StackFocus — Sprint 7: decision badges', () => {
   it('Ctrl+Enter commits the round', async () => {
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
-      get_stack_decisions: [[
+      get_round_decisions: [[
         { logical_photo_id: 1, current_status: 'keep' },
         { logical_photo_id: 2, current_status: 'keep' },
         { logical_photo_id: 3, current_status: 'eliminate' },
@@ -317,7 +317,7 @@ describe('StackFocus — Sprint 7: decision badges', () => {
   it('eliminated photo has decision-eliminate badge element', async () => {
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
-      get_stack_decisions: [[
+      get_round_decisions: [[
         { logical_photo_id: 1, current_status: 'undecided' },
         { logical_photo_id: 2, current_status: 'eliminate' },
         { logical_photo_id: 3, current_status: 'undecided' },
@@ -356,7 +356,7 @@ describe('StackFocus — Sprint 7: decision badges', () => {
 
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [photos4],
-      get_stack_decisions: [[
+      get_round_decisions: [[
         { logical_photo_id: 1, current_status: 'keep' },
         { logical_photo_id: 2, current_status: 'undecided' },
         { logical_photo_id: 3, current_status: 'eliminate' },
@@ -399,7 +399,7 @@ describe('StackFocus — Sprint 7: decision badges', () => {
 
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [photos4],
-      get_stack_decisions: [[
+      get_round_decisions: [[
         { logical_photo_id: 1, current_status: 'keep' },
         { logical_photo_id: 2, current_status: 'undecided' },
         { logical_photo_id: 3, current_status: 'eliminate' },
@@ -445,7 +445,7 @@ describe('StackFocus — Sprint 7: decision badges', () => {
 
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [photos12],
-      get_stack_decisions: [
+      get_round_decisions: [
         photos12.map((p, i) => ({
           logical_photo_id: p.logical_photo_id,
           current_status: i < 3 ? 'keep' : i < 5 ? 'eliminate' : 'undecided',
@@ -478,7 +478,7 @@ describe('StackFocus — U-KEY: undo decision via U key', () => {
   it('U key calls undo_decision for the focused photo', async () => {
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
-      get_stack_decisions: [[
+      get_round_decisions: [[
         { logical_photo_id: 1, current_status: 'keep' },
         { logical_photo_id: 2, current_status: 'undecided' },
         { logical_photo_id: 3, current_status: 'undecided' },
@@ -614,7 +614,7 @@ describe('StackFocus — K2: hjkl vim navigation', () => {
 
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [photos8],
-      get_stack_decisions: [[]],
+      get_round_decisions: [[]],
       get_round_status: { round_id: 1, round_number: 1, state: 'open', total_photos: 0, decided: 0, kept: 0, eliminated: 0, undecided: 0, committed_at: null },
     }))
 
@@ -646,7 +646,7 @@ describe('StackFocus — K2: hjkl vim navigation', () => {
 
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [photos8],
-      get_stack_decisions: [[]],
+      get_round_decisions: [[]],
       get_round_status: { round_id: 1, round_number: 1, state: 'open', total_photos: 0, decided: 0, kept: 0, eliminated: 0, undecided: 0, committed_at: null },
     }))
 
@@ -898,7 +898,7 @@ describe('StackFocus — C key comparison mode', () => {
   it('C key shows error when < 2 undecided photos', async () => {
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
-      get_stack_decisions: [[
+      get_round_decisions: [[
         { logical_photo_id: 1, current_status: 'keep' },
         { logical_photo_id: 2, current_status: 'keep' },
         { logical_photo_id: 3, current_status: 'undecided' },
@@ -926,7 +926,7 @@ describe('StackFocus — C key comparison mode', () => {
   it('C key with 1-photo stack shows error', async () => {
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [[PHOTO_1]],
-      get_stack_decisions: [[
+      get_round_decisions: [[
         { logical_photo_id: 1, current_status: 'undecided' },
       ]],
       get_round_status: { ...OPEN_ROUND, total_photos: 1, undecided: 1 },
@@ -1008,7 +1008,7 @@ describe('StackFocus — auto-advance', () => {
   it('auto-advance OFF: Y key decides but ring-blue-500 class stays on same card', async () => {
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
-      get_stack_decisions: [[
+      get_round_decisions: [[
         { logical_photo_id: 1, current_status: 'undecided' },
         { logical_photo_id: 2, current_status: 'undecided' },
         { logical_photo_id: 3, current_status: 'undecided' },
@@ -1038,7 +1038,7 @@ describe('StackFocus — auto-advance', () => {
   it('auto-advance ON: Y key decides and moves ring-blue-500 class to next undecided', async () => {
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
-      get_stack_decisions: [[
+      get_round_decisions: [[
         { logical_photo_id: 1, current_status: 'undecided' },
         { logical_photo_id: 2, current_status: 'undecided' },
         { logical_photo_id: 3, current_status: 'undecided' },
@@ -1153,7 +1153,7 @@ describe('StackFocus — commit hides eliminated photos', () => {
 
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos, survivorPhotos],
-      get_stack_decisions: [
+      get_round_decisions: [
         [
           { logical_photo_id: 1, current_status: 'keep' },
           { logical_photo_id: 2, current_status: 'eliminate' },
@@ -1190,7 +1190,7 @@ describe('StackFocus — commit hides eliminated photos', () => {
 
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos, survivorPhotos],
-      get_stack_decisions: [
+      get_round_decisions: [
         [
           { logical_photo_id: 1, current_status: 'keep' },
           { logical_photo_id: 2, current_status: 'eliminate' },
@@ -1233,7 +1233,7 @@ describe('StackFocus — commit hides eliminated photos', () => {
   it('Ctrl+Enter with all eliminated shows empty message', async () => {
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos, []],
-      get_stack_decisions: [
+      get_round_decisions: [
         [
           { logical_photo_id: 1, current_status: 'eliminate' },
           { logical_photo_id: 2, current_status: 'eliminate' },
@@ -1269,7 +1269,7 @@ describe('StackFocus — C key requires 2 selected', () => {
   it('C with 0 selected shows error and stays on stack-focus', async () => {
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
-      get_stack_decisions: [[
+      get_round_decisions: [[
         { logical_photo_id: 1, current_status: 'undecided' },
         { logical_photo_id: 2, current_status: 'undecided' },
         { logical_photo_id: 3, current_status: 'undecided' },
@@ -1297,7 +1297,7 @@ describe('StackFocus — C key requires 2 selected', () => {
   it('C with 1 selected shows error and stays on stack-focus', async () => {
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
-      get_stack_decisions: [[
+      get_round_decisions: [[
         { logical_photo_id: 1, current_status: 'undecided' },
         { logical_photo_id: 2, current_status: 'undecided' },
         { logical_photo_id: 3, current_status: 'undecided' },
@@ -1332,7 +1332,7 @@ describe('StackFocus — Tab shows toast when all photos decided', () => {
   it('Tab when all photos decided shows "No undecided photos" error', async () => {
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
-      get_stack_decisions: [[
+      get_round_decisions: [[
         { logical_photo_id: 1, current_status: 'keep' },
         { logical_photo_id: 2, current_status: 'eliminate' },
         { logical_photo_id: 3, current_status: 'keep' },
@@ -1430,7 +1430,7 @@ describe('StackFocus — multi-select', () => {
     const fourPhotos = makePhotoList(4)
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [fourPhotos],
-      get_stack_decisions: [[
+      get_round_decisions: [[
         { logical_photo_id: 1, current_status: 'undecided' },
         { logical_photo_id: 2, current_status: 'undecided' },
         { logical_photo_id: 3, current_status: 'undecided' },
@@ -1503,7 +1503,7 @@ describe('StackFocus — Bug 1: selection cleared after commit', () => {
 
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos, survivorPhotos],
-      get_stack_decisions: [
+      get_round_decisions: [
         [
           { logical_photo_id: 1, current_status: 'keep' },
           { logical_photo_id: 2, current_status: 'keep' },
@@ -1559,7 +1559,7 @@ describe('StackFocus — round commit re-fetches survivors', () => {
     mockInvoke.mockImplementation(mockStackFocusRouter({
       // First call returns 3 photos, second call (after commit) returns 2 survivors
       list_logical_photos: [mockPhotos, survivorPhotos],
-      get_stack_decisions: [
+      get_round_decisions: [
         // Initial: all decided
         [
           { logical_photo_id: 1, current_status: 'keep' },
@@ -1622,7 +1622,7 @@ describe('StackFocus — Bug 4: Tab navigates in filtered grid after commit', ()
 
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [photos4, survivorPhotos],
-      get_stack_decisions: [
+      get_round_decisions: [
         [
           { logical_photo_id: 1, current_status: 'keep' },
           { logical_photo_id: 2, current_status: 'eliminate' },
@@ -1678,7 +1678,7 @@ describe('StackFocus — Bug 6: Tab scrolls focused card into view', () => {
 
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [photos4],
-      get_stack_decisions: [[
+      get_round_decisions: [[
         { logical_photo_id: 1, current_status: 'keep' },
         { logical_photo_id: 2, current_status: 'undecided' },
         { logical_photo_id: 3, current_status: 'eliminate' },
@@ -1729,7 +1729,7 @@ describe('StackFocus — list_logical_photos includes roundId after commit', () 
         if (listCallCount === 1) return Promise.resolve([PHOTO_1, PHOTO_2, PHOTO_3])
         return Promise.resolve(survivorPhotos)
       }
-      if (cmd === 'get_stack_decisions') return Promise.resolve([
+      if (cmd === 'get_round_decisions') return Promise.resolve([
         { logical_photo_id: 1, current_status: 'keep' },
         { logical_photo_id: 2, current_status: 'eliminate' },
         { logical_photo_id: 3, current_status: 'keep' },
@@ -1774,7 +1774,7 @@ describe('StackFocus — list_logical_photos includes roundId on mount', () => {
     mockInvoke.mockImplementation((cmd: string, args?: any) => {
       if (cmd === 'get_round_status') return Promise.resolve(EXISTING_ROUND)
       if (cmd === 'list_logical_photos') return Promise.resolve([PHOTO_1, PHOTO_3])
-      if (cmd === 'get_stack_decisions') return Promise.resolve([
+      if (cmd === 'get_round_decisions') return Promise.resolve([
         { logical_photo_id: 1, current_status: 'undecided' },
         { logical_photo_id: 3, current_status: 'undecided' },
       ])
@@ -1809,7 +1809,7 @@ describe('StackFocus — rejects round_id 0 (no "no round" state)', () => {
     mockInvoke.mockImplementation((cmd: string) => {
       if (cmd === 'get_round_status') return Promise.resolve(INVALID_ROUND)
       if (cmd === 'list_logical_photos') return Promise.resolve([])
-      if (cmd === 'get_stack_decisions') return Promise.resolve([])
+      if (cmd === 'get_round_decisions') return Promise.resolve([])
       return Promise.reject(new Error(`Unmocked: ${cmd}`))
     })
 
@@ -1916,7 +1916,7 @@ describe('StackFocus — Sprint 10 Phase C: multi-round navigation', () => {
       list_logical_photos: [mockPhotos],
       list_rounds: [ROUND_1_COMMITTED],
       get_round_status: COMMITTED_ROUND,
-      get_stack_decisions: [[
+      get_round_decisions: [[
         { logical_photo_id: 1, current_status: 'keep' },
         { logical_photo_id: 2, current_status: 'keep' },
         { logical_photo_id: 3, current_status: 'eliminate' },
@@ -1956,7 +1956,7 @@ describe('StackFocus — Sprint 10B: getRoundDecisions replaces getStackDecision
       list_logical_photos: [mockPhotos],
       get_round_decisions: [roundDecisions],
       get_round_status: roundStatus,
-      get_stack_decisions: () => { throw new Error('getStackDecisions should not be called — use getRoundDecisions') },
+      get_stack_decisions: () => { throw new Error('get_stack_decisions should not be called — use get_round_decisions') },
     }))
     // Wrap to track command names
     const originalImpl = mockInvoke.getMockImplementation()!

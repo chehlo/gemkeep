@@ -267,7 +267,7 @@ describe('SingleView — Tab navigation', () => {
       { logical_photo_id: 5, thumbnail_path: null, capture_time: null, camera_model: null, lens: null, has_raw: false, has_jpeg: true, aperture: null, shutter_speed: null, iso: null, focal_length: null },
     ]
     mockInvoke.mockImplementation(mockSingleViewRouter({
-      get_stack_decisions: [DECISIONS_MIXED],
+      get_round_decisions: [DECISIONS_MIXED],
       list_logical_photos: [FIVE_PHOTOS],
       get_photo_detail: [PHOTO_DETAIL, { ...PHOTO_DETAIL, logical_photo_id: 2 }],
     }))
@@ -347,7 +347,7 @@ describe('SingleView — Shift+Tab navigation', () => {
     mockInvoke.mockImplementation(mockSingleViewRouter({
       get_photo_detail: [{ ...PHOTO_DETAIL, logical_photo_id: 5, current_status: 'keep' }, { ...PHOTO_DETAIL, logical_photo_id: 4 }],
       list_logical_photos: [FIVE_PHOTOS],
-      get_stack_decisions: [[
+      get_round_decisions: [[
         { logical_photo_id: 1, current_status: 'keep' },
         { logical_photo_id: 2, current_status: 'undecided' },
         { logical_photo_id: 3, current_status: 'eliminate' },
@@ -609,7 +609,7 @@ describe('SingleView — M9: Tab wrap-around', () => {
     mockInvoke.mockImplementation(mockSingleViewRouter({
       get_photo_detail: { ...PHOTO_DETAIL, logical_photo_id: 3 },
       list_logical_photos: [THREE_PHOTOS],
-      get_stack_decisions: [[
+      get_round_decisions: [[
         { logical_photo_id: 1, current_status: 'keep' },
         { logical_photo_id: 2, current_status: 'eliminate' },
         { logical_photo_id: 3, current_status: 'undecided' },
@@ -641,7 +641,7 @@ describe('SingleView — M9: Tab wrap-around', () => {
     mockInvoke.mockImplementation(mockSingleViewRouter({
       get_photo_detail: [{ ...PHOTO_DETAIL, logical_photo_id: 3 }, { ...PHOTO_DETAIL, logical_photo_id: 1 }],
       list_logical_photos: [THREE_PHOTOS],
-      get_stack_decisions: [[
+      get_round_decisions: [[
         { logical_photo_id: 1, current_status: 'undecided' },
         { logical_photo_id: 2, current_status: 'keep' },
         { logical_photo_id: 3, current_status: 'undecided' },
@@ -887,7 +887,7 @@ describe('SingleView — Tab shows toast when all photos decided', () => {
     mockInvoke.mockImplementation(mockSingleViewRouter({
       get_photo_detail: { ...PHOTO_DETAIL, current_status: 'keep' },
       list_logical_photos: [THREE_PHOTOS],
-      get_stack_decisions: [[
+      get_round_decisions: [[
         { logical_photo_id: 1, current_status: 'keep' },
         { logical_photo_id: 2, current_status: 'eliminate' },
         { logical_photo_id: 3, current_status: 'keep' },

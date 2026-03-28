@@ -174,10 +174,10 @@ test('Sprint 7-J4: Decisions persist across navigation — back and re-enter sho
   await page.keyboard.press('Escape')
   await expect(page.getByText('Stack #1')).toBeVisible({ timeout: 5_000 })
 
-  // StackFocus re-fetches get_stack_decisions on mount — verify it was called again
-  // (decisions are stored in the mock's store and reflected in get_stack_decisions)
+  // StackFocus re-fetches get_round_decisions on mount — verify it was called again
+  // (decisions are stored in the mock's store and reflected in get_round_decisions)
   const decisionCalls1 = await page.evaluate(
-    () => (window as unknown as Record<string, string[]>).__ipcLog.filter((c: string) => c === 'get_stack_decisions').length
+    () => (window as unknown as Record<string, string[]>).__ipcLog.filter((c: string) => c === 'get_round_decisions').length
   )
   expect(decisionCalls1).toBeGreaterThanOrEqual(2) // once on first mount, once on return
 

@@ -42,7 +42,7 @@ describe('StackFocus — SF-07: green badge on kept photos (visual)', () => {
   it('kept photo has a visible green indicator', async () => {
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
-      get_stack_decisions: [[
+      get_round_decisions: [[
         { logical_photo_id: 1, current_status: 'keep' },
         { logical_photo_id: 2, current_status: 'undecided' },
         { logical_photo_id: 3, current_status: 'undecided' },
@@ -59,7 +59,7 @@ describe('StackFocus — SF-07: green badge on kept photos (visual)', () => {
   it('undecided photo has no decision indicator', async () => {
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
-      get_stack_decisions: [[
+      get_round_decisions: [[
         { logical_photo_id: 1, current_status: 'undecided' },
         { logical_photo_id: 2, current_status: 'undecided' },
         { logical_photo_id: 3, current_status: 'undecided' },
@@ -79,7 +79,7 @@ describe('StackFocus — SF-08: red badge on eliminated photos (visual)', () => 
   it('eliminated photo has a visible red indicator', async () => {
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
-      get_stack_decisions: [[
+      get_round_decisions: [[
         { logical_photo_id: 1, current_status: 'undecided' },
         { logical_photo_id: 2, current_status: 'eliminate' },
         { logical_photo_id: 3, current_status: 'undecided' },
@@ -98,7 +98,7 @@ describe('StackFocus — SF-09: eliminated photos dimmed to ~50% opacity (visual
   it('eliminated card is visually dimmed', async () => {
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
-      get_stack_decisions: [[
+      get_round_decisions: [[
         { logical_photo_id: 1, current_status: 'undecided' },
         { logical_photo_id: 2, current_status: 'eliminate' },
         { logical_photo_id: 3, current_status: 'undecided' },
@@ -122,7 +122,7 @@ describe('StackFocus — SF-10: focused card has blue selection ring (visual)', 
   it('first card (focused by default) has visible blue border', async () => {
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
-      get_stack_decisions: [[
+      get_round_decisions: [[
         { logical_photo_id: 1, current_status: 'undecided' },
         { logical_photo_id: 2, current_status: 'undecided' },
         { logical_photo_id: 3, current_status: 'undecided' },
@@ -148,7 +148,7 @@ describe('StackFocus — SF-10: focused card has blue selection ring (visual)', 
   it('navigating right moves the blue border to the next card', async () => {
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
-      get_stack_decisions: [[
+      get_round_decisions: [[
         { logical_photo_id: 1, current_status: 'undecided' },
         { logical_photo_id: 2, current_status: 'undecided' },
         { logical_photo_id: 3, current_status: 'undecided' },
@@ -226,7 +226,7 @@ describe('StackFocus — B5: after Ctrl+Enter, grid shows only undecided survivo
     mockInvoke.mockImplementation(mockStackFocusRouter({
       // First call returns 3 photos, second call (after commit) returns 2 survivors
       list_logical_photos: [mockPhotos, survivorPhotos],
-      get_stack_decisions: [
+      get_round_decisions: [
         // Initial: all decided
         [
           { logical_photo_id: 1, current_status: 'keep' },
@@ -284,7 +284,7 @@ describe('StackFocus — BUG-09: header stays visible when grid scrolls', () => 
 
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [manyPhotos],
-      get_stack_decisions: [decisions],
+      get_round_decisions: [decisions],
       get_round_status: round,
     }))
     render(StackFocus)

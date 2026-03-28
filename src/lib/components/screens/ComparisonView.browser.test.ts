@@ -25,7 +25,7 @@ function setupNav() {
 function mockComparisonRouter(overrides: Record<string, any> = {}) {
   return createMockRouter({
     list_logical_photos: [mockPhotos],
-    get_stack_decisions: [UNDECIDED_DECISIONS],
+    get_round_decisions: [UNDECIDED_DECISIONS],
     get_round_status: OPEN_ROUND,
     ...overrides,
   })

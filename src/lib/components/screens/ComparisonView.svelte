@@ -2,7 +2,7 @@
   import { onMount, onDestroy } from 'svelte'
   import { navigation, navigate } from '$lib/stores/navigation.svelte.js'
   import {
-    listLogicalPhotos, getPhotoDetail, getStackDecisions, getRoundStatus,
+    listLogicalPhotos, getPhotoDetail, getRoundDecisions, getRoundStatus,
     makeDecision, undoDecision,
     type LogicalPhotoSummary, type PhotoDetail, type PhotoDecisionStatus, type RoundStatus, type DecisionStatus
   } from '$lib/api/index.js'
@@ -68,9 +68,9 @@
       try {
         photos = await listLogicalPhotos(projectSlug, stackId, currentRoundId || undefined)
         try {
-          decisions = await getStackDecisions(projectSlug, stackId)
+          decisions = await getRoundDecisions(projectSlug, stackId, currentRoundId)
         } catch (e) {
-          console.error('getStackDecisions failed:', e)
+          console.error('getRoundDecisions failed:', e)
         }
         try {
           roundStatus = await getRoundStatus(projectSlug, stackId)

@@ -171,38 +171,6 @@ pub fn get_round_decisions(
     engine::get_round_decisions(conn, stack_id, round_id).map_err(|e| e.to_string())
 }
 
-/// Get decisions for all logical photos in a stack (for the current round).
-#[tauri::command]
-pub fn get_stack_decisions(
-    slug: String,
-    stack_id: i64,
-    state: State<'_, AppState>,
-) -> Result<Vec<PhotoDecisionStatus>, String> {
-    let (db_guard, _project_guard) = with_open_project(&state, &slug)?;
-    let conn = db_guard.as_ref().unwrap();
-
-    // Single query: fetch id + current_status for all photos in the stack
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, COALESCE(current_status, 'undecided') as current_status \
-             FROM logical_photos WHERE stack_id = ?1 ORDER BY id ASC",
-        )
-        .map_err(|e| e.to_string())?;
-
-    let results = stmt
-        .query_map(rusqlite::params![stack_id], |row| {
-            Ok(PhotoDecisionStatus {
-                logical_photo_id: row.get(0)?,
-                current_status: row.get(1)?,
-            })
-        })
-        .map_err(|e| e.to_string())?;
-
-    results
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())
-}
-
 /// List all rounds for a stack with summary counts.
 #[tauri::command]
 pub fn list_rounds(

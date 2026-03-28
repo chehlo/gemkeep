@@ -2,7 +2,7 @@
   import { onMount, onDestroy, tick } from 'svelte'
   import { navigation, navigate } from '$lib/stores/navigation.svelte.js'
   import {
-    listLogicalPhotos, getThumbnailUrl, getStackDecisions, getRoundDecisions, getRoundStatus,
+    listLogicalPhotos, getThumbnailUrl, getRoundDecisions, getRoundStatus,
     makeDecision, commitRound, undoDecision, getPhotoDetail, listStacks, listRounds,
     type LogicalPhotoSummary, type PhotoDecisionStatus, type RoundStatus, type DecisionStatus, type RoundSummary
   } from '$lib/api/index.js'

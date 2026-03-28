@@ -101,7 +101,7 @@ export function renderStackOverview<T, R>(
  * Mock the 3 invoke calls StackFocus makes on mount:
  * 1. get_round_status -> round status (fetched first for roundId)
  * 2. list_logical_photos -> photos (uses roundId from step 1)
- * 3. get_stack_decisions -> decisions
+ * 3. get_round_decisions -> decisions
  */
 export function mockStackFocusMount(
   photos: LogicalPhotoSummary[],
@@ -110,7 +110,7 @@ export function mockStackFocusMount(
 ) {
   mockInvoke.mockResolvedValueOnce(roundStatus)   // get_round_status
   mockInvoke.mockResolvedValueOnce(photos)       // list_logical_photos
-  mockInvoke.mockResolvedValueOnce(decisions)     // get_stack_decisions
+  mockInvoke.mockResolvedValueOnce(decisions)     // get_round_decisions
 }
 
 // ─── FE-06: mockSingleViewMount() ───────────────────────────────────────────
@@ -119,7 +119,7 @@ export function mockStackFocusMount(
  * Mock the standard SingleView mount sequence:
  * 1. get_photo_detail -> photo detail
  * 2. list_logical_photos -> photo list
- * 3. get_stack_decisions -> decisions
+ * 3. get_round_decisions -> decisions
  * 4. get_round_status -> round status
  */
 export function mockSingleViewMount(overrides?: {
@@ -130,7 +130,7 @@ export function mockSingleViewMount(overrides?: {
 }) {
   mockInvoke.mockResolvedValueOnce(overrides?.detail ?? PHOTO_DETAIL)       // get_photo_detail
   mockInvoke.mockResolvedValueOnce(overrides?.photos ?? SINGLE_VIEW_PHOTO_LIST)  // list_logical_photos
-  mockInvoke.mockResolvedValueOnce(overrides?.decisions ?? UNDECIDED_DECISIONS)   // get_stack_decisions
+  mockInvoke.mockResolvedValueOnce(overrides?.decisions ?? UNDECIDED_DECISIONS)   // get_round_decisions
   mockInvoke.mockResolvedValueOnce(overrides?.roundStatus ?? OPEN_ROUND)    // get_round_status
 }
 
@@ -219,19 +219,13 @@ export function mockStackOverviewRouter(overrides?: Record<string, MockRouterVal
 /**
  * Create a mock router pre-configured for StackFocus's command set.
  *
- * Commands: list_logical_photos, get_stack_decisions, get_round_status,
+ * Commands: list_logical_photos, get_round_decisions, get_round_status,
  * make_decision, undo_decision, commit_round, get_photo_detail, list_stacks
  */
 export function mockStackFocusRouter(overrides?: Record<string, MockRouterValue>): (cmd: string, ...args: unknown[]) => Promise<unknown> {
-  // When get_stack_decisions is overridden but get_round_decisions is not,
-  // cascade the override so callers using either API get the same data.
-  const roundDecisions = overrides?.get_round_decisions
-    ?? overrides?.get_stack_decisions
-    ?? [UNDECIDED_DECISIONS]
   return createMockRouter({
     list_logical_photos: [[]],
-    get_stack_decisions: [UNDECIDED_DECISIONS],
-    get_round_decisions: roundDecisions,
+    get_round_decisions: overrides?.get_round_decisions ?? [UNDECIDED_DECISIONS],
     get_round_status: OPEN_ROUND,
     make_decision: undefined,
     undo_decision: undefined,
@@ -246,14 +240,14 @@ export function mockStackFocusRouter(overrides?: Record<string, MockRouterValue>
 /**
  * Create a mock router pre-configured for SingleView's command set.
  *
- * Commands: get_photo_detail, list_logical_photos, get_stack_decisions,
+ * Commands: get_photo_detail, list_logical_photos, get_round_decisions,
  * get_round_status, make_decision, undo_decision, commit_round
  */
 export function mockSingleViewRouter(overrides?: Record<string, MockRouterValue>): (cmd: string, ...args: unknown[]) => Promise<unknown> {
   return createMockRouter({
     get_photo_detail: PHOTO_DETAIL,
     list_logical_photos: [SINGLE_VIEW_PHOTO_LIST],
-    get_stack_decisions: [UNDECIDED_DECISIONS],
+    get_round_decisions: [UNDECIDED_DECISIONS],
     get_round_status: OPEN_ROUND,
     make_decision: undefined,
     undo_decision: undefined,

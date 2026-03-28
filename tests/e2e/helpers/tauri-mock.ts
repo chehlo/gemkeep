@@ -373,7 +373,7 @@ export async function injectTauriMock(
             }
             return null
           }
-          case 'get_stack_decisions':
+          case 'get_round_decisions':
             return [...store.decisions]
           case 'get_round_status': {
             if (store.roundCommitted && store.roundStatus) {

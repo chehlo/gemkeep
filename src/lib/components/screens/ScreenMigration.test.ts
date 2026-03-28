@@ -89,7 +89,7 @@ function mockComparisonMount(
   roundStatus = OPEN_ROUND,
 ) {
   mockInvoke.mockResolvedValueOnce(photos)       // list_logical_photos
-  mockInvoke.mockResolvedValueOnce(decisions)     // get_stack_decisions
+  mockInvoke.mockResolvedValueOnce(decisions)     // get_round_decisions
   mockInvoke.mockResolvedValueOnce(roundStatus)   // get_round_status
 }
 

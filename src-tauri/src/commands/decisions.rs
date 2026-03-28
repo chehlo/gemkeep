@@ -30,13 +30,8 @@ pub fn make_decision(
     };
 
     // Get the stack_id for this logical photo to find/create a round
-    let stack_id: i64 = conn
-        .query_row(
-            "SELECT stack_id FROM logical_photos WHERE id = ?1",
-            rusqlite::params![logical_photo_id],
-            |row| row.get(0),
-        )
-        .map_err(|e| format!("Logical photo {} not found: {}", logical_photo_id, e))?;
+    let stack_id = engine::get_stack_id_for_photo(conn, project.id, logical_photo_id)
+        .map_err(|e| e.to_string())?;
 
     // Find or create round
     let (round_id, was_created) =
@@ -76,13 +71,8 @@ pub fn undo_decision(
     let project = project_guard.as_ref().unwrap();
 
     // Get stack_id to find the round
-    let stack_id: i64 = conn
-        .query_row(
-            "SELECT stack_id FROM logical_photos WHERE id = ?1",
-            rusqlite::params![logical_photo_id],
-            |row| row.get(0),
-        )
-        .map_err(|e| format!("Logical photo {} not found: {}", logical_photo_id, e))?;
+    let stack_id = engine::get_stack_id_for_photo(conn, project.id, logical_photo_id)
+        .map_err(|e| e.to_string())?;
 
     let (round_id, _) =
         engine::find_or_create_round(conn, project.id, stack_id).map_err(|e| e.to_string())?;

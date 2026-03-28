@@ -184,3 +184,7 @@ src-tauri/target/
 playwright-report/
 test-results/
 screens/
+
+# Mobile platform icons (not needed for desktop app)
+src-tauri/icons/android/
+src-tauri/icons/ios/

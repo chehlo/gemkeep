@@ -235,20 +235,29 @@
     }
 
     if (e.key === '[' && currentRoundId > 1) {
-      currentRoundId = currentRoundId - 1
+      let prevRoundId: number
+      if (Array.isArray(rounds) && rounds.length > 0) {
+        const currentIdx = rounds.findIndex(r => r.round_id === currentRoundId)
+        if (currentIdx <= 0) return
+        prevRoundId = rounds[currentIdx - 1].round_id
+      } else {
+        prevRoundId = currentRoundId - 1
+      }
+      currentRoundId = prevRoundId
       try {
         photos = await listLogicalPhotos(projectSlug, stackId, currentRoundId)
-        decisions = await getStackDecisions(projectSlug, stackId)
+        decisions = await getRoundDecisions(projectSlug, stackId, currentRoundId)
         roundStatus = await getRoundStatus(projectSlug, stackId)
       } catch (err) { console.error('Round navigation failed:', err) }
       return
     }
 
     if (e.key === ']') {
+      if (roundStatus?.state === 'open') return
       currentRoundId = currentRoundId + 1
       try {
         photos = await listLogicalPhotos(projectSlug, stackId, currentRoundId)
-        decisions = await getStackDecisions(projectSlug, stackId)
+        decisions = await getRoundDecisions(projectSlug, stackId, currentRoundId)
         roundStatus = await getRoundStatus(projectSlug, stackId)
       } catch (err) { console.error('Round navigation failed:', err) }
       return
@@ -421,7 +430,7 @@
           currentRoundId = roundId
           getRoundStatus(projectSlug, stackId).then(rs => { roundStatus = rs })
           listLogicalPhotos(projectSlug, stackId, roundId).then(p => { photos = p })
-          getStackDecisions(projectSlug, stackId).then(d => { decisions = d })
+          getRoundDecisions(projectSlug, stackId, roundId).then(d => { decisions = d })
         }} />
       {/if}
       <div class="text-sm text-yellow-400">Round {roundStatus?.round_number} is committed — read-only</div>
@@ -456,7 +465,7 @@
           currentRoundId = roundId
           getRoundStatus(projectSlug, stackId).then(rs => { roundStatus = rs })
           listLogicalPhotos(projectSlug, stackId, roundId).then(p => { photos = p })
-          getStackDecisions(projectSlug, stackId).then(d => { decisions = d })
+          getRoundDecisions(projectSlug, stackId, roundId).then(d => { decisions = d })
         }} />
       {/if}
       <!-- Photo grid -->

@@ -16,7 +16,8 @@ import {
   makePhotoDetail, makeDecisionList,
   OPEN_ROUND, UNDECIDED_DECISIONS,
 } from '$test/fixtures'
-import { resetInvokeMock, mockSingleViewMount, mockStackFocusMount } from '$test/helpers'
+import { resetInvokeMock, mockSingleViewMount, mockStackFocusMount, mockStackFocusRouter } from '$test/helpers'
+import { makeRoundSummary, makeRoundStatus } from '$test/fixtures'
 import { DECISION_SELECTORS } from '$test/decision-helpers'
 import SingleView from './SingleView.svelte'
 import ComparisonView from './ComparisonView.svelte'
@@ -170,11 +171,21 @@ describe('F4-SF: StackFocus visual delegation to PhotoFrame', () => {
   })
 
   it('mixed statuses propagate correct decision classes to each card PhotoFrame', async () => {
-    mockStackFocusMount(
-      mockPhotos,
-      makeDecisionList(['keep', 'eliminate', 'undecided']),
-      { ...OPEN_ROUND, decided: 2, kept: 1, eliminated: 1, undecided: 1 },
-    )
+    // Use committed round so eliminated photos are visible in the grid
+    const committedRound = makeRoundStatus({
+      round_id: 1, round_number: 1, state: 'committed',
+      total_photos: 3, decided: 2, kept: 1, eliminated: 1, undecided: 1,
+      committed_at: '2024-01-15T12:00:00Z',
+    })
+    mockInvoke.mockImplementation(mockStackFocusRouter({
+      list_logical_photos: [mockPhotos],
+      get_round_decisions: [makeDecisionList(['keep', 'eliminate', 'undecided'])],
+      get_round_status: committedRound,
+      list_rounds: [[
+        makeRoundSummary({ round_id: 1, round_number: 1, state: 'committed', committed_at: '2024-01-15T12:00:00Z' }),
+        makeRoundSummary({ round_id: 2, round_number: 2, state: 'open' }),
+      ]],
+    }))
     render(StackFocus)
 
     await waitFor(() => {
@@ -256,11 +267,21 @@ describe('F4-X: No screen applies decision/ring visual classes outside PhotoFram
 
   it('StackFocus: ring-blue-500 and decision classes only appear inside photo-frame', async () => {
     navigate({ kind: 'stack-focus', projectSlug: 'test-project', projectName: 'Test', stackId: 1 })
-    mockStackFocusMount(
-      mockPhotos,
-      makeDecisionList(['keep', 'eliminate', 'undecided']),
-      { ...OPEN_ROUND, decided: 2, kept: 1, eliminated: 1, undecided: 1 },
-    )
+    // Use committed round so all decision badges (including eliminate) are visible
+    const committedRound = makeRoundStatus({
+      round_id: 1, round_number: 1, state: 'committed',
+      total_photos: 3, decided: 2, kept: 1, eliminated: 1, undecided: 1,
+      committed_at: '2024-01-15T12:00:00Z',
+    })
+    mockInvoke.mockImplementation(mockStackFocusRouter({
+      list_logical_photos: [mockPhotos],
+      get_round_decisions: [makeDecisionList(['keep', 'eliminate', 'undecided'])],
+      get_round_status: committedRound,
+      list_rounds: [[
+        makeRoundSummary({ round_id: 1, round_number: 1, state: 'committed', committed_at: '2024-01-15T12:00:00Z' }),
+        makeRoundSummary({ round_id: 2, round_number: 2, state: 'open' }),
+      ]],
+    }))
     render(StackFocus)
 
     await waitFor(() => {

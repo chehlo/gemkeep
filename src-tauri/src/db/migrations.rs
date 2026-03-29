@@ -28,7 +28,8 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
             id          INTEGER PRIMARY KEY,
             project_id  INTEGER NOT NULL REFERENCES projects(id),
             created_at  TEXT NOT NULL,
-            active      INTEGER NOT NULL DEFAULT 1
+            active      INTEGER NOT NULL DEFAULT 1,
+            state       TEXT NOT NULL DEFAULT 'active'
         );
 
         CREATE TABLE IF NOT EXISTS logical_photos (
@@ -113,11 +114,11 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_manual_merges_project
             ON manual_merges(project_id, active);
 
-        -- Set version = 4. On a fresh DB: insert 0 first, then update.
-        -- On an existing v4 DB: INSERT is skipped (row exists), UPDATE is no-op.
+        -- Set version = 5. On a fresh DB: insert 0 first, then update.
+        -- On an existing v5 DB: INSERT is skipped (row exists), UPDATE is no-op.
         INSERT INTO schema_version SELECT 0
             WHERE NOT EXISTS (SELECT 1 FROM schema_version);
-        UPDATE schema_version SET version = 4 WHERE version < 4;
+        UPDATE schema_version SET version = 5 WHERE version < 5;
         ",
     )?;
 
@@ -150,7 +151,7 @@ mod tests {
     fn test_schema_version_is_3_after_migration() {
         let conn = in_memory();
         run_migrations(&conn).unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), 4);
+        assert_eq!(schema_version(&conn).unwrap(), 5);
     }
 
     #[test]
@@ -186,7 +187,7 @@ mod tests {
         let conn = in_memory();
         run_migrations(&conn).unwrap();
         assert!(run_migrations(&conn).is_ok()); // second call must succeed
-        assert_eq!(schema_version(&conn).unwrap(), 4);
+        assert_eq!(schema_version(&conn).unwrap(), 5);
     }
 
     #[test]
@@ -234,12 +235,13 @@ mod tests {
     #[test]
     fn test_schema_version_is_4_after_migration() {
         // Sprint 7: migration bumps schema version from 3 to 4.
+        // F6: bumped to 5 for stacks.state column.
         let conn = in_memory();
         run_migrations(&conn).unwrap();
         assert_eq!(
             schema_version(&conn).unwrap(),
-            4,
-            "schema version must be 4 after Sprint 7 migration"
+            5,
+            "schema version must be 5 after F6 migration"
         );
     }
 

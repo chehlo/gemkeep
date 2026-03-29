@@ -3,7 +3,7 @@
   import { navigation, navigate } from '$lib/stores/navigation.svelte.js'
   import {
     listLogicalPhotos, getThumbnailUrl, getRoundDecisions, getRoundStatus,
-    commitRound, getPhotoDetail, listStacks, listRounds,
+    commitRound, getPhotoDetail, listStacks, listRounds, restoreEliminatedPhoto,
     type LogicalPhotoSummary, type PhotoDecisionStatus, type RoundStatus, type DecisionStatus, type RoundSummary
   } from '$lib/api/index.js'
   import PhotoFrame from '$lib/components/PhotoFrame.svelte'
@@ -47,12 +47,48 @@
     decisions.filter(d => d.current_status !== 'undecided').length
   )
 
-  const isCommittedRound = $derived(
-    roundStatus !== null && roundStatus.state === 'committed'
-  )
+  const openRoundId = $derived.by(() => {
+    if (!Array.isArray(rounds) || rounds.length === 0) return 0
+    const last = rounds[rounds.length - 1]
+    return last?.state === 'open' ? last.round_id : 0
+  })
+
+  const isCommittedRound = $derived.by(() => {
+    // When rounds is a proper array, derive from open round comparison
+    if (Array.isArray(rounds) && rounds.length > 0) {
+      return openRoundId === 0
+        ? true  // all committed (finalized)
+        : currentRoundId !== openRoundId
+    }
+    // Fallback: use roundStatus.state directly (legacy behavior)
+    return roundStatus !== null && roundStatus.state === 'committed'
+  })
 
   const stackComplete = $derived(
     roundStatus !== null && roundStatus.undecided === 0 && roundStatus.total_photos > 0
+  )
+
+  /** Per-round counts: for open/current round use roundStatus, for historical use rounds array */
+  const displayCounts = $derived.by(() => {
+    if (!isCommittedRound && roundStatus) {
+      return { kept: roundStatus.kept, eliminated: roundStatus.eliminated, undecided: roundStatus.undecided }
+    }
+    if (Array.isArray(rounds) && rounds.length > 0) {
+      const match = rounds.find(r => r.round_id === currentRoundId)
+      if (match) {
+        return { kept: match.kept, eliminated: match.eliminated, undecided: match.undecided }
+      }
+    }
+    if (roundStatus) {
+      return { kept: roundStatus.kept, eliminated: roundStatus.eliminated, undecided: roundStatus.undecided }
+    }
+    return null
+  })
+
+  /** Hide tab bar when only 1 round exists and it hasn't been committed */
+  const showTabBar = $derived(
+    Array.isArray(rounds) && rounds.length > 1
+    || (Array.isArray(rounds) && rounds.length === 1 && rounds[0].state === 'committed')
   )
 
 
@@ -132,6 +168,7 @@
       photos = newPhotos
       decisions = newDecisions
       roundStatus = newRoundStatus
+      rounds = await listRounds(projectSlug, stackId)
     } catch (err) {
       console.error('Re-fetch after commit failed:', err)
     }
@@ -205,14 +242,10 @@
   }
 
   async function handleRoundPrev() {
-    let prevRoundId: number
-    if (Array.isArray(rounds) && rounds.length > 0) {
-      const currentIdx = rounds.findIndex(r => r.round_id === currentRoundId)
-      if (currentIdx <= 0) return
-      prevRoundId = rounds[currentIdx - 1].round_id
-    } else {
-      prevRoundId = currentRoundId - 1
-    }
+    if (!Array.isArray(rounds) || rounds.length === 0) return
+    const currentIdx = rounds.findIndex(r => r.round_id === currentRoundId)
+    if (currentIdx <= 0) return
+    const prevRoundId = rounds[currentIdx - 1].round_id
     currentRoundId = prevRoundId
     try {
       photos = await listLogicalPhotos(projectSlug, stackId, currentRoundId)
@@ -222,8 +255,23 @@
   }
 
   async function handleRoundNext() {
-    if (roundStatus?.state === 'open') return
-    currentRoundId = currentRoundId + 1
+    if (!Array.isArray(rounds) || rounds.length === 0) return
+    const currentIdx = rounds.findIndex(r => r.round_id === currentRoundId)
+    if (currentIdx < 0 || currentIdx >= rounds.length - 1) return
+    const nextRoundId = rounds[currentIdx + 1].round_id
+    currentRoundId = nextRoundId
+    try {
+      photos = await listLogicalPhotos(projectSlug, stackId, currentRoundId)
+      decisions = await getRoundDecisions(projectSlug, stackId, currentRoundId)
+      roundStatus = await getRoundStatus(projectSlug, stackId)
+    } catch (err) { console.error('Round navigation failed:', err) }
+  }
+
+  async function handleJumpToOpenRound() {
+    if (!Array.isArray(rounds) || rounds.length === 0) return
+    const lastRound = rounds[rounds.length - 1]
+    if (lastRound.round_id === currentRoundId) return
+    currentRoundId = lastRound.round_id
     try {
       photos = await listLogicalPhotos(projectSlug, stackId, currentRoundId)
       decisions = await getRoundDecisions(projectSlug, stackId, currentRoundId)
@@ -241,6 +289,24 @@
         const next = findNextUndecided(focusedIndex)
         if (next !== null) focusedIndex = next
       }
+    }
+  }
+
+  async function handleRestore() {
+    if (isCommittedRound) return
+    if (!roundStatus) return
+    const photo = photos[focusedIndex]
+    if (!photo) return
+    const status = getDecisionStatus(photo.logical_photo_id)
+    if (status !== 'eliminate') return
+    try {
+      const result = await restoreEliminatedPhoto(projectSlug, photo.logical_photo_id, roundStatus.round_id)
+      if (result.restored) {
+        decisions = await getRoundDecisions(projectSlug, stackId, roundStatus.round_id)
+        roundStatus = await getRoundStatus(projectSlug, stackId)
+      }
+    } catch (err) {
+      console.error('restore failed:', err)
     }
   }
 
@@ -301,7 +367,7 @@
   const noModifiers = (e: KeyboardEvent) => !e.ctrlKey && !e.shiftKey && !e.altKey
 
   async function handleKey(e: KeyboardEvent) {
-    if (e.key === 'Enter' && e.ctrlKey) { e.preventDefault(); await handleCommitRound(); return }
+    if (e.key === 'Enter' && e.ctrlKey && !e.shiftKey) { e.preventDefault(); await handleCommitRound(); return }
     if ((e.key === 'Enter' || e.key === 'e' || e.key === 'E') && photos.length > 0) { handleEnterSingleView(); return }
     if ((e.key === 'c' || e.key === 'C') && noModifiers(e)) { handleCompare(); return }
     if (e.key === 'Escape') { handleEscape(); return }
@@ -309,11 +375,19 @@
     if (e.key === 'Tab' && e.shiftKey) { e.preventDefault(); handleTabNavigation('prev'); return }
     if ((e.key === 'a' || e.key === 'A') && noModifiers(e)) { autoAdvance = !autoAdvance; return }
     if ((e.key === 'f' || e.key === 'F') && noModifiers(e) && photos.length > 0) { await handleFilePathToggle(); return }
-    if (e.key === '[' && currentRoundId > 1) { await handleRoundPrev(); return }
-    if (e.key === ']') { await handleRoundNext(); return }
+    if (e.key === '[' && !e.ctrlKey) {
+      if (Array.isArray(rounds) && rounds.length > 0) {
+        const idx = rounds.findIndex(r => r.round_id === currentRoundId)
+        if (idx > 0) { await handleRoundPrev(); return }
+      }
+      return
+    }
+    if (e.key === ']' && e.ctrlKey) { await handleJumpToOpenRound(); return }
+    if (e.key === ']' && !e.ctrlKey) { await handleRoundNext(); return }
     if ((e.key === 'y' || e.key === 'Y') && photos.length > 0) { await applyDecision('keep'); return }
     if ((e.key === 'x' || e.key === 'X') && photos.length > 0) { await applyDecision('eliminate'); return }
     if ((e.key === 'u' || e.key === 'U') && photos.length > 0) { await applyDecision('undo'); return }
+    if ((e.key === 'r' || e.key === 'R') && noModifiers(e) && photos.length > 0) { await handleRestore(); return }
     if (stackComplete && (e.key === 'ArrowDown' || e.key === 'j') && !e.ctrlKey) { await handleNextUndecidedStack(e); return }
     if ((e.key === 's' || e.key === 'S') && noModifiers(e) && photos.length > 0) { selection = toggleSelect(selection, photos[focusedIndex].logical_photo_id, 2); return }
     if (photos.length > 0) {
@@ -353,10 +427,25 @@
     <span class="text-sm text-gray-400">{projectName}</span>
     <span class="text-gray-600">›</span>
     <span class="text-sm text-gray-200 font-medium">Stack #{stackId}</span>
-    {#if decisions?.length > 0}
-      <span class="text-sm text-gray-400 ml-2">{decidedCount}/{photos.length} decided</span>
-      {#if roundStatus}
-        <span class="text-sm text-gray-400 ml-1">&middot; {roundStatus.kept} kept &middot; {roundStatus.eliminated} eliminated &middot; {roundStatus.undecided} undecided &middot; Round {roundStatus.round_number}</span>
+    {#if showTabBar}
+      <RoundTabBar {rounds} {currentRoundId} {openRoundId} onClick={(roundId) => {
+        currentRoundId = roundId
+        getRoundStatus(projectSlug, stackId).then(rs => { roundStatus = rs })
+        listLogicalPhotos(projectSlug, stackId, roundId).then(p => { photos = p })
+        getRoundDecisions(projectSlug, stackId, roundId).then(d => { decisions = d })
+        listRounds(projectSlug, stackId).then(r => { rounds = r })
+      }} />
+    {/if}
+    {#if displayCounts}
+      <span class="text-sm text-gray-400" data-testid="compact-status">{displayCounts.kept}✓ {displayCounts.eliminated}✗ {displayCounts.undecided}?</span>
+    {/if}
+    {#if isCommittedRound}
+      <span class="text-sm text-yellow-400" data-testid="read-only-indicator">Read-only</span>
+      {#if openRoundId !== 0}
+        {@const openRoundNumber = rounds.find(r => r.round_id === openRoundId)?.round_number ?? '?'}
+        <span class="text-xs text-gray-500" data-testid="read-only-hint">&#x21A9; ] = back to R{openRoundNumber}</span>
+      {:else}
+        <span class="text-xs text-gray-500" data-testid="read-only-hint">All rounds committed</span>
       {/if}
     {/if}
     {#if autoAdvance}
@@ -370,50 +459,9 @@
       <div class="text-sm text-red-400" data-testid="round-error">{roundError}</div>
     {:else if loading}
       <div class="text-sm text-gray-500 animate-pulse" data-testid="loading-indicator">Loading...</div>
-    {:else if isCommittedRound}
-      {#if rounds.length > 0}
-        <RoundTabBar {rounds} {currentRoundId} onClick={(roundId) => {
-          currentRoundId = roundId
-          getRoundStatus(projectSlug, stackId).then(rs => { roundStatus = rs })
-          listLogicalPhotos(projectSlug, stackId, roundId).then(p => { photos = p })
-          getRoundDecisions(projectSlug, stackId, roundId).then(d => { decisions = d })
-        }} />
-      {/if}
-      <div class="text-sm text-yellow-400">Round {roundStatus?.round_number} is committed — read-only</div>
-      <div class="grid grid-cols-4 gap-3">
-        {#each photos as photo, i (photo.logical_photo_id)}
-          {@const status = getDecisionStatus(photo.logical_photo_id)}
-          {@const isSelected = selection.selected.has(photo.logical_photo_id)}
-          <div
-            data-testid="photo-card"
-            role="button"
-            tabindex="0"
-            onclick={() => { focusedIndex = i }}
-            onkeydown={(e) => { if (e.key === 'Enter') focusedIndex = i }}
-          >
-            <PhotoFrame
-              layout="card"
-              focused={i === focusedIndex}
-              selected={isSelected}
-              {photo}
-              {status}
-              imageUrl={photo.thumbnail_path ? getThumbnailUrl(photo.thumbnail_path) : null}
-              alt="Photo {i + 1} thumbnail"
-            />
-          </div>
-        {/each}
-      </div>
     {:else if photos.length === 0}
       <div class="text-sm text-gray-500">No photos in this stack.</div>
     {:else}
-      {#if rounds.length > 0}
-        <RoundTabBar {rounds} {currentRoundId} onClick={(roundId) => {
-          currentRoundId = roundId
-          getRoundStatus(projectSlug, stackId).then(rs => { roundStatus = rs })
-          listLogicalPhotos(projectSlug, stackId, roundId).then(p => { photos = p })
-          getRoundDecisions(projectSlug, stackId, roundId).then(d => { decisions = d })
-        }} />
-      {/if}
       <!-- Photo grid -->
       <div class="grid grid-cols-4 gap-3">
         {#each photos as photo, i (photo.logical_photo_id)}

@@ -89,16 +89,123 @@ pub fn load_manifest() -> Manifest {
 }
 
 /// Resolve absolute path to a fixture file. Returns None if the file field is
-/// None (timing-only fixtures) or the file doesn't exist on disk (gitignored
-/// RAW not yet downloaded).
+/// None (timing-only fixtures) or the file doesn't exist on disk and cannot
+/// be downloaded.
+///
+/// For gitignored fixtures with a source URL, automatically downloads the file
+/// on first access using curl. Downloaded files are cached in the fixtures
+/// directory for subsequent runs.
 pub fn resolve_fixture_path(fixture: &Fixture) -> Option<PathBuf> {
     let filename = fixture.file.as_ref()?;
     let path = fixtures_dir().join(filename);
     if path.exists() {
-        Some(path)
-    } else {
-        None
+        return Some(path);
     }
+
+    // Attempt auto-download for gitignored fixtures with a source URL
+    if fixture.gitignored && !fixture.source.is_empty() {
+        if try_download_fixture(filename, &fixture.source, &path) {
+            return Some(path);
+        }
+    }
+
+    None
+}
+
+/// Download a fixture file from its source URL using curl.
+/// Uses a lock file to prevent concurrent downloads when tests run in parallel.
+/// Returns true if the download succeeded and the file exists on disk.
+fn try_download_fixture(filename: &str, url: &str, dest: &Path) -> bool {
+    use std::io::Write;
+
+    let lock_path = dest.with_extension("downloading");
+
+    // If another thread/process is downloading, wait for it
+    if lock_path.exists() {
+        eprintln!("AUTO-DOWNLOAD: {} — waiting for parallel download to finish", filename);
+        for _ in 0..240 {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            if !lock_path.exists() {
+                break;
+            }
+        }
+        // After waiting, the file should exist
+        if dest.exists() {
+            return true;
+        }
+        // Lock file still present after 2 min — stale lock, proceed
+        let _ = std::fs::remove_file(&lock_path);
+    }
+
+    // Re-check in case the file appeared while we were setting up
+    if dest.exists() {
+        return true;
+    }
+
+    // Create lock file
+    if let Ok(mut f) = std::fs::File::create(&lock_path) {
+        let _ = write!(f, "{}", std::process::id());
+    }
+
+    eprintln!(
+        "AUTO-DOWNLOAD: {} from {}",
+        filename, url
+    );
+
+    let tmp_dest = dest.with_extension("partial");
+    let result = std::process::Command::new("curl")
+        .args([
+            "-L",           // follow redirects
+            "-f",           // fail on HTTP errors
+            "-s",           // silent
+            "-S",           // show errors even when silent
+            "--max-time",
+            "300",          // 5 minute timeout for large RAW files
+            "-o",
+        ])
+        .arg(tmp_dest.as_os_str())
+        .arg(url)
+        .output();
+
+    let success = match result {
+        Ok(output) if output.status.success() && tmp_dest.exists() => {
+            // Atomic rename to avoid partial-read races
+            if std::fs::rename(&tmp_dest, dest).is_ok() {
+                let size = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
+                eprintln!(
+                    "AUTO-DOWNLOAD: {} complete ({:.1} MB)",
+                    filename,
+                    size as f64 / 1_048_576.0
+                );
+                true
+            } else {
+                let _ = std::fs::remove_file(&tmp_dest);
+                false
+            }
+        }
+        Ok(output) => {
+            let _ = std::fs::remove_file(&tmp_dest);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            eprintln!(
+                "AUTO-DOWNLOAD: {} failed (exit={}, stderr={})",
+                filename,
+                output.status,
+                stderr.trim()
+            );
+            false
+        }
+        Err(e) => {
+            eprintln!(
+                "AUTO-DOWNLOAD: {} failed — curl not available: {}",
+                filename, e
+            );
+            false
+        }
+    };
+
+    // Remove lock file
+    let _ = std::fs::remove_file(&lock_path);
+    success
 }
 
 // ---------------------------------------------------------------------------
@@ -996,36 +1103,12 @@ fn create_jpeg_photo(source_dir: &Path, spec: &PhotoSpec, counter: usize) -> Tes
     }
 }
 
-/// Patch the EXIF orientation tag in a RAW file using rexiv2 (libexiv2).
-/// Falls back to direct TIFF IFD patching for RAF (Fuji) which libexiv2 cannot write.
+/// Patch the EXIF orientation tag in a RAW file.
+/// Uses direct TIFF IFD patching for all RAW formats, since gexiv2 0.14+/exiv2 0.28+
+/// has a regression where set_orientation silently fails on CR2/ARW files with a
+/// GError assertion failure.
 fn patch_raw_orientation(path: &Path, orientation: u16) {
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|s| s.to_lowercase())
-        .unwrap_or_default();
-
-    if ext == "raf" || ext == "rw2" {
-        patch_raw_orientation_tiff(path, orientation);
-        return;
-    }
-
-    let meta = rexiv2::Metadata::new_from_path(path)
-        .unwrap_or_else(|e| panic!("patch_raw_orientation: cannot open {:?}: {}", path, e));
-    let orient = match orientation {
-        1 => rexiv2::Orientation::Normal,
-        2 => rexiv2::Orientation::HorizontalFlip,
-        3 => rexiv2::Orientation::Rotate180,
-        4 => rexiv2::Orientation::VerticalFlip,
-        5 => rexiv2::Orientation::Rotate90HorizontalFlip,
-        6 => rexiv2::Orientation::Rotate90,
-        7 => rexiv2::Orientation::Rotate90VerticalFlip,
-        8 => rexiv2::Orientation::Rotate270,
-        _ => panic!("patch_raw_orientation: invalid orientation {}", orientation),
-    };
-    meta.set_orientation(orient);
-    meta.save_to_file(path)
-        .unwrap_or_else(|e| panic!("patch_raw_orientation: cannot save {:?}: {}", path, e));
+    patch_raw_orientation_tiff(path, orientation);
 }
 
 /// Patch the EXIF DateTimeOriginal tag in a RAW file using rexiv2 (libexiv2).

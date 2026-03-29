@@ -5,11 +5,10 @@ fn main() {
     // (replaced by g_object_unref). Compile a C shim that provides it.
     #[cfg(target_os = "macos")]
     {
-        let glib_flags =
-            std::process::Command::new("pkg-config")
-                .args(["--cflags", "glib-2.0"])
-                .output()
-                .expect("pkg-config not found");
+        let glib_flags = std::process::Command::new("pkg-config")
+            .args(["--cflags", "glib-2.0"])
+            .output()
+            .expect("pkg-config not found");
         let cflags = String::from_utf8(glib_flags.stdout).unwrap();
 
         let mut build = cc::Build::new();

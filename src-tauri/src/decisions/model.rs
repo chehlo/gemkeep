@@ -95,3 +95,14 @@ pub struct PhotoSnapshot {
     pub logical_photo_id: i64,
     pub status: String, // "undecided" | "keep" | "eliminate"
 }
+
+/// Result of restoring an eliminated photo into a round.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RestoreResult {
+    /// Whether the photo was actually restored (false if already a member).
+    pub restored: bool,
+    /// The logical photo that was restored.
+    pub logical_photo_id: i64,
+    /// The round the photo was restored into.
+    pub round_id: i64,
+}

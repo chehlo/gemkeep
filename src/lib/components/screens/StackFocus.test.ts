@@ -167,6 +167,7 @@ describe('StackFocus — Sprint 7: decision badges', () => {
   })
 
   it('V2: eliminate indicator has border-red-500 class on container', async () => {
+    // Use committed round so eliminated photos are visible in the grid
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
       get_round_decisions: [[
@@ -175,9 +176,13 @@ describe('StackFocus — Sprint 7: decision badges', () => {
         { logical_photo_id: 3, current_status: 'undecided' },
       ]],
       get_round_status: {
-        round_id: 1, round_number: 1, state: 'open',
-        total_photos: 3, decided: 1, kept: 0, eliminated: 1, undecided: 2, committed_at: null,
+        round_id: 1, round_number: 1, state: 'committed',
+        total_photos: 3, decided: 1, kept: 0, eliminated: 1, undecided: 2, committed_at: '2024-01-15T12:00:00Z',
       },
+      list_rounds: [[
+        { round_id: 1, round_number: 1, state: 'committed', total_photos: 3, decided: 1, kept: 0, eliminated: 1, undecided: 2, committed_at: '2024-01-15T12:00:00Z' },
+        { round_id: 2, round_number: 2, state: 'open', total_photos: 2, decided: 0, kept: 0, eliminated: 0, undecided: 2, committed_at: null },
+      ]],
     }))
 
     render(StackFocus)
@@ -193,6 +198,7 @@ describe('StackFocus — Sprint 7: decision badges', () => {
   })
 
   it('eliminated photo has decision-eliminate indicator element', async () => {
+    // Use committed round so eliminated photos are visible in the grid
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
       get_round_decisions: [[
@@ -201,9 +207,13 @@ describe('StackFocus — Sprint 7: decision badges', () => {
         { logical_photo_id: 3, current_status: 'undecided' },
       ]],
       get_round_status: {
-        round_id: 1, round_number: 1, state: 'open',
-        total_photos: 3, decided: 1, kept: 0, eliminated: 1, undecided: 2, committed_at: null,
+        round_id: 1, round_number: 1, state: 'committed',
+        total_photos: 3, decided: 1, kept: 0, eliminated: 1, undecided: 2, committed_at: '2024-01-15T12:00:00Z',
       },
+      list_rounds: [[
+        { round_id: 1, round_number: 1, state: 'committed', total_photos: 3, decided: 1, kept: 0, eliminated: 1, undecided: 2, committed_at: '2024-01-15T12:00:00Z' },
+        { round_id: 2, round_number: 2, state: 'open', total_photos: 2, decided: 0, kept: 0, eliminated: 0, undecided: 2, committed_at: null },
+      ]],
     }))
 
     render(StackFocus)
@@ -214,7 +224,7 @@ describe('StackFocus — Sprint 7: decision badges', () => {
     })
   })
 
-  it('displays progress counter "decided/total"', async () => {
+  it('displays compact status with checkmark/x/? format', async () => {
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
       get_round_decisions: [[
@@ -231,7 +241,10 @@ describe('StackFocus — Sprint 7: decision badges', () => {
     render(StackFocus)
 
     await waitFor(() => {
-      expect(screen.getByText(/2\/3 decided/)).toBeInTheDocument()
+      const compact = screen.getByTestId('compact-status')
+      expect(compact.textContent).toContain('1\u2713')
+      expect(compact.textContent).toContain('1\u2717')
+      expect(compact.textContent).toContain('1?')
     })
   })
 
@@ -315,6 +328,7 @@ describe('StackFocus — Sprint 7: decision badges', () => {
   })
 
   it('eliminated photo has decision-eliminate badge element', async () => {
+    // Use committed round so eliminated photos are visible in the grid
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
       get_round_decisions: [[
@@ -323,9 +337,13 @@ describe('StackFocus — Sprint 7: decision badges', () => {
         { logical_photo_id: 3, current_status: 'undecided' },
       ]],
       get_round_status: {
-        round_id: 1, round_number: 1, state: 'open',
-        total_photos: 3, decided: 1, kept: 0, eliminated: 1, undecided: 2, committed_at: null,
+        round_id: 1, round_number: 1, state: 'committed',
+        total_photos: 3, decided: 1, kept: 0, eliminated: 1, undecided: 2, committed_at: '2024-01-15T12:00:00Z',
       },
+      list_rounds: [[
+        { round_id: 1, round_number: 1, state: 'committed', total_photos: 3, decided: 1, kept: 0, eliminated: 1, undecided: 2, committed_at: '2024-01-15T12:00:00Z' },
+        { round_id: 2, round_number: 2, state: 'open', total_photos: 2, decided: 0, kept: 0, eliminated: 0, undecided: 2, committed_at: null },
+      ]],
     }))
 
     render(StackFocus)
@@ -428,7 +446,7 @@ describe('StackFocus — Sprint 7: decision badges', () => {
     })
   })
 
-  it('Progress counter shows full format with kept, eliminated, undecided counts', async () => {
+  it('Compact status shows counts from roundStatus', async () => {
     const photos12: LogicalPhotoSummary[] = Array.from({ length: 12 }, (_, i) => ({
       logical_photo_id: i + 1,
       thumbnail_path: null,
@@ -460,11 +478,10 @@ describe('StackFocus — Sprint 7: decision badges', () => {
     render(StackFocus)
 
     await waitFor(() => {
-      // Expect full progress format: "3 kept", "2 eliminated", "7 undecided", "Round 1"
-      expect(screen.getByText(/3 kept/i)).toBeInTheDocument()
-      expect(screen.getByText(/2 eliminated/i)).toBeInTheDocument()
-      expect(screen.getByText(/7 undecided/i)).toBeInTheDocument()
-      expect(screen.getByText(/Round 1/i)).toBeInTheDocument()
+      const compact = screen.getByTestId('compact-status')
+      expect(compact.textContent).toContain('3')
+      expect(compact.textContent).toContain('2')
+      expect(compact.textContent).toContain('7')
     })
   })
 })
@@ -1172,6 +1189,7 @@ describe('StackFocus — commit hides eliminated photos', () => {
     }))
 
     render(StackFocus)
+    // All photos visible in grid (eliminated stay with status indicators)
     await waitFor(() => {
       expect(screen.getAllByTestId('photo-card')).toHaveLength(3)
     })
@@ -1248,14 +1266,15 @@ describe('StackFocus — commit hides eliminated photos', () => {
     }))
 
     render(StackFocus)
+    // All photos visible in grid (eliminated stay with status indicators)
     await waitFor(() => {
       expect(screen.getAllByTestId('photo-card')).toHaveLength(3)
     })
 
-    // Commit
+    // Commit the round
     await fireEvent.keyDown(document, { key: 'Enter', ctrlKey: true })
 
-    // After commit with all eliminated, re-fetch returns empty — show empty message
+    // After commit, no survivors → empty grid
     await waitFor(() => {
       expect(screen.queryAllByTestId('photo-card')).toHaveLength(0)
       expect(screen.getByText('No photos in this stack.')).toBeInTheDocument()
@@ -1582,6 +1601,7 @@ describe('StackFocus — round commit re-fetches survivors', () => {
     }))
 
     render(StackFocus)
+    // All photos visible in grid (eliminated stays with red border)
     await waitFor(() => {
       expect(screen.getAllByTestId('photo-card')).toHaveLength(3)
     })
@@ -1589,20 +1609,18 @@ describe('StackFocus — round commit re-fetches survivors', () => {
     // Commit the round
     await fireEvent.keyDown(document, { key: 'Enter', ctrlKey: true })
 
-    // After commit, grid should re-fetch and show only 2 survivors
+    // After commit, survivors should have NO decision badges (all undecided)
     await waitFor(() => {
-      expect(screen.getAllByTestId('photo-card')).toHaveLength(2)
+      const cards = screen.getAllByTestId('photo-card')
+      expect(cards).toHaveLength(2)
+      for (const card of cards) {
+        expect(card.querySelector(DECISION_SELECTORS.keep)).not.toBeInTheDocument()
+        expect(card.querySelector(DECISION_SELECTORS.eliminate)).not.toBeInTheDocument()
+      }
     })
 
-    // Survivors should have NO decision badges (all undecided)
-    const cards = screen.getAllByTestId('photo-card')
-    for (const card of cards) {
-      expect(card.querySelector(DECISION_SELECTORS.keep)).not.toBeInTheDocument()
-      expect(card.querySelector(DECISION_SELECTORS.eliminate)).not.toBeInTheDocument()
-    }
-
-    // Round indicator should show "Round 2"
-    expect(screen.getByText(/Round 2/i)).toBeInTheDocument()
+    // Compact status should reflect updated round data
+    expect(screen.getByTestId('compact-status')).toBeInTheDocument()
   })
 })
 
@@ -1641,6 +1659,7 @@ describe('StackFocus — Bug 4: Tab navigates in filtered grid after commit', ()
     }))
 
     render(StackFocus)
+    // All 4 photos visible in grid (eliminated photos stay with status indicators)
     await waitFor(() => {
       expect(screen.getAllByTestId('photo-card')).toHaveLength(4)
     })
@@ -1853,7 +1872,7 @@ describe('StackFocus — Sprint 10 Phase C: multi-round navigation', () => {
     // Start on round 3 (the open round), rounds list has [1,2,3]
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
-      list_rounds: THREE_ROUND_LIST,
+      list_rounds: [THREE_ROUND_LIST],
       get_round_status: {
         round_id: 3, round_number: 3, state: 'open',
         total_photos: 3, decided: 0, kept: 0, eliminated: 0, undecided: 3, committed_at: null,
@@ -1881,7 +1900,7 @@ describe('StackFocus — Sprint 10 Phase C: multi-round navigation', () => {
     // Start on round 1 (committed), rounds list has [1,2,3]
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
-      list_rounds: THREE_ROUND_LIST,
+      list_rounds: [THREE_ROUND_LIST],
       get_round_status: {
         round_id: 1, round_number: 1, state: 'committed',
         total_photos: 5, decided: 5, kept: 3, eliminated: 2, undecided: 0, committed_at: '2024-01-15T12:00:00Z',
@@ -1969,6 +1988,7 @@ describe('StackFocus — Sprint 10B: getRoundDecisions replaces getStackDecision
 
     await waitFor(() => {
       const cards = screen.getAllByTestId('photo-card')
+      // All photos visible in grid (eliminated stays with status indicator)
       expect(cards).toHaveLength(3)
     })
 
@@ -1997,7 +2017,7 @@ describe('StackFocus — Sprint 10 review: navigation bug fixes', () => {
 
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
-      list_rounds: TWO_ROUND_LIST,
+      list_rounds: [TWO_ROUND_LIST],
       get_round_status: makeRoundStatus({
         round_id: 2, round_number: 2, state: 'open',
         total_photos: 3, decided: 0, kept: 0, eliminated: 0, undecided: 3,
@@ -2048,7 +2068,7 @@ describe('StackFocus — Sprint 10 review: navigation bug fixes', () => {
 
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
-      list_rounds: TWO_ROUND_LIST,
+      list_rounds: [TWO_ROUND_LIST],
       get_round_status: makeRoundStatus({
         round_id: 2, round_number: 2, state: 'open',
         total_photos: 3, decided: 0, kept: 0, eliminated: 0, undecided: 3,

@@ -13,8 +13,8 @@ cd "$(dirname "$0")"
 
 declare -A URLS=(
   ["RAW_NIKON_D850.NEF"]="https://raw.pixls.us/data/Nikon/D850/Nikon-D850-14bit-lossless-compressed.NEF"
-  ["RAW_CANON_EOS7D.CR2"]="https://raw.pixls.us/data/Canon/EOS%207D/RAW_CANON_EOS7D.CR2"
-  ["RAW_SONY_RX10.ARW"]="https://raw.pixls.us/data/Sony/DSC-RX10/RAW_SONY_RX10.ARW"
+  ["RAW_CANON_EOS7D.CR2"]="https://raw.pixls.us/data/Canon/EOS%207D/RAW_CANON_EOS_7D-raw.CR2"
+  ["RAW_SONY_RX10.ARW"]="https://raw.pixls.us/data/Sony/DSC-RX10/DSC01951.ARW"
   ["RAW_FUJIFILM_XT50.RAF"]="https://raw.pixls.us/data/FUJIFILM/X-T50/DSCF0118.RAF"
   ["RAW_PANASONIC_GH6.RW2"]="https://raw.pixls.us/data/Panasonic/DC-GH6/P1000116.RW2"
 )

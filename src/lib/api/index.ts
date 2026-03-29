@@ -289,3 +289,16 @@ export async function listRounds(slug: string, stackId: number): Promise<RoundSu
 export async function getRoundSnapshot(slug: string, stackId: number, roundId: number): Promise<PhotoSnapshot[]> {
   return invoke('get_round_snapshot', { slug, stackId, roundId })
 }
+
+// F4: Restore eliminated photos
+
+export interface RestoreResult {
+  restored: boolean
+  logical_photo_id: number
+  round_id: number
+}
+
+export async function restoreEliminatedPhoto(slug: string, logicalPhotoId: number, roundId: number): Promise<RestoreResult> {
+  return invoke('restore_eliminated_photo', { slug, logicalPhotoId, roundId })
+}
+

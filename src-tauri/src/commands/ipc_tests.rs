@@ -58,6 +58,7 @@ mod tests {
                 commit_round,
                 get_photo_detail,
                 get_round_decisions,
+                restore_eliminated_photo,
             ])
             .build(mock_context(noop_assets()))
             .unwrap()
@@ -2119,4 +2120,123 @@ mod tests {
     // threads. The Tauri mock runtime provides an AppHandle but the async thread
     // spawning + event emission makes these commands non-deterministic in tests.
     // They are covered by the existing E2E Playwright tests and manual testing.
+
+    #[test]
+    fn test_ipc_restore_eliminated_photo_json_shape() {
+        // F4-10: Contract test — verify restore_eliminated_photo returns JSON
+        // matching the TypeScript RestoreResult interface:
+        // { restored: boolean, logical_photo_id: number, round_id: number }
+        let (_tmp, _app, wv, stack_id, lp_ids) = setup_ipc_with_photos(3);
+        let target_lp = lp_ids[0];
+
+        // Step 1: Eliminate photo in R1
+        let decide_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req(
+                "make_decision",
+                serde_json::json!({
+                    "slug": "test",
+                    "logicalPhotoId": target_lp,
+                    "action": "eliminate"
+                }),
+            ),
+        );
+        assert!(
+            decide_result.is_ok(),
+            "make_decision(eliminate) must succeed: {:?}",
+            decide_result.err()
+        );
+
+        // Step 2: Keep remaining photos and commit
+        for &lp_id in &lp_ids[1..] {
+            let r = tauri::test::get_ipc_response(
+                &wv,
+                invoke_req(
+                    "make_decision",
+                    serde_json::json!({
+                        "slug": "test",
+                        "logicalPhotoId": lp_id,
+                        "action": "keep"
+                    }),
+                ),
+            );
+            assert!(r.is_ok(), "make_decision(keep) must succeed");
+        }
+
+        let commit_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req(
+                "commit_round",
+                serde_json::json!({ "slug": "test", "stackId": stack_id }),
+            ),
+        );
+        assert!(
+            commit_result.is_ok(),
+            "commit_round must succeed: {:?}",
+            commit_result.err()
+        );
+
+        // Step 3: Get the new round_id (R2) via get_round_status
+        let status_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req(
+                "get_round_status",
+                serde_json::json!({ "slug": "test", "stackId": stack_id }),
+            ),
+        );
+        assert!(status_result.is_ok(), "get_round_status must succeed");
+        let status_val: serde_json::Value = status_result.unwrap().deserialize().unwrap();
+        let round2_id = status_val["round_id"].as_i64().unwrap();
+
+        // Step 4: Restore the eliminated photo into R2
+        let restore_result = tauri::test::get_ipc_response(
+            &wv,
+            invoke_req(
+                "restore_eliminated_photo",
+                serde_json::json!({
+                    "slug": "test",
+                    "logicalPhotoId": target_lp,
+                    "roundId": round2_id
+                }),
+            ),
+        );
+        assert!(
+            restore_result.is_ok(),
+            "restore_eliminated_photo must succeed: {:?}",
+            restore_result.err()
+        );
+        let val: serde_json::Value = restore_result.unwrap().deserialize().unwrap();
+
+        // Verify JSON shape matches TypeScript RestoreResult interface
+        assert!(
+            val["restored"].is_boolean(),
+            "restored must be a boolean, got {:?}",
+            val["restored"]
+        );
+        assert!(
+            val["logical_photo_id"].is_number(),
+            "logical_photo_id must be a number, got {:?}",
+            val["logical_photo_id"]
+        );
+        assert!(
+            val["round_id"].is_number(),
+            "round_id must be a number, got {:?}",
+            val["round_id"]
+        );
+
+        // Verify semantic correctness
+        assert_eq!(
+            val["restored"], true,
+            "first restore must return restored=true"
+        );
+        assert_eq!(
+            val["logical_photo_id"], target_lp,
+            "must return the correct photo id"
+        );
+        assert_eq!(
+            val["round_id"], round2_id,
+            "must return the target round id"
+        );
+    }
+
 }

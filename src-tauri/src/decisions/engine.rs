@@ -1,7 +1,9 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 
-use super::model::{DecisionAction, PhotoDetail, PhotoSnapshot, RoundStatus, RoundSummary};
+use super::model::{
+    DecisionAction, PhotoDetail, PhotoSnapshot, RoundStatus, RoundSummary,
+};
 
 /// Find or auto-create an open round for a stack.
 /// Returns (round_id, was_created).
@@ -24,17 +26,28 @@ pub fn find_or_create_round(
     }
 
     // No open round found — create a new one
+    // Determine next round number from existing rounds
+    let max_round_number: Option<i32> = conn
+        .query_row(
+            "SELECT MAX(round_number) FROM rounds WHERE project_id = ?1 AND scope = 'stack' AND scope_id = ?2",
+            params![project_id, stack_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    let next_round_number = max_round_number.unwrap_or(0) + 1;
+
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
-        "INSERT INTO rounds (project_id, scope, scope_id, round_number, state, created_at) VALUES (?1, 'stack', ?2, 1, 'open', ?3)",
-        params![project_id, stack_id, now],
+        "INSERT INTO rounds (project_id, scope, scope_id, round_number, state, created_at) VALUES (?1, 'stack', ?2, ?3, 'open', ?4)",
+        params![project_id, stack_id, next_round_number, now],
     )?;
     let round_id = conn.last_insert_rowid();
 
-    // Populate round_photos with all logical photos in the stack
+    // Populate round_photos with all non-eliminated logical photos in the stack
     conn.execute(
         "INSERT INTO round_photos (round_id, logical_photo_id)
-         SELECT ?1, id FROM logical_photos WHERE stack_id = ?2",
+         SELECT ?1, id FROM logical_photos WHERE stack_id = ?2 AND current_status != 'eliminate'",
         params![round_id, stack_id],
     )?;
 
@@ -610,6 +623,106 @@ pub fn get_round_snapshot(
         })?;
         rows.collect()
     }
+}
+
+/// Restore an eliminated photo into a target round.
+///
+/// Preconditions:
+/// - The photo's current_status must be "eliminate".
+/// - The target round must be open (not committed).
+/// - The photo must not already be a member of the target round.
+///
+/// On success, adds the photo to round_photos, sets current_status to "undecided",
+/// and does NOT create a decisions row (restore is not a decision, it's an admin action).
+///
+/// Returns RestoreResult { restored: true } on success, { restored: false } if the
+/// photo is already a member of the target round.
+pub fn restore_eliminated_photo(
+    conn: &Connection,
+    _project_id: i64,
+    logical_photo_id: i64,
+    round_id: i64,
+) -> rusqlite::Result<super::model::RestoreResult> {
+    // Verify round is open (reuse existing helper)
+    if is_round_committed(conn, round_id)? {
+        return Err(rusqlite::Error::QueryReturnedNoRows); // committed round
+    }
+
+    // Check if photo already in round_photos for this round
+    let already_member: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM round_photos WHERE round_id = ?1 AND logical_photo_id = ?2",
+        params![round_id, logical_photo_id],
+        |row| row.get(0),
+    )?;
+
+    // Verify photo's current status
+    let current_status: String = conn.query_row(
+        "SELECT current_status FROM logical_photos WHERE id = ?1",
+        params![logical_photo_id],
+        |row| row.get(0),
+    )?;
+
+    if current_status != "eliminate" {
+        if already_member > 0 && current_status == "undecided" {
+            // Photo was previously restored into this round (status changed to undecided).
+            // Check if there's an eliminate decision in history confirming it was restored.
+            let has_eliminate_history: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM decisions WHERE logical_photo_id = ?1 AND action = 'eliminate'",
+                params![logical_photo_id],
+                |row| row.get(0),
+            )?;
+            if has_eliminate_history > 0 {
+                tracing::warn!(
+                    logical_photo_id,
+                    round_id,
+                    "restore no-op: photo already a member of this round"
+                );
+                return Ok(super::model::RestoreResult {
+                    restored: false,
+                    logical_photo_id,
+                    round_id,
+                });
+            }
+        }
+        return Err(rusqlite::Error::QueryReturnedNoRows); // not eliminated
+    }
+
+    if already_member > 0 {
+        tracing::warn!(
+            logical_photo_id,
+            round_id,
+            "restore no-op: photo already a member of this round"
+        );
+        return Ok(super::model::RestoreResult {
+            restored: false,
+            logical_photo_id,
+            round_id,
+        });
+    }
+
+    // INSERT INTO round_photos
+    conn.execute(
+        "INSERT INTO round_photos (round_id, logical_photo_id) VALUES (?1, ?2)",
+        params![round_id, logical_photo_id],
+    )?;
+
+    // UPDATE logical_photos SET current_status = 'undecided'
+    conn.execute(
+        "UPDATE logical_photos SET current_status = 'undecided' WHERE id = ?1",
+        params![logical_photo_id],
+    )?;
+
+    tracing::info!(
+        logical_photo_id,
+        round_id,
+        "restored eliminated photo into round"
+    );
+
+    Ok(super::model::RestoreResult {
+        restored: true,
+        logical_photo_id,
+        round_id,
+    })
 }
 
 #[cfg(test)]
@@ -2284,4 +2397,332 @@ mod tests {
             .expect("photo 2 must be in round 2");
         assert_eq!(photo2_status.current_status, "undecided");
     }
+
+    // ── F4: Restore Eliminated Photo Tests ──────────────────────────────────
+
+    #[test]
+    fn test_restore_eliminated_photo_success() {
+        // F4-1: Eliminate a photo in R1, commit R1, then restore into R2.
+        // Assert RestoreResult { restored: true }, photo appears in round_photos,
+        // current_status = undecided, NO new decisions row created.
+        let (project, project_id, stack_id, lp_ids) = setup_test_db(3);
+        let conn = &project.conn;
+        let target_lp = lp_ids[0];
+
+        // Create round 1, eliminate photo, commit
+        let (r1_id, _) = find_or_create_round(conn, project_id, stack_id).unwrap();
+        record_decision(conn, target_lp, r1_id, &DecisionAction::Eliminate).unwrap();
+        record_decision(conn, lp_ids[1], r1_id, &DecisionAction::Keep).unwrap();
+        record_decision(conn, lp_ids[2], r1_id, &DecisionAction::Keep).unwrap();
+        commit_round(conn, r1_id).unwrap();
+
+        // Get R2 (auto-created by commit)
+        let (r2_id, _) = find_or_create_round(conn, project_id, stack_id).unwrap();
+        assert_ne!(r1_id, r2_id, "R2 must be a different round from R1");
+
+        // Count decisions before restore
+        let decisions_before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM decisions", [], |row| row.get(0))
+            .unwrap();
+
+        // Restore the eliminated photo into R2
+        let result = restore_eliminated_photo(conn, project_id, target_lp, r2_id).unwrap();
+
+        assert!(result.restored, "restore must return restored=true");
+        assert_eq!(result.logical_photo_id, target_lp);
+        assert_eq!(result.round_id, r2_id);
+
+        // Photo must be in round_photos for R2
+        let in_round: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM round_photos WHERE round_id = ?1 AND logical_photo_id = ?2",
+                params![r2_id, target_lp],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(in_round, 1, "restored photo must appear in round_photos");
+
+        // current_status must be undecided
+        let status = get_current_status(conn, target_lp);
+        assert_eq!(status, "undecided", "restored photo must be undecided");
+
+        // NO new decisions row should have been created
+        let decisions_after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM decisions", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            decisions_before, decisions_after,
+            "restore must NOT create a decisions row"
+        );
+    }
+
+    #[test]
+    fn test_restore_eliminated_photo_already_member_noop() {
+        // F4-2: Try to restore a photo that is already a member of the target round.
+        // Assert RestoreResult { restored: false }, no duplicate row.
+        let (project, project_id, stack_id, lp_ids) = setup_test_db(3);
+        let conn = &project.conn;
+
+        // Create round with all photos (default state)
+        let (r1_id, _) = find_or_create_round(conn, project_id, stack_id).unwrap();
+
+        // Eliminate photo, commit, get R2
+        record_decision(conn, lp_ids[0], r1_id, &DecisionAction::Eliminate).unwrap();
+        record_decision(conn, lp_ids[1], r1_id, &DecisionAction::Keep).unwrap();
+        record_decision(conn, lp_ids[2], r1_id, &DecisionAction::Keep).unwrap();
+        commit_round(conn, r1_id).unwrap();
+
+        let (r2_id, _) = find_or_create_round(conn, project_id, stack_id).unwrap();
+
+        // Restore into R2 first time
+        restore_eliminated_photo(conn, project_id, lp_ids[0], r2_id).unwrap();
+
+        // Try to restore again — should be a no-op
+        let result = restore_eliminated_photo(conn, project_id, lp_ids[0], r2_id).unwrap();
+        assert!(
+            !result.restored,
+            "second restore must return restored=false"
+        );
+
+        // Verify no duplicate in round_photos
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM round_photos WHERE round_id = ?1 AND logical_photo_id = ?2",
+                params![r2_id, lp_ids[0]],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "must not create duplicate round_photos row");
+    }
+
+    #[test]
+    fn test_restore_eliminated_photo_committed_round_error() {
+        // F4-3: Try to restore into a committed round. Must return Err.
+        let (project, project_id, stack_id, lp_ids) = setup_test_db(3);
+        let conn = &project.conn;
+
+        let (r1_id, _) = find_or_create_round(conn, project_id, stack_id).unwrap();
+        record_decision(conn, lp_ids[0], r1_id, &DecisionAction::Eliminate).unwrap();
+        record_decision(conn, lp_ids[1], r1_id, &DecisionAction::Keep).unwrap();
+        record_decision(conn, lp_ids[2], r1_id, &DecisionAction::Keep).unwrap();
+        commit_round(conn, r1_id).unwrap();
+
+        // Try to restore into the committed R1 — must fail
+        let result = restore_eliminated_photo(conn, project_id, lp_ids[0], r1_id);
+        assert!(
+            result.is_err(),
+            "restoring into a committed round must return Err"
+        );
+    }
+
+    #[test]
+    fn test_restore_eliminated_photo_not_eliminated_error() {
+        // F4-4: Try to restore a photo that is undecided or kept. Must return Err.
+        let (project, project_id, stack_id, lp_ids) = setup_test_db(3);
+        let conn = &project.conn;
+
+        let (r1_id, _) = find_or_create_round(conn, project_id, stack_id).unwrap();
+
+        // Photo is undecided — restore must fail
+        let result = restore_eliminated_photo(conn, project_id, lp_ids[0], r1_id);
+        assert!(
+            result.is_err(),
+            "restoring an undecided photo must return Err"
+        );
+
+        // Keep a photo — restore must also fail
+        record_decision(conn, lp_ids[1], r1_id, &DecisionAction::Keep).unwrap();
+        let result = restore_eliminated_photo(conn, project_id, lp_ids[1], r1_id);
+        assert!(result.is_err(), "restoring a kept photo must return Err");
+    }
+
+    #[test]
+    fn test_restore_updates_round_status_counts() {
+        // F4-5: Restore then check get_round_status. total+1, undecided+1.
+        let (project, project_id, stack_id, lp_ids) = setup_test_db(4);
+        let conn = &project.conn;
+
+        let (r1_id, _) = find_or_create_round(conn, project_id, stack_id).unwrap();
+        // Eliminate 2 photos, keep 2
+        record_decision(conn, lp_ids[0], r1_id, &DecisionAction::Eliminate).unwrap();
+        record_decision(conn, lp_ids[1], r1_id, &DecisionAction::Eliminate).unwrap();
+        record_decision(conn, lp_ids[2], r1_id, &DecisionAction::Keep).unwrap();
+        record_decision(conn, lp_ids[3], r1_id, &DecisionAction::Keep).unwrap();
+        commit_round(conn, r1_id).unwrap();
+
+        let (r2_id, _) = find_or_create_round(conn, project_id, stack_id).unwrap();
+
+        // Get status before restore
+        let status_before = get_round_status(conn, project_id, stack_id).unwrap();
+        let total_before = status_before.total_photos;
+        let undecided_before = status_before.undecided;
+
+        // Restore one eliminated photo
+        restore_eliminated_photo(conn, project_id, lp_ids[0], r2_id).unwrap();
+
+        // Get status after restore
+        let status_after = get_round_status(conn, project_id, stack_id).unwrap();
+        assert_eq!(
+            status_after.total_photos,
+            total_before + 1,
+            "total_photos must increase by 1 after restore"
+        );
+        assert_eq!(
+            status_after.undecided,
+            undecided_before + 1,
+            "undecided must increase by 1 after restore"
+        );
+    }
+
+    #[test]
+    fn test_restore_then_eliminate_in_later_round() {
+        // F4-6: Restore from R1 into R2, then eliminate in R2.
+        // Verify decisions log shows the new elimination in R2.
+        let (project, project_id, stack_id, lp_ids) = setup_test_db(3);
+        let conn = &project.conn;
+        let target_lp = lp_ids[0];
+
+        // R1: eliminate, commit
+        let (r1_id, _) = find_or_create_round(conn, project_id, stack_id).unwrap();
+        record_decision(conn, target_lp, r1_id, &DecisionAction::Eliminate).unwrap();
+        record_decision(conn, lp_ids[1], r1_id, &DecisionAction::Keep).unwrap();
+        record_decision(conn, lp_ids[2], r1_id, &DecisionAction::Keep).unwrap();
+        commit_round(conn, r1_id).unwrap();
+
+        // R2: restore, then re-eliminate
+        let (r2_id, _) = find_or_create_round(conn, project_id, stack_id).unwrap();
+        restore_eliminated_photo(conn, project_id, target_lp, r2_id).unwrap();
+        record_decision(conn, target_lp, r2_id, &DecisionAction::Eliminate).unwrap();
+
+        // Verify current_status is eliminate
+        let status = get_current_status(conn, target_lp);
+        assert_eq!(status, "eliminate", "re-eliminated photo must be eliminate");
+
+        // Verify decisions log has an R2 entry
+        let r2_decision_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM decisions WHERE logical_photo_id = ?1 AND round_id = ?2",
+                params![target_lp, r2_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            r2_decision_count, 1,
+            "must have exactly 1 decision for restored photo in R2"
+        );
+    }
+
+    #[test]
+    fn test_restore_then_undo() {
+        // F4-7: Restore, make decision, undo. Photo stays in round_photos as undecided.
+        let (project, project_id, stack_id, lp_ids) = setup_test_db(3);
+        let conn = &project.conn;
+        let target_lp = lp_ids[0];
+
+        // R1: eliminate, commit
+        let (r1_id, _) = find_or_create_round(conn, project_id, stack_id).unwrap();
+        record_decision(conn, target_lp, r1_id, &DecisionAction::Eliminate).unwrap();
+        record_decision(conn, lp_ids[1], r1_id, &DecisionAction::Keep).unwrap();
+        record_decision(conn, lp_ids[2], r1_id, &DecisionAction::Keep).unwrap();
+        commit_round(conn, r1_id).unwrap();
+
+        // R2: restore, decide keep, then undo
+        let (r2_id, _) = find_or_create_round(conn, project_id, stack_id).unwrap();
+        restore_eliminated_photo(conn, project_id, target_lp, r2_id).unwrap();
+        record_decision(conn, target_lp, r2_id, &DecisionAction::Keep).unwrap();
+        undo_decision(conn, target_lp, r2_id).unwrap();
+
+        // Photo must still be in round_photos
+        let in_round: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM round_photos WHERE round_id = ?1 AND logical_photo_id = ?2",
+                params![r2_id, target_lp],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(in_round, 1, "photo must remain in round_photos after undo");
+
+        // current_status must be undecided
+        let status = get_current_status(conn, target_lp);
+        assert_eq!(status, "undecided", "undone photo must be undecided");
+    }
+
+    #[test]
+    fn test_restore_idempotent_second_call() {
+        // F4-8: Call restore twice. Second returns { restored: false }.
+        let (project, project_id, stack_id, lp_ids) = setup_test_db(3);
+        let conn = &project.conn;
+        let target_lp = lp_ids[0];
+
+        let (r1_id, _) = find_or_create_round(conn, project_id, stack_id).unwrap();
+        record_decision(conn, target_lp, r1_id, &DecisionAction::Eliminate).unwrap();
+        record_decision(conn, lp_ids[1], r1_id, &DecisionAction::Keep).unwrap();
+        record_decision(conn, lp_ids[2], r1_id, &DecisionAction::Keep).unwrap();
+        commit_round(conn, r1_id).unwrap();
+
+        let (r2_id, _) = find_or_create_round(conn, project_id, stack_id).unwrap();
+
+        let first = restore_eliminated_photo(conn, project_id, target_lp, r2_id).unwrap();
+        assert!(first.restored, "first restore must succeed");
+
+        let second = restore_eliminated_photo(conn, project_id, target_lp, r2_id).unwrap();
+        assert!(
+            !second.restored,
+            "second restore must be idempotent (restored=false)"
+        );
+    }
+
+    #[test]
+    fn test_restore_lifecycle_invariant() {
+        // F4-9: Multi-round lifecycle: eliminate R1 -> commit -> restore into R2 ->
+        // decide keep -> commit R2 -> verify R3 contains the restored photo.
+        let (project, project_id, stack_id, lp_ids) = setup_test_db(3);
+        let conn = &project.conn;
+        let restored_lp = lp_ids[0];
+
+        // R1: eliminate photo 0, keep photos 1 and 2, commit
+        let (r1_id, _) = find_or_create_round(conn, project_id, stack_id).unwrap();
+        record_decision(conn, restored_lp, r1_id, &DecisionAction::Eliminate).unwrap();
+        record_decision(conn, lp_ids[1], r1_id, &DecisionAction::Keep).unwrap();
+        record_decision(conn, lp_ids[2], r1_id, &DecisionAction::Keep).unwrap();
+        commit_round(conn, r1_id).unwrap();
+
+        // R2: restore photo 0, keep all 3 photos, commit
+        let (r2_id, _) = find_or_create_round(conn, project_id, stack_id).unwrap();
+        restore_eliminated_photo(conn, project_id, restored_lp, r2_id).unwrap();
+        record_decision(conn, restored_lp, r2_id, &DecisionAction::Keep).unwrap();
+        record_decision(conn, lp_ids[1], r2_id, &DecisionAction::Keep).unwrap();
+        record_decision(conn, lp_ids[2], r2_id, &DecisionAction::Keep).unwrap();
+        commit_round(conn, r2_id).unwrap();
+
+        // R3 (auto-created by commit): must contain all 3 photos
+        let (r3_id, _) = find_or_create_round(conn, project_id, stack_id).unwrap();
+        assert_ne!(r3_id, r2_id, "R3 must differ from R2");
+
+        let r3_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM round_photos WHERE round_id = ?1",
+                params![r3_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            r3_count, 3,
+            "R3 must contain all 3 photos (including restored one)"
+        );
+
+        // The restored photo must be in R3
+        let restored_in_r3: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM round_photos WHERE round_id = ?1 AND logical_photo_id = ?2",
+                params![r3_id, restored_lp],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            restored_in_r3, 1,
+            "restored photo must survive into R3 as a kept photo"
+        );
+    }
+
 }

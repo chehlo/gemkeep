@@ -2284,3 +2284,4 @@ describe('StackOverview — uses getStackProgressBatch instead of per-stack getR
     expect(perStackCalls.length).toBe(0)
   })
 })
+

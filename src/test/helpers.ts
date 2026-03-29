@@ -233,6 +233,7 @@ export function mockStackFocusRouter(overrides?: Record<string, MockRouterValue>
     get_photo_detail: PHOTO_DETAIL,
     list_stacks: [[]],
     list_rounds: [OPEN_ROUND],
+    restore_eliminated_photo: { restored: false, logical_photo_id: 0, round_id: 0 },
     ...overrides,
   })
 }

@@ -1,7 +1,7 @@
 use crate::decisions::engine;
 use crate::decisions::model::{
-    DecisionAction, DecisionResult, PhotoDecisionStatus, PhotoDetail, PhotoSnapshot, RoundStatus,
-    RoundSummary,
+    DecisionAction, DecisionResult, PhotoDecisionStatus, PhotoDetail,
+    PhotoSnapshot, RestoreResult, RoundStatus, RoundSummary,
 };
 use crate::projects::manager;
 use crate::state::AppState;
@@ -197,3 +197,20 @@ pub fn get_round_snapshot(
 
     engine::get_round_snapshot(conn, round_id).map_err(|e| e.to_string())
 }
+
+/// Restore an eliminated photo into a target open round.
+#[tauri::command]
+pub fn restore_eliminated_photo(
+    slug: String,
+    logical_photo_id: i64,
+    round_id: i64,
+    state: State<'_, AppState>,
+) -> Result<RestoreResult, String> {
+    let (db_guard, project_guard) = with_open_project(&state, &slug)?;
+    let conn = db_guard.as_ref().unwrap();
+    let project = project_guard.as_ref().unwrap();
+
+    engine::restore_eliminated_photo(conn, project.id, logical_photo_id, round_id)
+        .map_err(|e| e.to_string())
+}
+

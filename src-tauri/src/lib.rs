@@ -62,6 +62,7 @@ pub fn run() {
             commands::decisions::get_round_decisions,
             commands::decisions::list_rounds,
             commands::decisions::get_round_snapshot,
+            commands::decisions::restore_eliminated_photo,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

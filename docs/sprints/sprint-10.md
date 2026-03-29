@@ -17,7 +17,7 @@
 | F1: Multi-round progression (Round 1 survivors become Round 2 members) | DONE |
 | F2: Immutable round snapshots + round navigation | DONE |
 | F3: Decision overrides in later rounds | DONE |
-| F4: Restoration of eliminated photos | Phase D (pending) |
+| F4: Restoration of eliminated photos (via historical round navigation) | Phase D (pending) |
 | F5: Round navigation `[` `]` keys + round tab bar | DONE |
 | F6: Finalize stack `Ctrl+Shift+Enter` | Phase D (pending) |
 
@@ -114,13 +114,11 @@ Each committed round is a frozen snapshot. Navigating to a past round shows the 
 
 #### F4: Restoration of eliminated photos
 
-An eliminated photo can be restored in a later round by creating a new "keep" decision that overrides the elimination. Use case: "I eliminated this in Round 1, but after seeing Round 2 survivors, I realize it was actually the best one."
+An eliminated photo can be restored in a later round. Use case: "I eliminated this in Round 1, but after seeing Round 2 survivors, I realize it was actually the best one."
 
-**Show-eliminated toggle:** In StackFocus (current open round), press `E` to toggle visibility of eliminated photos from ALL prior rounds. When visible, eliminated photos appear with a dimmed/grayed-out treatment and a "Eliminated in Round N" label. Pressing `R` on a dimmed eliminated photo restores it to the current round.
+**Restore via historical round navigation:** The user navigates to a past round (e.g., R2) using `[` key or tab click. Photos that are NOT members of the current open round are visually marked (e.g., badge or indicator like "Not in R5") but remain fully visible — no dimming. Pressing `R` on a marked photo restores it to the current open round as undecided.
 
-**New IPC: `list_eliminated_photos(slug, stack_id, round_id)`** — returns photos that were eliminated in any round up to (but not including) the given round and are NOT already members of the given round. Includes which round eliminated them.
-
-**New IPC: `restore_eliminated_photo(slug, logical_photo_id, round_id)`** — adds the photo to `round_photos` for the given round and records a "keep" decision. Resets `current_status` to `undecided` (restored into the round as undecided, not pre-decided). Guards: only works on open rounds; photo must actually be eliminated; photo must not already be a member of this round.
+**New IPC: `restore_eliminated_photo(slug, logical_photo_id, round_id)`** — adds the photo to `round_photos` for the given round. Resets `current_status` to `undecided`. No decision record is created — the photo enters the round as undecided, and the user must explicitly Y/X it. Guards: only works on open rounds; photo must actually be eliminated; photo must not already be a member of this round.
 
 #### F6: Finalize stack `Ctrl+Shift+Enter`
 
@@ -150,12 +148,12 @@ A "Finalize stack" action marks the stack as done. Its survivors are locked unti
 ## "Good enough" definition
 
 - Round navigation uses a simple numbered tab bar or bracket-key cycling. Not a timeline visualization.
-- Restoration works via a keyboard shortcut (`R`) on a visible (but dimmed) eliminated photo after pressing `E` to show eliminated. Not drag-and-drop.
+- Restoration works via navigating to a past round and pressing `R` on a photo not in the current round. No special toggle or overlay needed.
 - Finalize confirmation is a non-modal inline message ("Stack finalized. N survivors."), not a dialog box.
 - Round snapshots are derived from the decisions log via SQL queries — no separate snapshot tables needed.
 - The round tab bar is plain text tabs (`R1 R2 R3*`), not a styled component. Functional over pretty. For 10+ rounds, show first 3 + last 2 with ellipsis: `R1 R2 R3 ... R9 R10*`.
 - Read-only mode for past rounds disables keys and shows a warning. No visual graying of the entire UI.
-- `list_eliminated_photos` returns a flat list. No grouping by "which round eliminated them" in the UI — just a label per photo.
+- Photos not in the current round are marked with a simple indicator in historical views — no dimming, full visibility.
 
 ---
 
@@ -171,10 +169,10 @@ A "Finalize stack" action marks the stack as done. Its survivors are locked unti
 8. [Phase A] `get_round_status` for Round 2 shows only survivor counts, not Round 1 eliminated photos
 9. [Phase A] ComparisonView passes `roundId` to `listLogicalPhotos` — only shows current round's photos
 10. [Phase A] SingleView passes `roundId` to `listLogicalPhotos` — arrow navigation stays within round members
-11. [Phase D — deferred] Pressing `E` in StackFocus toggles visibility of eliminated photos from prior rounds
-12. [Phase D — deferred] Eliminated photos appear dimmed with "Eliminated in Round N" labels
-13. [Phase D — deferred] Pressing `R` on a dimmed eliminated photo restores it to the current open round as undecided
-14. [Phase D — deferred] Restored photo appears in the StackFocus grid and is eligible for Y/X decisions
+11. [Phase D — deferred] In historical round views, photos not in the current open round are visually marked (e.g., "Not in R5")
+12. [Phase D — deferred] Pressing `R` on a marked photo in a historical round view restores it to the current open round as undecided
+13. [Phase D — deferred] Restored photo appears in the current round's StackFocus grid and is eligible for Y/X decisions
+14. [Phase D — deferred] `R` on a photo already in the current round is a no-op
 15. [Phase D — deferred] `Ctrl+Shift+Enter` finalizes the stack; shows inline confirmation with survivor count
 16. [Phase D — deferred] Finalized stacks show a distinct badge in StackOverview (checkmark + "Finalized")
 17. [Phase D — deferred] Entering a finalized stack shows survivors in read-only mode with a "Reopen" option
@@ -200,15 +198,15 @@ A "Finalize stack" action marks the stack as done. Its survivors are locked unti
 | 2 | Press Y/X in a committed round's view | Keys ignored. Inline warning: "Round N is committed — read-only." |
 | 3 | Press `]` on the latest (open) round | No-op. No error message. |
 | 4 | Press `[` on Round 1 | No-op. No error message. |
-| 5 | Restore a photo that was eliminated in Round 1, then eliminate it again in Round 2 | Works normally. Photo added to Round 2 members, then eliminated via X. Decisions log has: R1 eliminate, R2 keep (restore), R2 eliminate. |
+| 5 | Restore a photo that was eliminated in Round 1, then eliminate it again in Round 2 | Works normally. Photo added to Round 2 members as undecided, then eliminated via X. Decisions log has: R1 eliminate, R2 eliminate. |
 | 6 | Restore a photo that is already a member of the current round | No-op — `restore_eliminated_photo` returns Ok without duplicating the `round_photos` entry. |
 | 7 | Finalize a stack that has an open round with undecided photos | The open round is committed first (auto-commit), then stack is finalized. Undecided photos in the committed round are treated as implicit keeps. |
 | 8 | Finalize a stack with no rounds (no decisions ever made) | Error: "Cannot finalize a stack with no rounds." |
 | 9 | Reopen an already-active (non-finalized) stack | No-op — `reopen_stack` returns Ok without state change. |
 | 10 | `Ctrl+Shift+Enter` on a finalized stack | Reopens the stack (toggle behavior). Shows "Stack reopened." |
-| 11 | Show eliminated (`E`) when no photos have been eliminated | Toggle activates but the grid shows no additional photos. No error. |
-| 12 | Navigate to Round 1, press `E` to show eliminated | Show-eliminated is only available in the current open round. In committed rounds, `E` is disabled. |
-| 13 | Crash mid-restore (after `round_photos` INSERT, before decision INSERT) | On restart, the photo is a round member with no decision — shows as undecided. Consistent state. |
+| 11 | `R` key pressed on a photo not in a historical round view (current round or non-photo context) | No-op. `R` only restores from historical views. |
+| 12 | Navigate to historical round with all photos already in current round | All photos shown without "not in current round" markers. `R` is no-op on all. |
+| 13 | Crash mid-restore (after `round_photos` INSERT) | On restart, the photo is a round member with no decision — shows as undecided. Consistent state. |
 | 14 | Undo the restore decision in the current round | Photo's decision is removed. Photo remains in `round_photos` but shows as undecided. The user can eliminate it or leave undecided for commit. |
 | 15 | Stack with 50+ rounds (stress test) | Round tab bar scrolls horizontally. `[`/`]` keys still work. No performance degradation on `list_rounds`. |
 | 16 | `get_round_status_batch` after multi-round progression | Returns correct counts per stack using round-scoped queries. Stacks at different round numbers return their respective latest round's data. |
@@ -241,18 +239,18 @@ Per `sprint-plan.md` cross-sprint standards:
 
 | File | Changes |
 |------|---------|
-| `src-tauri/src/decisions/engine.rs` | Fix `get_round_status` to use `round_photos` instead of `logical_photos WHERE stack_id`. Fix `get_round_status_batch` similarly. Add `list_rounds()`, `get_round_snapshot()`, `restore_eliminated_photo()`, `list_eliminated_photos()`, `finalize_stack()`, `reopen_stack()`. |
-| `src-tauri/src/decisions/model.rs` | Add `RoundSummary` struct (for `list_rounds`), `RoundSnapshot` struct (photo list + decisions for a committed round), `EliminatedPhoto` struct (photo info + eliminated_in_round), `FinalizeResult` struct. Extend `RoundState` type if needed. |
-| `src-tauri/src/commands/decisions.rs` | Add `get_round_decisions` command. Add 6 new command functions: `list_rounds`, `get_round_snapshot`, `restore_eliminated_photo`, `finalize_stack`, `reopen_stack`, `list_eliminated_photos`. Fix `make_decision` to find open round correctly (not reject after committed round). Deprecate `get_stack_decisions`. |
+| `src-tauri/src/decisions/engine.rs` | Remove `round_id` from public `get_round_status` / `get_round_status_batch` — internally resolve latest open round. Add `list_rounds()`, `get_round_snapshot()`, `restore_eliminated_photo()`, `finalize_stack()`, `reopen_stack()`. |
+| `src-tauri/src/decisions/model.rs` | Add `RoundSummary` struct (for `list_rounds`), `RoundSnapshot` struct (photo list + decisions for a committed round), `FinalizeResult` struct. Extend `RoundState` type if needed. |
+| `src-tauri/src/commands/decisions.rs` | Add `get_round_decisions` command. Add 5 new command functions: `list_rounds`, `get_round_snapshot`, `restore_eliminated_photo`, `finalize_stack`, `reopen_stack`. Update `get_round_status` / `get_round_status_batch` to remove `round_id` parameter. |
 | `src-tauri/src/db/migrations.rs` | Add migration: `ALTER TABLE stacks ADD COLUMN state TEXT NOT NULL DEFAULT 'active'` |
-| `src-tauri/src/lib.rs` | Register 6 new IPC commands |
+| `src-tauri/src/lib.rs` | Register 5 new IPC commands |
 
 ### Frontend
 
 | File | Changes |
 |------|---------|
-| `src/lib/api/index.ts` | Add `getRoundDecisions` function. Add 6 new API functions + types (`RoundSummary`, `RoundSnapshot`, `EliminatedPhoto`, `FinalizeResult`). Add `RoundState` value `'finalized'` if needed. |
-| `src/lib/components/screens/StackFocus.svelte` | Round tab bar, `[`/`]` key handlers, show-eliminated toggle (`E`), restore key (`R`), finalize (`Ctrl+Shift+Enter`), read-only mode for committed rounds, "Reopen" action for finalized stacks |
+| `src/lib/api/index.ts` | Add `getRoundDecisions` function. Add 5 new API functions + types (`RoundSummary`, `RoundSnapshot`, `FinalizeResult`). Update `getRoundStatus` / `getRoundStatusBatch` to remove `roundId` parameter. |
+| `src/lib/components/screens/StackFocus.svelte` | Round tab bar, `[`/`]` key handlers, `R` key restore from historical views, finalize (`Ctrl+Shift+Enter`), read-only mode for committed rounds, "Reopen" action for finalized stacks, "not in current round" markers in historical views |
 | `src/lib/components/screens/ComparisonView.svelte` | Pass `roundId` to `listLogicalPhotos` (BUG-12 fix). Read-only mode. Inherits round context from StackFocus. |
 | `src/lib/components/screens/SingleView.svelte` | Pass `roundId` to `listLogicalPhotos` (BUG-13 fix). Read-only mode. Inherits round context from StackFocus. |
 | `src/lib/components/screens/StackOverview.svelte` | Finalized badge on stack cards. |
@@ -297,18 +295,8 @@ SELECT rp.logical_photo_id,
 FROM round_photos rp WHERE rp.round_id = ?1
 ```
 
-**Eliminated photos (candidates for restoration):**
-```sql
-SELECT lp.id, lp.current_status, d.round_id AS eliminated_in_round, r.round_number
-FROM logical_photos lp
-JOIN decisions d ON d.logical_photo_id = lp.id
-JOIN rounds r ON r.id = d.round_id
-WHERE lp.stack_id = ?1
-  AND lp.current_status = 'eliminate'
-  AND lp.id NOT IN (SELECT logical_photo_id FROM round_photos WHERE round_id = ?2)
-GROUP BY lp.id
-HAVING d.id = MAX(d.id)
-```
+**Restoration candidates (derived from round snapshots):**
+The frontend derives which photos are "not in the current round" by comparing the historical round's `get_round_snapshot` members against the current open round's `round_photos`. No dedicated backend query needed.
 
 ---
 
@@ -344,11 +332,11 @@ HAVING d.id = MAX(d.id)
 
 ### Phase D — Restoration + finalize
 
-12. **`list_eliminated_photos` IPC** — New engine function + command. Returns eliminated photos not in the current round.
+12. **`get_round_status` API change** — Remove `round_id` from public `get_round_status` / `get_round_status_batch` interfaces. Internally resolve latest open round. Update all callers (frontend + tests).
 
-13. **`restore_eliminated_photo` IPC** — New engine function + command. Adds photo to `round_photos`, records initial undecided state.
+13. **`restore_eliminated_photo` IPC** — New engine function + command. Adds photo to `round_photos`, sets `current_status` to `undecided`. No decision record.
 
-14. **Show-eliminated toggle (`E` key)** — StackFocus fetches eliminated photos on toggle, renders them dimmed in the grid. `R` key triggers restore.
+14. **Historical view restore UX** — In historical round views, mark photos not in current open round. `R` key restores marked photo to current round.
 
 15. **Schema migration: `stacks.state`** — Add column. Update stack listing queries to expose `state`.
 
@@ -373,17 +361,17 @@ HAVING d.id = MAX(d.id)
 | `get_round_snapshot` returns historical decisions | x | | |
 | Decision override (keep in R1, eliminate in R2) | x | | |
 | Round 1 snapshot unchanged after R2 override | x | | |
-| `restore_eliminated_photo` adds to round + undecided | x | | |
+| `restore_eliminated_photo` adds to round + undecided (no decision record) | x | | |
 | Restore already-member photo is no-op | x | | |
-| `list_eliminated_photos` excludes current round members | x | | |
+| `get_round_status` resolves latest open round internally | x | | |
 | `finalize_stack` sets state + auto-commits | x | | |
 | `reopen_stack` resets state | x | | |
 | Finalize with no rounds returns error | x | | |
 | Round tab bar rendering + click navigation | | x | |
 | `[`/`]` key round navigation | | x | |
 | Read-only mode (Y/X/U disabled + warning) | | x | |
-| Show-eliminated toggle (`E` key) | | x | |
-| Restore key (`R` on dimmed photo) | | x | |
+| Historical view "not in current round" markers | | x | |
+| Restore key (`R` from historical view) | | x | |
 | Finalize flow (`Ctrl+Shift+Enter` + confirmation) | | x | |
 | Reopen flow (toggle finalize) | | x | |
 | Finalized badge in StackOverview | | x | |
@@ -395,7 +383,7 @@ HAVING d.id = MAX(d.id)
 
 **E2E scope (Playwright):** 2 new journey tests:
 1. Full multi-round: StackFocus → decide all → commit → Round 2 with survivors → decide → finalize
-2. Restoration: Round 1 eliminate → commit → Round 2 → show eliminated → restore → decide
+2. Restoration: Round 1 eliminate → commit → Round 2 → navigate back to Round 1 → restore photo → return to Round 2 → decide
 
 ---
 

@@ -101,7 +101,7 @@
 - As a user, I want strictly linear rounds: Round 1 -> Round 2 -> Round 3 -> ... **[P0] [NOT STARTED]**
 - As a user, I want each round to be an immutable snapshot of decisions at that point. **[P0] [NOT STARTED]**
 - As a user, I want later rounds to override earlier decisions without changing history. **[P0] [NOT STARTED]**
-- As a user, I want to "restore" an eliminated logical photo by creating a new keep decision in a later round, because I often reconsider after seeing other photos. **[P0] [NOT STARTED]**
+- As a user, I want to restore an eliminated photo by navigating to the round where it existed, pressing R to bring it into the current open round as undecided, because I often reconsider after seeing other photos. **[P0] [NOT STARTED]**
 - As a user, I want to freely navigate between rounds and see the exact state at the end of each round. **[P0] [NOT STARTED]**
 - As a user, I want auto-save of the current round state on every decision or round switch. **[P0] [DONE]**
 - As a user, I want to manually "commit" or "freeze" the current round state (for a stack or the GemStack) via a dedicated keyboard shortcut (e.g., Ctrl+Enter), rather than automatic commit on every action. Manual commit is the explicit moment when the round is sealed -- auto-save protects against crashes but does not finalize the round. **[P0] [DONE]**

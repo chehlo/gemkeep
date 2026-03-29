@@ -1,0 +1,177 @@
+{
+  "projectName": "GemKeep",
+  "description": "Keyboard-first photo culling tool for photographers handling large RAW+JPEG shoots (5000+ photos). Built with Tauri 2.x (Rust backend) + Svelte 5 (frontend) + SQLite.",
+  "version": 2,
+  "createdAt": "2026-03-07T13:30:00Z",
+  "updatedAt": "2026-03-07T14:15:00Z",
+  "goals": [
+    {
+      "description": "Ship MVP with solid architecture — fast iteration but never sacrifice correctness or extensibility"
+    },
+    {
+      "description": "Learn Rust/Svelte/Tauri idioms through real production use"
+    },
+    {
+      "description": "Build correct multi-format architecture (ok if specific format has bugs, architecture must support it)"
+    },
+    {
+      "description": "Full feature set over time without cutting architectural corners"
+    }
+  ],
+  "team": [
+    {
+      "name": "Ilya Lifshits",
+      "role": "Solo developer — architecture, backend, frontend, testing, docs"
+    }
+  ],
+  "techStack": {
+    "desktop": "Tauri 2.x",
+    "frontend": "Svelte 5 + Tailwind CSS 3.4",
+    "backend": "Rust (2021 edition)",
+    "database": "SQLite (rusqlite 0.31, bundled, WAL mode, per-project isolation)",
+    "imageProcessing": [
+      "rsraw (LibRaw wrapper)",
+      "kamadak-exif",
+      "image",
+      "turbojpeg"
+    ],
+    "parallelism": "rayon (capped cores-2)",
+    "testing": {
+      "rust": "cargo test (300+ tests)",
+      "frontend": "Vitest 3 (jsdom + vitest-browser-svelte)",
+      "e2e": "Playwright (29 tests)",
+      "methodology": "Behavioral TDD with immutable RED tests",
+      "totalTests": "535+"
+    },
+    "buildTools": [
+      "cargo",
+      "vite",
+      "tauri-cli"
+    ],
+    "packageManagers": [
+      "cargo",
+      "npm"
+    ]
+  },
+  "architecture": {
+    "pattern": "Tauri 2.x desktop monolith: Rust backend + Svelte frontend",
+    "modules": {
+      "backend": [
+        "commands/ (18 IPC handlers)",
+        "import/ (scanner, EXIF, pairs, stacks, thumbnails)",
+        "photos/ (model, repository)",
+        "projects/ (lifecycle, slug, config)",
+        "decisions/ (culling engine, undo/redo, rounds)",
+        "db/ (connection, migrations, WAL)"
+      ],
+      "frontend": [
+        "api/ (centralized invoke())",
+        "stores/navigation.svelte.ts (Svelte 5 runes state machine)",
+        "components/screens/ (ProjectList, StackOverview, StackFocus, SingleView)"
+      ]
+    },
+    "entryPoints": [
+      "src-tauri/src/main.rs",
+      "src/main.ts"
+    ],
+    "dataFlow": "Frontend keyboard/UI -> invoke() IPC -> Rust handler -> business logic -> SQLite -> status updates"
+  },
+  "conventions": {
+    "commitFormat": "<type>: <description>",
+    "commitTypes": [
+      "feat",
+      "fix",
+      "refactor",
+      "test",
+      "docs",
+      "chore"
+    ],
+    "branchStrategy": "sprint-N branches, merge to main after breakpoint review",
+    "codeStyle": {
+      "rust": "cargo fmt + clippy before every commit",
+      "frontend": "prettier 2-space"
+    },
+    "errorHandling": "thiserror for domain, anyhow for propagation, Result<T, String> for Tauri commands",
+    "testRules": [
+      "Tests must compile (stubs with todo!() for missing API)",
+      "RED tests are immutable during GREEN phase",
+      "RED commit before GREEN",
+      "Use exact assertions (==), never approximate (>=)",
+      "Expected metadata must match actual file content",
+      "Rule 9: invoke() default THROWS on unmocked commands"
+    ],
+    "fileSize": "Split files >400 LOC (aim <350)"
+  },
+  "defaultProcess": {
+    "processId": "gemkeep/behavioral-tdd",
+    "entrypoint": ".a5c/processes/behavioral-tdd.js#process",
+    "description": "Two-phase behavioral TDD: black-box tests first, then minimum implementation"
+  },
+  "processPreferences": {
+    "alwaysUseBehavioralTDD": true,
+    "requireBreakpoints": true,
+    "redCommitBeforeGreen": true,
+    "testImmutabilityCheck": true,
+    "autonomyLevel": "semi-autonomous",
+    "breakpointPolicy": "Major decisions only (architecture, merge to main, destructive ops)"
+  },
+  "painPoints": {
+    "active": [
+      {
+        "id": "pp1",
+        "description": "Bug fix cycles after feature delivery",
+        "severity": "medium"
+      },
+      {
+        "id": "pp2",
+        "description": "Test mock infrastructure fragility",
+        "severity": "medium"
+      },
+      {
+        "id": "pp3",
+        "description": "Process needs more tailoring",
+        "severity": "medium"
+      }
+    ],
+    "deferred": [
+      {
+        "id": "pp-d1",
+        "description": "SingleView black screen",
+        "severity": "medium"
+      },
+      {
+        "id": "pp-d2",
+        "description": "Visual behavior inconsistencies",
+        "severity": "low"
+      }
+    ]
+  },
+  "documentation": {
+    "architecture": "docs/architecure.md",
+    "codingStandards": "docs/coding-standards.md",
+    "testingPhilosophy": "docs/testing-philosophy.md",
+    "keyboardMap": "docs/keyboard-map.md",
+    "projectGuidance": "CLAUDE.md"
+  },
+  "cicd": {
+    "provider": "none",
+    "preference": "Local development for now"
+  },
+  "recommendedTools": {
+    "agents": [
+      "tauri-rust-specialist",
+      "desktop-test-architect",
+      "architecture-pattern-advisor",
+      "desktop-ux-analyst"
+    ],
+    "skills": [
+      "visual-regression-setup"
+    ],
+    "processes": [
+      "gemkeep/behavioral-tdd"
+    ]
+  },
+  "installedProcesses": [
+    "gemkeep/behavioral-tdd"
+  ]
+}

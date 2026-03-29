@@ -11,6 +11,7 @@
  *   testCommand    - Test runner command (default: cargo test)
  *   improvementsPath - Path to code-improvements.md (default: docs/code-improvements.md)
  *   sprintPlanPath - Path to sprint-plan.md (default: docs/sprints/sprint-plan.md)
+ *   baseBranch     - Branch to create sprint branch from (default: main)
  *
  * @skill babysit
  * @agent tauri-rust-specialist specializations/desktop-development/agents/tauri-rust-specialist/AGENT.md
@@ -32,7 +33,18 @@ export async function process(inputs, ctx) {
     testCommand = 'cargo test --manifest-path src-tauri/Cargo.toml',
     improvementsPath = 'docs/code-improvements.md',
     sprintPlanPath = 'docs/sprints/sprint-plan.md',
+    baseBranch = 'main',
   } = inputs;
+
+  const branchName = `sprint-${sprintNumber}`;
+
+  // ════════════════════════════════════════════════════════════════════════
+  // PRE-FLIGHT: CREATE FEATURE BRANCH
+  // ════════════════════════════════════════════════════════════════════════
+
+  ctx.log('info', `Creating feature branch: ${branchName} from ${baseBranch}`);
+  const branch = await ctx.task(createBranchTask, { branchName, baseBranch });
+  ctx.log('info', `Branch: ${branch.summary}`);
 
   // ════════════════════════════════════════════════════════════════════════
   // PHASE 0: SPRINT PLANNING & ARCHITECTURE ANALYSIS
@@ -41,7 +53,7 @@ export async function process(inputs, ctx) {
   ctx.log('info', `Phase 0: Sprint ${sprintNumber} — planning & architecture analysis`);
 
   // 0.1: Analyze sprint spec and extract feature list + architecture constraints
-  const sprintAnalysis = await ctx.task(analyzeSprintTask, {
+  let sprintAnalysis = await ctx.task(analyzeSprintTask, {
     sprintNumber,
     sprintSpecPath,
     sprintPlanPath,
@@ -60,7 +72,7 @@ export async function process(inputs, ctx) {
 
   // 0.2b: If spec quality is low, refine it before proceeding
   if (specQuality.score < 70 || (specQuality.gaps || []).length > 0) {
-    await ctx.breakpoint({
+    const specReviewBp = await ctx.breakpoint({
       tag: 'spec-quality-review',
       question: [
         `Sprint ${sprintNumber} Spec Quality Assessment`,
@@ -81,26 +93,34 @@ export async function process(inputs, ctx) {
       title: 'Spec Quality Review',
     });
 
-    // Auto-improve the spec based on quality assessment
-    const improvedSpec = await ctx.task(improveSprintSpecTask, {
-      sprintNumber,
-      sprintSpecPath,
-      sprintPlanPath,
-      specQuality,
-      sprintAnalysis,
-      improvementsPath,
-    });
-    ctx.log('info', `Spec improved: ${improvedSpec.summary}`);
+    const specReviewResponse = specReviewBp?.response || specReviewBp?.output || '';
+    const specRejected = specReviewResponse.toLowerCase().includes('reject') ||
+      specReviewResponse.toLowerCase().includes('proceed as-is') ||
+      specReviewResponse.toLowerCase().includes('skip');
 
-    // Re-analyze with improved spec
-    const reanalysis = await ctx.task(analyzeSprintTask, {
-      sprintNumber,
-      sprintSpecPath,
-      sprintPlanPath,
-      features,
-    });
-    Object.assign(sprintAnalysis, reanalysis);
-    ctx.log('info', `Re-analysis after improvement: ${reanalysis.summary}`);
+    if (!specRejected) {
+      // Auto-improve the spec based on quality assessment
+      const improvedSpec = await ctx.task(improveSprintSpecTask, {
+        sprintNumber,
+        sprintSpecPath,
+        sprintPlanPath,
+        specQuality,
+        sprintAnalysis,
+        improvementsPath,
+      });
+      ctx.log('info', `Spec improved: ${improvedSpec.summary}`);
+
+      // Re-analyze with improved spec
+      sprintAnalysis = await ctx.task(analyzeSprintTask, {
+        sprintNumber,
+        sprintSpecPath,
+        sprintPlanPath,
+        features,
+      });
+      ctx.log('info', `Re-analysis after improvement: ${sprintAnalysis.summary}`);
+    } else {
+      ctx.log('info', 'Spec improvement skipped — proceeding as-is');
+    }
   }
 
   // 0.3: Scan codebase for anti-patterns from code-improvements.md
@@ -151,8 +171,8 @@ export async function process(inputs, ctx) {
         : '  (none)',
       '',
       'Approve to proceed with implementation.',
-      '- Anti-pattern items: address BEFORE or DURING feature implementation.',
-      '- Bundle items: fix while touching those files (cheap wins).',
+      '- HIGH/BUG items: addressed in pre-flight refactoring (Phase 1).',
+      '- Bundle items: fixed during feature implementation (Phase 2).',
     ].join('\n'),
     title: 'Sprint Planning Review',
   });
@@ -162,14 +182,13 @@ export async function process(inputs, ctx) {
   // ════════════════════════════════════════════════════════════════════════
 
   const relevantIssues = antiPatternScan.relevantIssues || [];
-  const highPriorityIssues = relevantIssues.filter(
+  const preflightIssues = relevantIssues.filter(
     i => i.severity === 'HIGH' || i.category === 'BUG'
   );
   const bundleIssues = relevantIssues.filter(i => i.action === 'bundle');
-  const preflightIssues = [...highPriorityIssues, ...bundleIssues];
 
   if (preflightIssues.length > 0) {
-    ctx.log('info', `Phase 1: Pre-flight refactoring — ${highPriorityIssues.length} HIGH/BUG + ${bundleIssues.length} bundle items`);
+    ctx.log('info', `Phase 1: Pre-flight refactoring — ${preflightIssues.length} HIGH/BUG items`);
 
     for (const issue of preflightIssues) {
       ctx.log('info', `Refactoring: ${issue.id} — ${issue.title}`);
@@ -212,6 +231,7 @@ export async function process(inputs, ctx) {
 
   const featureList = sprintAnalysis.features || features;
   const featureResults = [];
+  const allResolvedIssues = [...preflightIssues.map(i => i.id)];
 
   for (let i = 0; i < featureList.length; i++) {
     const feature = featureList[i];
@@ -220,11 +240,12 @@ export async function process(inputs, ctx) {
     ctx.log('info', `Phase 2.${i + 1}: Feature "${featureName}" — analyze spec`);
 
     // 2.a: Extract behaviors for this feature (sprint-specific: includes anti-pattern awareness)
-    const specAnalysis = await ctx.task(analyzeFeatureSpecTask, {
+    let specAnalysis = await ctx.task(analyzeFeatureSpecTask, {
       feature: featureName,
       sprintSpecPath,
       sprintNumber,
       antiPatterns: relevantIssues,
+      bundleIssues,
       architectureConstraints: archCheck.constraints || [],
     });
     ctx.log('info', `Feature spec: ${specAnalysis.summary}`);
@@ -257,15 +278,14 @@ export async function process(inputs, ctx) {
 
     if (!specIsPlainApproval && specResponse.length > 10) {
       ctx.log('info', `Phase 2.${i + 1}: User provided corrections — re-analyzing`);
-      const correctedSpec = await ctx.task(analyzeFeatureSpecTask, {
+      specAnalysis = await ctx.task(analyzeFeatureSpecTask, {
         feature: `${featureName}\n\nUSER CORRECTIONS:\n${specResponse}`,
         sprintSpecPath,
         sprintNumber,
         antiPatterns: relevantIssues,
         architectureConstraints: archCheck.constraints || [],
       });
-      Object.assign(specAnalysis, correctedSpec);
-      ctx.log('info', `Corrected spec: ${correctedSpec.summary}`);
+      ctx.log('info', `Corrected spec: ${specAnalysis.summary}`);
     }
 
     // 2.c: Delegate to behavioral-tdd for RED -> GREEN -> quality gate
@@ -302,11 +322,16 @@ export async function process(inputs, ctx) {
       });
     }
 
+    // Track bundle issues resolved during this feature
+    const resolvedBundles = (postGreenCheck.resolvedBundles || []);
+    allResolvedIssues.push(...resolvedBundles);
+
     featureResults.push({
       feature: featureName,
       redCommit: tddResult.redCommit,
       greenCommit: tddResult.greenCommit,
       archIssues: postGreenCheck.newIssues || [],
+      resolvedBundles,
     });
   }
 
@@ -330,7 +355,7 @@ export async function process(inputs, ctx) {
   ctx.log('info', `Final arch check: ${finalArchCheck.summary}`);
 
   // 3.3: Update code-improvements.md with resolved items from this sprint
-  const resolvedInSprint = preflightIssues.map(i => i.id);
+  const resolvedInSprint = [...new Set(allResolvedIssues)];
   if (resolvedInSprint.length > 0) {
     const updateImprovements = await ctx.task(updateImprovementsDocTask, {
       improvementsPath,
@@ -468,21 +493,6 @@ export async function process(inputs, ctx) {
     // 4.e: Quality gate after improvement round
     const roundTests = await ctx.task(runFullTestSuiteTask, { testCommand });
     ctx.log('info', `Improvement round ${improvementRound} quality gate: ${roundTests.summary}`);
-
-    await ctx.breakpoint({
-      tag: `improvement-${improvementRound}-complete`,
-      question: [
-        `Improvement Round ${improvementRound} Complete`,
-        '',
-        `Changes implemented: ${changeList.length}`,
-        changeList.map((c, j) => `  ${j + 1}. ${c}`).join('\n'),
-        '',
-        `Quality gate: ${roundTests.summary}`,
-        '',
-        'Continue to next improvement round, or approve to finalize sprint.',
-      ].join('\n'),
-      title: `Improvement Round ${improvementRound} Complete`,
-    });
   }
 
   // ════════════════════════════════════════════════════════════════════════
@@ -496,9 +506,33 @@ export async function process(inputs, ctx) {
   });
   ctx.log('info', `Cleanup: ${cleanup.summary}`);
 
+  // ════════════════════════════════════════════════════════════════════════
+  // PHASE 6: MERGE SPRINT BRANCH
+  // ════════════════════════════════════════════════════════════════════════
+
+  await ctx.breakpoint({
+    tag: 'merge-branch',
+    question: [
+      `Sprint ${sprintNumber} is ready to merge.`,
+      '',
+      `Branch: ${branchName} → ${baseBranch}`,
+      `Features: ${featureResults.length}`,
+      `Improvement rounds: ${improvementRound}`,
+      `Tests: ${finalTests.summary}`,
+      '',
+      'Approve to merge sprint branch into ' + baseBranch + ', or reject to leave the branch as-is.',
+    ].join('\n'),
+    title: `Merge ${branchName}`,
+  });
+
+  ctx.log('info', `Phase 6: Merging ${branchName} into ${baseBranch}`);
+  const merge = await ctx.task(mergeBranchTask, { branchName, baseBranch, sprintNumber });
+  ctx.log('info', `Merge: ${merge.summary}`);
+
   return {
     success: true,
     sprintNumber,
+    branchName,
     featuresImplemented: featureResults.length,
     featureResults,
     improvementRounds: improvementRound,
@@ -513,6 +547,96 @@ export async function process(inputs, ctx) {
 // TASK DEFINITIONS — sprint-specific tasks only
 // (TDD tasks are imported from behavioral-tdd.js)
 // ════════════════════════════════════════════════════════════════════════════
+
+export const createBranchTask = defineTask('create-branch', (args, taskCtx) => ({
+  kind: 'agent',
+  title: `Create branch: ${args.branchName}`,
+  agent: {
+    name: 'general-purpose',
+    prompt: {
+      role: 'Git branch manager',
+      task: [
+        `Create a feature branch "${args.branchName}" from "${args.baseBranch}".`,
+        '',
+        'REQUIREMENTS:',
+        '1. Verify the working tree is clean (no uncommitted changes)',
+        '2. If the working tree is dirty, STOP and report the uncommitted files',
+        '3. Ensure we are on the base branch and it is up-to-date',
+        '4. Create the new branch and switch to it',
+        '5. If the branch already exists, switch to it and report (do NOT recreate)',
+      ].join('\n'),
+      context: { branchName: args.branchName, baseBranch: args.baseBranch },
+      instructions: [
+        'Run: git status --short',
+        'If output is non-empty, FAIL with list of dirty files',
+        `Run: git checkout ${args.baseBranch}`,
+        'Run: git pull --ff-only || true',
+        `Run: git checkout -b ${args.branchName} || git checkout ${args.branchName}`,
+        'Run: git branch --show-current',
+        'Report the current branch name',
+      ],
+      outputFormat: 'JSON with branch (string), created (boolean — true if new, false if existed), summary (string)',
+    },
+    outputSchema: {
+      type: 'object',
+      required: ['branch', 'created', 'summary'],
+      properties: {
+        branch: { type: 'string' },
+        created: { type: 'boolean' },
+        summary: { type: 'string' },
+      },
+    },
+  },
+  io: {
+    inputJsonPath: `tasks/${taskCtx.effectId}/input.json`,
+    outputJsonPath: `tasks/${taskCtx.effectId}/result.json`,
+  },
+}));
+
+export const mergeBranchTask = defineTask('merge-branch', (args, taskCtx) => ({
+  kind: 'agent',
+  title: `Merge ${args.branchName} → ${args.baseBranch}`,
+  agent: {
+    name: 'general-purpose',
+    prompt: {
+      role: 'Git merge operator',
+      task: [
+        `Merge branch "${args.branchName}" into "${args.baseBranch}".`,
+        '',
+        'PROCESS:',
+        '1. Verify all changes on the sprint branch are committed',
+        '2. Switch to the base branch',
+        '3. Merge the sprint branch with --no-ff (preserve branch history)',
+        `4. Use commit message: "feat: merge sprint-${args.sprintNumber} into ${args.baseBranch}"`,
+        '5. Delete the sprint branch after successful merge',
+        '6. Do NOT push — leave that to the user',
+      ].join('\n'),
+      context: { branchName: args.branchName, baseBranch: args.baseBranch },
+      instructions: [
+        'Run: git status --short',
+        `Run: git checkout ${args.baseBranch}`,
+        `Run: git merge --no-ff ${args.branchName} -m "feat: merge sprint-${args.sprintNumber}"`,
+        `Run: git branch -d ${args.branchName}`,
+        'Run: git log --oneline -5',
+        'Report merge result',
+      ],
+      outputFormat: 'JSON with merged (boolean), branchDeleted (boolean), summary (string)',
+    },
+    outputSchema: {
+      type: 'object',
+      required: ['merged', 'summary'],
+      properties: {
+        merged: { type: 'boolean' },
+        branchDeleted: { type: 'boolean' },
+        summary: { type: 'string' },
+      },
+    },
+  },
+  io: {
+    inputJsonPath: `tasks/${taskCtx.effectId}/input.json`,
+    outputJsonPath: `tasks/${taskCtx.effectId}/result.json`,
+  },
+}));
 
 export const analyzeSprintTask = defineTask('analyze-sprint', (args, taskCtx) => ({
   kind: 'agent',
@@ -873,6 +997,10 @@ export const analyzeFeatureSpecTask = defineTask('analyze-feature-spec', (args, 
         'if this feature risks repeating any of them:',
         '',
         ...(args.antiPatterns || []).map(p => `- ${p.id}: ${p.title}`),
+        '',
+        'BUNDLE OPPORTUNITIES (fix while touching these files):',
+        ...(args.bundleIssues || []).map(b => `- ${b.id}: ${b.title} — ${b.bundleReason || 'cheap fix in touched file'}`),
+        ...(!(args.bundleIssues || []).length ? ['(none)'] : []),
         '',
         'ARCHITECTURE CONSTRAINTS (from sprint-plan.md):',
         ...(args.architectureConstraints || []).map(c => `- ${c}`),

@@ -169,14 +169,14 @@ A "Finalize stack" action marks the stack as done. Its survivors are locked unti
 8. [Phase A] `get_round_status` for Round 2 shows only survivor counts, not Round 1 eliminated photos
 9. [Phase A] ComparisonView passes `roundId` to `listLogicalPhotos` — only shows current round's photos
 10. [Phase A] SingleView passes `roundId` to `listLogicalPhotos` — arrow navigation stays within round members
-11. [Phase D — deferred] In historical round views, photos not in the current open round are visually marked (e.g., "Not in R5")
-12. [Phase D — deferred] Pressing `R` on a marked photo in a historical round view restores it to the current open round as undecided
+11. [Phase D — deferred] In historical round views, photos not in the current open round are visually marked with a text badge showing "Not in R{N}" where N is the current open round number
+12. [Phase D — deferred] Pressing `R` on a marked photo in a historical round view restores it to the current open round as undecided. The badge disappears and the photo is immediately interactable (Y/X keys work)
 13. [Phase D — deferred] Restored photo appears in the current round's StackFocus grid and is eligible for Y/X decisions
 14. [Phase D — deferred] `R` on a photo already in the current round is a no-op
-15. [Phase D — deferred] `Ctrl+Shift+Enter` finalizes the stack; shows inline confirmation with survivor count
+15. [Phase D — deferred] `Ctrl+Shift+Enter` finalizes the stack; shows inline confirmation with survivor count. Confirmation text: "Stack finalized. {N} survivors." displayed for 3 seconds then auto-dismissed
 16. [Phase D — deferred] Finalized stacks show a distinct badge in StackOverview (checkmark + "Finalized")
 17. [Phase D — deferred] Entering a finalized stack shows survivors in read-only mode with a "Reopen" option
-18. [Phase D — deferred] Reopening a finalized stack allows new decisions (new round auto-created on first Y/X)
+18. [Phase D — deferred] Reopening a finalized stack allows new decisions (new round auto-created on first Y/X). The new round's round_number = last committed round + 1
 19. [Phase C] `list_rounds` returns all rounds for a stack with correct summary counts per round
 20. [Phase C] Round tab bar displays in StackFocus header; clicking a tab navigates to that round
 21. [Phase C] `[` and `]` keys cycle through rounds in StackFocus. SingleView and ComparisonView inherit round context.
@@ -187,6 +187,9 @@ A "Finalize stack" action marks the stack as done. Its survivors are locked unti
 26. [Phase B] `npm test` passes: round tab bar, read-only mode, round navigation keys
 27. [Phase D — deferred] Restoring a photo that is already a member of the current round is a no-op (not duplicated)
 28. [Phase D — deferred] Finalizing a stack with no rounds returns an error
+29. [Phase D — deferred] Auto-commit on finalize treats undecided photos as implicit keeps — `finalize_stack` on a stack with 3 undecided photos in the open round commits them all as 'keep' before setting state='finalized'
+30. [Phase D — deferred] R key is a no-op when NOT viewing a historical round — pressing R in the current open round or outside StackFocus does nothing
+31. [Phase D — deferred] After reopening a finalized stack (was finalized at R3), first Y/X decision creates Round 4 (round_number increments from last committed round)
 
 ---
 
@@ -225,7 +228,7 @@ Per `sprint-plan.md` cross-sprint standards:
 
 3. **Append-only decisions log**: Restoration creates a new decision row — never DELETE or UPDATE existing decisions. `current_status` on `logical_photos` remains a materialized cache of the latest decision in the open round.
 
-4. **All IPC commands return `Result<T, String>`**: New commands (`list_rounds`, `get_round_snapshot`, `restore_eliminated_photo`, `finalize_stack`, `reopen_stack`, `list_eliminated_photos`) follow this pattern.
+4. **All IPC commands return `Result<T, String>`**: New commands (`list_rounds`, `get_round_snapshot`, `restore_eliminated_photo`, `finalize_stack`, `reopen_stack`) follow this pattern.
 
 5. **`tracing` for logging**: No `println!` in any new Rust code. Use `tracing::info!` for round commits/finalizes, `tracing::warn!` for edge cases (restore no-op, finalize with no rounds).
 
@@ -274,6 +277,12 @@ ALTER TABLE stacks ADD COLUMN state TEXT NOT NULL DEFAULT 'active';
 - **`decisions`** — append-only log with `round_id`, `logical_photo_id`, `action`, `timestamp`
 - **`logical_photos`** — `current_status` remains as materialized cache for the open round
 
+### Return type definitions
+
+- **`RestoreResult { restored: bool, logical_photo_id: i64, round_id: i64 }`** — `restored=true` if photo was added to the round, `false` if already a member (no-op)
+- **`FinalizeResult { state: String, survivor_count: i64, auto_committed_round: Option<i64> }`** — `auto_committed_round` is `Some(round_id)` if an open round was committed during finalize
+- **`reopen_stack` returns `Result<String, String>`** where Ok value is the new state (`"active"`)
+
 ### Key query patterns
 
 **Round-scoped status (fix for BUG-11):**
@@ -297,6 +306,17 @@ FROM round_photos rp WHERE rp.round_id = ?1
 
 **Restoration candidates (derived from round snapshots):**
 The frontend derives which photos are "not in the current round" by comparing the historical round's `get_round_snapshot` members against the current open round's `round_photos`. No dedicated backend query needed.
+
+**restore_eliminated_photo input->output:**
+- Input: photo eliminated in R1, current open round is R3, photo NOT in R3's round_photos
+- Output: `RestoreResult { restored: true, logical_photo_id: 42, round_id: 3 }`, `current_status` set to `'undecided'`
+- Input: photo already a member of R3
+- Output: `RestoreResult { restored: false, logical_photo_id: 42, round_id: 3 }` (no-op)
+
+**finalize_stack input->output:**
+- Input: stack with open R2 containing 5 kept, 2 eliminated, 1 undecided
+- Output: `FinalizeResult { state: "finalized", survivor_count: 6, auto_committed_round: Some(r2_id) }`
+- (undecided treated as keep during auto-commit, so 5+1=6 survivors)
 
 ---
 
@@ -378,6 +398,9 @@ The frontend derives which photos are "not in the current round" by comparing th
 | Undo in Round 2 resets to undecided correctly | x | x | |
 | `get_round_status_batch` round-scoped (batch) | x | | |
 | Crash recovery: Round 2 decisions persist | x | | |
+| R key no-op outside historical view | | x | |
+| Auto-commit undecided as keeps on finalize | x | | |
+| Round number increments correctly after reopen | x | | |
 | Full multi-round workflow (R1 → commit → R2 → finalize) | | | x |
 | Restore eliminated + re-eliminate workflow | | | x |
 

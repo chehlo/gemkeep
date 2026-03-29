@@ -3,12 +3,12 @@
   import { navigation, navigate } from '$lib/stores/navigation.svelte.js'
   import {
     listLogicalPhotos, getPhotoDetail, getRoundDecisions, getRoundStatus,
-    makeDecision, undoDecision,
     type LogicalPhotoSummary, type PhotoDetail, type PhotoDecisionStatus, type RoundStatus, type DecisionStatus
   } from '$lib/api/index.js'
   import PhotoFrame from '$lib/components/PhotoFrame.svelte'
   import HelpOverlay from '$lib/components/HelpOverlay.svelte'
-  import { updateDecisionState as _updateDecisionState, getDecisionStatus as _getDecisionStatus } from '$lib/utils/photos.js'
+  import { getDecisionStatus as _getDecisionStatus } from '$lib/utils/photos.js'
+  import { handleDecisionKey } from '$lib/utils/decisions.js'
   import { createTimedError } from '$lib/utils/errors.js'
   import { resolveDisplaySrc } from '$lib/utils/display.js'
   import { toggleFileOverlay } from '$lib/utils/filepath.js'
@@ -56,10 +56,6 @@
       if (status === 'undecided') return i
     }
     return null
-  }
-
-  function updateDecisionState(photoId: number, status: DecisionStatus) {
-    decisions = _updateDecisionState(decisions, photoId, status)
   }
 
   onMount(async () => {
@@ -180,19 +176,19 @@
     }
 
     if ((e.key === 'y' || e.key === 'Y') && focusedPhoto) {
-      try {
-        await makeDecision(projectSlug, focusedPhoto.logical_photo_id, 'keep')
-        updateDecisionState(focusedPhoto.logical_photo_id, 'keep')
-        roundStatus = await getRoundStatus(projectSlug, stackId)
-      } catch (err) { console.error('makeDecision failed:', err) }
+      const result = await handleDecisionKey(projectSlug, focusedPhoto.logical_photo_id, stackId, 'keep', decisions)
+      if (result) {
+        decisions = result.decisions
+        roundStatus = result.roundStatus
+      }
       return
     }
 
     if ((e.key === 'x' || e.key === 'X') && focusedPhoto) {
-      try {
-        await makeDecision(projectSlug, focusedPhoto.logical_photo_id, 'eliminate')
-        updateDecisionState(focusedPhoto.logical_photo_id, 'eliminate')
-        roundStatus = await getRoundStatus(projectSlug, stackId)
+      const result = await handleDecisionKey(projectSlug, focusedPhoto.logical_photo_id, stackId, 'eliminate', decisions)
+      if (result) {
+        decisions = result.decisions
+        roundStatus = result.roundStatus
 
         // Auto-fill: replace eliminated photo with next undecided
         if (!locked) {
@@ -210,7 +206,7 @@
             }
           }
         }
-      } catch (err) { console.error('makeDecision failed:', err) }
+      }
       return
     }
 
@@ -233,11 +229,11 @@
     }
 
     if ((e.key === 'u' || e.key === 'U') && focusedPhoto) {
-      try {
-        await undoDecision(projectSlug, focusedPhoto.logical_photo_id)
-        updateDecisionState(focusedPhoto.logical_photo_id, 'undecided')
-        roundStatus = await getRoundStatus(projectSlug, stackId)
-      } catch (err) { console.error('undoDecision failed:', err) }
+      const result = await handleDecisionKey(projectSlug, focusedPhoto.logical_photo_id, stackId, 'undo', decisions)
+      if (result) {
+        decisions = result.decisions
+        roundStatus = result.roundStatus
+      }
       return
     }
   }

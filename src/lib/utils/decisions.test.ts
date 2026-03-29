@@ -90,7 +90,8 @@ describe('handleDecisionKey', () => {
     mockInvoke.mockResolvedValueOnce(decisionResult) // make_decision
     mockInvoke.mockResolvedValueOnce(roundStatus)    // get_round_status
 
-    const result = await handleDecisionKey('my-project', 42, 7, 'keep')
+    const decisions = makeDecisionList(['undecided'])
+    const result = await handleDecisionKey('my-project', 42, 7, 'keep', decisions)
 
     expect(mockInvoke).toHaveBeenCalledWith('make_decision', {
       slug: 'my-project',
@@ -101,7 +102,7 @@ describe('handleDecisionKey', () => {
       slug: 'my-project',
       stackId: 7,
     })
-    expect(result.roundStatus).toEqual(roundStatus)
+    expect(result!.roundStatus).toEqual(roundStatus)
   })
 
   it('eliminate action calls makeDecision with eliminate and returns roundStatus', async () => {
@@ -110,14 +111,15 @@ describe('handleDecisionKey', () => {
     mockInvoke.mockResolvedValueOnce(decisionResult) // make_decision
     mockInvoke.mockResolvedValueOnce(roundStatus)    // get_round_status
 
-    const result = await handleDecisionKey('my-project', 42, 7, 'eliminate')
+    const decisions = makeDecisionList(['undecided'])
+    const result = await handleDecisionKey('my-project', 42, 7, 'eliminate', decisions)
 
     expect(mockInvoke).toHaveBeenCalledWith('make_decision', {
       slug: 'my-project',
       logicalPhotoId: 42,
       action: 'eliminate',
     })
-    expect(result.roundStatus).toEqual(roundStatus)
+    expect(result!.roundStatus).toEqual(roundStatus)
   })
 
   it('undo action calls undoDecision and returns roundStatus', async () => {
@@ -125,7 +127,8 @@ describe('handleDecisionKey', () => {
     mockInvoke.mockResolvedValueOnce(undefined)    // undo_decision
     mockInvoke.mockResolvedValueOnce(roundStatus)  // get_round_status
 
-    const result = await handleDecisionKey('my-project', 42, 7, 'undo')
+    const decisions = makeDecisionList(['keep'])
+    const result = await handleDecisionKey('my-project', 42, 7, 'undo', decisions)
 
     expect(mockInvoke).toHaveBeenCalledWith('undo_decision', {
       slug: 'my-project',
@@ -135,6 +138,6 @@ describe('handleDecisionKey', () => {
       slug: 'my-project',
       stackId: 7,
     })
-    expect(result.roundStatus).toEqual(roundStatus)
+    expect(result!.roundStatus).toEqual(roundStatus)
   })
 })

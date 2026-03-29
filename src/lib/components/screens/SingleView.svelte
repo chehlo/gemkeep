@@ -3,12 +3,11 @@
   import { navigation, navigate, back } from '$lib/stores/navigation.svelte.js'
   import {
     getPhotoDetail, listLogicalPhotos, getRoundDecisions, getRoundStatus,
-    makeDecision, undoDecision,
     type PhotoDetail, type LogicalPhotoSummary, type PhotoDecisionStatus, type RoundStatus, type DecisionStatus
   } from '$lib/api/index.js'
   import PhotoFrame from '$lib/components/PhotoFrame.svelte'
   import { DECISION_TEXT, DECISION_TEXT_COLORS } from '$lib/constants/decisions'
-  import { updateDecisionState as _updateDecisionState } from '$lib/utils/photos.js'
+  import { handleDecisionKey } from '$lib/utils/decisions.js'
   import { createTimedError } from '$lib/utils/errors.js'
   import { resolveDisplaySrc } from '$lib/utils/display.js'
   import { toggleFileOverlay, copyToClipboard } from '$lib/utils/filepath.js'
@@ -139,38 +138,43 @@
     }
 
     if ((e.key === 'y' || e.key === 'Y') && currentPhoto) {
-      try {
-        await makeDecision(projectSlug, currentPhoto.logical_photo_id, 'keep')
-        currentPhoto = { ...currentPhoto, current_status: 'keep' }
-        updateDecisionState(currentPhoto.logical_photo_id, 'keep')
-        roundStatus = await getRoundStatus(projectSlug, stackId)
-      } catch (err) {
-        console.error('makeDecision failed:', err)
-        showDecisionError('Failed to save decision. Please try again.')
+      const result = await handleDecisionKey(projectSlug, currentPhoto.logical_photo_id, stackId, 'keep', decisions, {
+        onDecisionApplied: (_photoId, status) => {
+          if (currentPhoto) currentPhoto = { ...currentPhoto, current_status: status }
+        },
+        onError: () => showDecisionError('Failed to save decision. Please try again.'),
+      })
+      if (result) {
+        decisions = result.decisions
+        roundStatus = result.roundStatus
       }
       return
     }
 
     if ((e.key === 'x' || e.key === 'X') && currentPhoto) {
-      try {
-        await makeDecision(projectSlug, currentPhoto.logical_photo_id, 'eliminate')
-        currentPhoto = { ...currentPhoto, current_status: 'eliminate' }
-        updateDecisionState(currentPhoto.logical_photo_id, 'eliminate')
-        roundStatus = await getRoundStatus(projectSlug, stackId)
-      } catch (err) {
-        console.error('makeDecision failed:', err)
-        showDecisionError('Failed to save decision. Please try again.')
+      const result = await handleDecisionKey(projectSlug, currentPhoto.logical_photo_id, stackId, 'eliminate', decisions, {
+        onDecisionApplied: (_photoId, status) => {
+          if (currentPhoto) currentPhoto = { ...currentPhoto, current_status: status }
+        },
+        onError: () => showDecisionError('Failed to save decision. Please try again.'),
+      })
+      if (result) {
+        decisions = result.decisions
+        roundStatus = result.roundStatus
       }
       return
     }
 
     if ((e.key === 'u' || e.key === 'U') && currentPhoto) {
-      try {
-        await undoDecision(projectSlug, currentPhoto.logical_photo_id)
-        currentPhoto = { ...currentPhoto, current_status: 'undecided' }
-        updateDecisionState(currentPhoto.logical_photo_id, 'undecided')
-        roundStatus = await getRoundStatus(projectSlug, stackId)
-      } catch (err) { console.error('undoDecision failed:', err) }
+      const result = await handleDecisionKey(projectSlug, currentPhoto.logical_photo_id, stackId, 'undo', decisions, {
+        onDecisionApplied: (_photoId, status) => {
+          if (currentPhoto) currentPhoto = { ...currentPhoto, current_status: status }
+        },
+      })
+      if (result) {
+        decisions = result.decisions
+        roundStatus = result.roundStatus
+      }
       return
     }
 
@@ -191,10 +195,6 @@
       e.preventDefault()
       return
     }
-  }
-
-  function updateDecisionState(photoId: number, status: DecisionStatus) {
-    decisions = _updateDecisionState(decisions, photoId, status)
   }
 
   const statusText = (s: DecisionStatus) => DECISION_TEXT[s] || 'UNDECIDED'

@@ -3,12 +3,13 @@
   import { navigation, navigate } from '$lib/stores/navigation.svelte.js'
   import {
     listLogicalPhotos, getThumbnailUrl, getRoundDecisions, getRoundStatus,
-    makeDecision, commitRound, undoDecision, getPhotoDetail, listStacks, listRounds,
+    commitRound, getPhotoDetail, listStacks, listRounds,
     type LogicalPhotoSummary, type PhotoDecisionStatus, type RoundStatus, type DecisionStatus, type RoundSummary
   } from '$lib/api/index.js'
   import PhotoFrame from '$lib/components/PhotoFrame.svelte'
   import RoundTabBar from '$lib/components/RoundTabBar.svelte'
-  import { updateDecisionState as _updateDecisionState, getDecisionStatus as _getDecisionStatus } from '$lib/utils/photos.js'
+  import { getDecisionStatus as _getDecisionStatus } from '$lib/utils/photos.js'
+  import { handleDecisionKey } from '$lib/utils/decisions.js'
   import { createTimedError } from '$lib/utils/errors.js'
   import { createSelection, toggleSelect, extendSelection, clearSelection, getSelectedIds, type SelectionState } from '$lib/utils/selection.js'
   import { toggleFileOverlay, copyToClipboard } from '$lib/utils/filepath.js'
@@ -101,279 +102,224 @@
     cleanupErrorTimer()
   })
 
-  async function handleKey(e: KeyboardEvent) {
-    if (e.key === 'Enter' && e.ctrlKey) {
-      e.preventDefault()
+  function scrollFocusedCardIntoView() {
+    tick().then(() => {
+      document.querySelectorAll('[data-testid="photo-card"]')[focusedIndex]?.scrollIntoView({ block: 'nearest', behavior: 'instant' })
+    })
+  }
+
+  async function handleCommitRound() {
+    try {
+      await commitRound(projectSlug, stackId)
+    } catch (err) {
+      console.error('commitRound failed:', err)
+      showActionError('Failed to commit round. Please try again.')
+      return
+    }
+    // Re-fetch everything for the new round
+    try {
+      // Concurrent fetch: list uses old roundId; getRoundStatus provides new roundId
+      const [, newRoundStatus] = await Promise.all([
+        listLogicalPhotos(projectSlug, stackId, currentRoundId),
+        getRoundStatus(projectSlug, stackId),
+      ])
+      // Update roundId and re-fetch photos + decisions scoped to the new round
+      currentRoundId = newRoundStatus.round_id
+      const [newPhotos, newDecisions] = await Promise.all([
+        listLogicalPhotos(projectSlug, stackId, currentRoundId),
+        getRoundDecisions(projectSlug, stackId, currentRoundId),
+      ])
+      photos = newPhotos
+      decisions = newDecisions
+      roundStatus = newRoundStatus
+    } catch (err) {
+      console.error('Re-fetch after commit failed:', err)
+    }
+    selection = clearSelection()
+    focusedIndex = 0
+  }
+
+  function handleEnterSingleView() {
+    navigate({
+      kind: 'single-view',
+      projectSlug,
+      stackId,
+      photoId: photos[focusedIndex].logical_photo_id,
+      projectName,
+    })
+  }
+
+  function handleCompare() {
+    const selectedIds = getSelectedIds(selection)
+    if (selectedIds.length !== 2) {
+      showActionError('Select 2 photos to compare (S key)')
+      return
+    }
+    navigate({
+      kind: 'comparison-view',
+      projectSlug,
+      stackId,
+      projectName,
+      photoIds: selectedIds,
+    })
+  }
+
+  function handleEscape() {
+    if (screen) {
+      navigate({ kind: 'stack-overview', projectSlug: screen.projectSlug, projectName: screen.projectName })
+    }
+  }
+
+  function handleTabNavigation(direction: 'next' | 'prev') {
+    if (decisions.length > 0 && photos.length > 0) {
+      const step = direction === 'next' ? 1 : -1
+      for (let offset = 1; offset < photos.length; offset++) {
+        const idx = ((focusedIndex + step * offset) % photos.length + photos.length) % photos.length
+        const photoAtIdx = photos[idx]
+        const decision = decisions.find(d => d.logical_photo_id === photoAtIdx.logical_photo_id)
+        if (!decision || decision.current_status === 'undecided') {
+          focusedIndex = idx
+          scrollFocusedCardIntoView()
+          return
+        }
+      }
+      showActionError('No undecided photos')
+    }
+  }
+
+  async function handleFilePathToggle() {
+    if (filePathOverlay !== null) {
+      filePathOverlay = null
+    } else {
       try {
-        await commitRound(projectSlug, stackId)
+        const detail = await getPhotoDetail(projectSlug, photos[focusedIndex].logical_photo_id)
+        const { overlay, shouldCopy } = toggleFileOverlay(filePathOverlay, detail)
+        filePathOverlay = overlay
+        if (shouldCopy && overlay) {
+          copyToClipboard(overlay)
+        }
       } catch (err) {
-        console.error('commitRound failed:', err)
-        showActionError('Failed to commit round. Please try again.')
-        return
-      }
-      // Re-fetch everything for the new round
-      try {
-        // Concurrent fetch: list uses old roundId; getRoundStatus provides new roundId
-        const [, newRoundStatus] = await Promise.all([
-          listLogicalPhotos(projectSlug, stackId, currentRoundId),
-          getRoundStatus(projectSlug, stackId),
-        ])
-        // Update roundId and re-fetch photos + decisions scoped to the new round
-        currentRoundId = newRoundStatus.round_id
-        const [newPhotos, newDecisions] = await Promise.all([
-          listLogicalPhotos(projectSlug, stackId, currentRoundId),
-          getRoundDecisions(projectSlug, stackId, currentRoundId),
-        ])
-        photos = newPhotos
-        decisions = newDecisions
-        roundStatus = newRoundStatus
-      } catch (err) {
-        console.error('Re-fetch after commit failed:', err)
-      }
-      selection = clearSelection()
-      focusedIndex = 0
-      return
-    }
-
-    if ((e.key === 'Enter' || e.key === 'e' || e.key === 'E') && photos.length > 0) {
-      navigate({
-        kind: 'single-view',
-        projectSlug,
-        stackId,
-        photoId: photos[focusedIndex].logical_photo_id,
-        projectName,
-      })
-      return
-    }
-
-    if ((e.key === 'c' || e.key === 'C') && !e.ctrlKey && !e.shiftKey && !e.altKey) {
-      const selectedIds = getSelectedIds(selection)
-      if (selectedIds.length !== 2) {
-        showActionError('Select 2 photos to compare (S key)')
-        return
-      }
-      navigate({
-        kind: 'comparison-view',
-        projectSlug,
-        stackId,
-        projectName,
-        photoIds: selectedIds,
-      })
-      return
-    }
-
-    if (e.key === 'Escape') {
-      if (screen) {
-        navigate({ kind: 'stack-overview', projectSlug: screen.projectSlug, projectName: screen.projectName })
-      }
-      return
-    }
-
-    if (e.key === 'Tab' && !e.shiftKey) {
-      e.preventDefault()
-      // Jump to next undecided photo
-      if (decisions.length > 0 && photos.length > 0) {
-        for (let offset = 1; offset < photos.length; offset++) {
-          const idx = (focusedIndex + offset) % photos.length
-          const photoAtIdx = photos[idx]
-          const decision = decisions.find(d => d.logical_photo_id === photoAtIdx.logical_photo_id)
-          if (!decision || decision.current_status === 'undecided') {
-            focusedIndex = idx
-            tick().then(() => {
-              document.querySelectorAll('[data-testid="photo-card"]')[focusedIndex]?.scrollIntoView({ block: 'nearest', behavior: 'instant' })
-            })
-            return
-          }
-        }
-        showActionError('No undecided photos')
-      }
-      return
-    }
-
-    if (e.key === 'Tab' && e.shiftKey) {
-      e.preventDefault()
-      // Jump to previous undecided photo
-      if (decisions.length > 0 && photos.length > 0) {
-        for (let offset = 1; offset < photos.length; offset++) {
-          const idx = (focusedIndex - offset + photos.length) % photos.length
-          const photoAtIdx = photos[idx]
-          const decision = decisions.find(d => d.logical_photo_id === photoAtIdx.logical_photo_id)
-          if (!decision || decision.current_status === 'undecided') {
-            focusedIndex = idx
-            tick().then(() => {
-              document.querySelectorAll('[data-testid="photo-card"]')[focusedIndex]?.scrollIntoView({ block: 'nearest', behavior: 'instant' })
-            })
-            return
-          }
-        }
-        showActionError('No undecided photos')
-      }
-      return
-    }
-
-    if ((e.key === 'a' || e.key === 'A') && !e.ctrlKey && !e.shiftKey && !e.altKey) {
-      autoAdvance = !autoAdvance
-      return
-    }
-
-    if ((e.key === 'f' || e.key === 'F') && !e.ctrlKey && !e.shiftKey && !e.altKey && photos.length > 0) {
-      if (filePathOverlay !== null) {
-        filePathOverlay = null
-      } else {
-        try {
-          const detail = await getPhotoDetail(projectSlug, photos[focusedIndex].logical_photo_id)
-          const { overlay, shouldCopy } = toggleFileOverlay(filePathOverlay, detail)
-          filePathOverlay = overlay
-          if (shouldCopy && overlay) {
-            copyToClipboard(overlay)
-          }
-        } catch (err) {
-          console.error('getPhotoDetail failed:', err)
-        }
-      }
-      return
-    }
-
-    if (e.key === '[' && currentRoundId > 1) {
-      let prevRoundId: number
-      if (Array.isArray(rounds) && rounds.length > 0) {
-        const currentIdx = rounds.findIndex(r => r.round_id === currentRoundId)
-        if (currentIdx <= 0) return
-        prevRoundId = rounds[currentIdx - 1].round_id
-      } else {
-        prevRoundId = currentRoundId - 1
-      }
-      currentRoundId = prevRoundId
-      try {
-        photos = await listLogicalPhotos(projectSlug, stackId, currentRoundId)
-        decisions = await getRoundDecisions(projectSlug, stackId, currentRoundId)
-        roundStatus = await getRoundStatus(projectSlug, stackId)
-      } catch (err) { console.error('Round navigation failed:', err) }
-      return
-    }
-
-    if (e.key === ']') {
-      if (roundStatus?.state === 'open') return
-      currentRoundId = currentRoundId + 1
-      try {
-        photos = await listLogicalPhotos(projectSlug, stackId, currentRoundId)
-        decisions = await getRoundDecisions(projectSlug, stackId, currentRoundId)
-        roundStatus = await getRoundStatus(projectSlug, stackId)
-      } catch (err) { console.error('Round navigation failed:', err) }
-      return
-    }
-
-    if ((e.key === 'y' || e.key === 'Y') && photos.length > 0) {
-      if (isCommittedRound) return
-      try {
-        await makeDecision(projectSlug, photos[focusedIndex].logical_photo_id, 'keep')
-        updateDecisionState(photos[focusedIndex].logical_photo_id, 'keep')
-        roundStatus = await getRoundStatus(projectSlug, stackId)
-        if (autoAdvance) {
-          const next = findNextUndecided(focusedIndex)
-          if (next !== null) focusedIndex = next
-        }
-      } catch (err) { console.error('makeDecision failed:', err) }
-      return
-    }
-
-    if ((e.key === 'x' || e.key === 'X') && photos.length > 0) {
-      if (isCommittedRound) return
-      try {
-        await makeDecision(projectSlug, photos[focusedIndex].logical_photo_id, 'eliminate')
-        updateDecisionState(photos[focusedIndex].logical_photo_id, 'eliminate')
-        roundStatus = await getRoundStatus(projectSlug, stackId)
-        if (autoAdvance) {
-          const next = findNextUndecided(focusedIndex)
-          if (next !== null) focusedIndex = next
-        }
-      } catch (err) { console.error('makeDecision failed:', err) }
-      return
-    }
-
-    if ((e.key === 'u' || e.key === 'U') && photos.length > 0) {
-      if (isCommittedRound) return
-      try {
-        await undoDecision(projectSlug, photos[focusedIndex].logical_photo_id)
-        updateDecisionState(photos[focusedIndex].logical_photo_id, 'undecided')
-        roundStatus = await getRoundStatus(projectSlug, stackId)
-      } catch (err) { console.error('undoDecision failed:', err) }
-      return
-    }
-
-    // Stack completion: ↓ advances to next undecided stack
-    if (stackComplete && (e.key === 'ArrowDown' || e.key === 'j') && !e.ctrlKey) {
-      e.preventDefault()
-      try {
-        const allStacks = await listStacks(projectSlug)
-        const currentIdx = allStacks.findIndex(s => s.stack_id === stackId)
-        // Find next stack after current one
-        for (let offset = 1; offset < allStacks.length; offset++) {
-          const nextIdx = (currentIdx + offset) % allStacks.length
-          const nextStack = allStacks[nextIdx]
-          try {
-            const rs = await getRoundStatus(projectSlug, nextStack.stack_id)
-            if (rs.undecided > 0) {
-              navigate({ kind: 'stack-focus', projectSlug, stackId: nextStack.stack_id, projectName })
-              return
-            }
-          } catch {
-            // No round yet — untouched stack, it's undecided
-            navigate({ kind: 'stack-focus', projectSlug, stackId: nextStack.stack_id, projectName })
-            return
-          }
-        }
-        // All stacks decided
-        showActionError('All stacks decided')
-      } catch (err) {
-        console.error('listStacks failed:', err)
-      }
-      return
-    }
-
-    if ((e.key === 's' || e.key === 'S') && !e.ctrlKey && !e.shiftKey && !e.altKey && photos.length > 0) {
-      selection = toggleSelect(selection, photos[focusedIndex].logical_photo_id, 2)
-      return
-    }
-
-    if (photos.length > 0) {
-      const cols = 4
-
-      // Shift+Arrow: extend selection
-      if (e.shiftKey && (e.key === 'ArrowRight' || e.key === 'ArrowLeft' || e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
-        const prevIndex = focusedIndex
-        const newIdx = gridNavigate(e.key, focusedIndex, photos.length, cols)
-        if (newIdx !== null) focusedIndex = newIdx
-        e.preventDefault()
-        selection = extendSelection(selection, photos[prevIndex].logical_photo_id, photos[focusedIndex].logical_photo_id, 2)
-        shiftSelected = true
-        tick().then(() => {
-          const cards = document.querySelectorAll('[data-testid="photo-card"]')
-          cards[focusedIndex]?.scrollIntoView({ block: 'nearest', behavior: 'instant' })
-        })
-        return
-      }
-
-      const mappedKey = mapVimKey(e)
-      const newIdx = gridNavigate(mappedKey, focusedIndex, photos.length, cols)
-
-      if (newIdx !== null) {
-        focusedIndex = newIdx
-        e.preventDefault()
-        if (shiftSelected) {
-          selection = clearSelection()
-          shiftSelected = false
-        }
-        tick().then(() => {
-          const cards = document.querySelectorAll('[data-testid="photo-card"]')
-          cards[focusedIndex]?.scrollIntoView({ block: 'nearest', behavior: 'instant' })
-        })
+        console.error('getPhotoDetail failed:', err)
       }
     }
   }
 
-  function updateDecisionState(photoId: number, status: DecisionStatus) {
-    decisions = _updateDecisionState(decisions, photoId, status)
+  async function handleRoundPrev() {
+    let prevRoundId: number
+    if (Array.isArray(rounds) && rounds.length > 0) {
+      const currentIdx = rounds.findIndex(r => r.round_id === currentRoundId)
+      if (currentIdx <= 0) return
+      prevRoundId = rounds[currentIdx - 1].round_id
+    } else {
+      prevRoundId = currentRoundId - 1
+    }
+    currentRoundId = prevRoundId
+    try {
+      photos = await listLogicalPhotos(projectSlug, stackId, currentRoundId)
+      decisions = await getRoundDecisions(projectSlug, stackId, currentRoundId)
+      roundStatus = await getRoundStatus(projectSlug, stackId)
+    } catch (err) { console.error('Round navigation failed:', err) }
+  }
+
+  async function handleRoundNext() {
+    if (roundStatus?.state === 'open') return
+    currentRoundId = currentRoundId + 1
+    try {
+      photos = await listLogicalPhotos(projectSlug, stackId, currentRoundId)
+      decisions = await getRoundDecisions(projectSlug, stackId, currentRoundId)
+      roundStatus = await getRoundStatus(projectSlug, stackId)
+    } catch (err) { console.error('Round navigation failed:', err) }
+  }
+
+  async function applyDecision(action: 'keep' | 'eliminate' | 'undo') {
+    if (isCommittedRound) return
+    const result = await handleDecisionKey(projectSlug, photos[focusedIndex].logical_photo_id, stackId, action, decisions)
+    if (result) {
+      decisions = result.decisions
+      roundStatus = result.roundStatus
+      if (autoAdvance && action !== 'undo') {
+        const next = findNextUndecided(focusedIndex)
+        if (next !== null) focusedIndex = next
+      }
+    }
+  }
+
+  async function handleNextUndecidedStack(e: KeyboardEvent) {
+    e.preventDefault()
+    try {
+      const allStacks = await listStacks(projectSlug)
+      const currentIdx = allStacks.findIndex(s => s.stack_id === stackId)
+      // Find next stack after current one
+      for (let offset = 1; offset < allStacks.length; offset++) {
+        const nextIdx = (currentIdx + offset) % allStacks.length
+        const nextStack = allStacks[nextIdx]
+        try {
+          const rs = await getRoundStatus(projectSlug, nextStack.stack_id)
+          if (rs.undecided > 0) {
+            navigate({ kind: 'stack-focus', projectSlug, stackId: nextStack.stack_id, projectName })
+            return
+          }
+        } catch {
+          // No round yet — untouched stack, it's undecided
+          navigate({ kind: 'stack-focus', projectSlug, stackId: nextStack.stack_id, projectName })
+          return
+        }
+      }
+      // All stacks decided
+      showActionError('All stacks decided')
+    } catch (err) {
+      console.error('listStacks failed:', err)
+    }
+  }
+
+  function handleShiftArrowSelection(e: KeyboardEvent) {
+    const cols = 4
+    const prevIndex = focusedIndex
+    const newIdx = gridNavigate(e.key, focusedIndex, photos.length, cols)
+    if (newIdx !== null) focusedIndex = newIdx
+    e.preventDefault()
+    selection = extendSelection(selection, photos[prevIndex].logical_photo_id, photos[focusedIndex].logical_photo_id, 2)
+    shiftSelected = true
+    scrollFocusedCardIntoView()
+  }
+
+  function handleGridMove(e: KeyboardEvent) {
+    const cols = 4
+    const mappedKey = mapVimKey(e)
+    const newIdx = gridNavigate(mappedKey, focusedIndex, photos.length, cols)
+    if (newIdx !== null) {
+      focusedIndex = newIdx
+      e.preventDefault()
+      if (shiftSelected) {
+        selection = clearSelection()
+        shiftSelected = false
+      }
+      scrollFocusedCardIntoView()
+    }
+  }
+
+  const noModifiers = (e: KeyboardEvent) => !e.ctrlKey && !e.shiftKey && !e.altKey
+
+  async function handleKey(e: KeyboardEvent) {
+    if (e.key === 'Enter' && e.ctrlKey) { e.preventDefault(); await handleCommitRound(); return }
+    if ((e.key === 'Enter' || e.key === 'e' || e.key === 'E') && photos.length > 0) { handleEnterSingleView(); return }
+    if ((e.key === 'c' || e.key === 'C') && noModifiers(e)) { handleCompare(); return }
+    if (e.key === 'Escape') { handleEscape(); return }
+    if (e.key === 'Tab' && !e.shiftKey) { e.preventDefault(); handleTabNavigation('next'); return }
+    if (e.key === 'Tab' && e.shiftKey) { e.preventDefault(); handleTabNavigation('prev'); return }
+    if ((e.key === 'a' || e.key === 'A') && noModifiers(e)) { autoAdvance = !autoAdvance; return }
+    if ((e.key === 'f' || e.key === 'F') && noModifiers(e) && photos.length > 0) { await handleFilePathToggle(); return }
+    if (e.key === '[' && currentRoundId > 1) { await handleRoundPrev(); return }
+    if (e.key === ']') { await handleRoundNext(); return }
+    if ((e.key === 'y' || e.key === 'Y') && photos.length > 0) { await applyDecision('keep'); return }
+    if ((e.key === 'x' || e.key === 'X') && photos.length > 0) { await applyDecision('eliminate'); return }
+    if ((e.key === 'u' || e.key === 'U') && photos.length > 0) { await applyDecision('undo'); return }
+    if (stackComplete && (e.key === 'ArrowDown' || e.key === 'j') && !e.ctrlKey) { await handleNextUndecidedStack(e); return }
+    if ((e.key === 's' || e.key === 'S') && noModifiers(e) && photos.length > 0) { selection = toggleSelect(selection, photos[focusedIndex].logical_photo_id, 2); return }
+    if (photos.length > 0) {
+      if (e.shiftKey && (e.key === 'ArrowRight' || e.key === 'ArrowLeft' || e.key === 'ArrowDown' || e.key === 'ArrowUp')) { handleShiftArrowSelection(e); return }
+      handleGridMove(e)
+    }
   }
 
   function findNextUndecided(fromIndex: number): number | null {

@@ -1,20 +1,18 @@
 # GemKeep Test Coverage Matrix
 
-> **Stale snapshot** from commit 6999f0e (2026-03-02). Test counts now at 654. Regenerate if needed.
-
-**Generated:** 2026-03-02
-**Branch:** sprint-7 (commit 6999f0e)
+**Generated:** 2026-03-29
+**Branch:** main (commit 3478632)
 
 ## Overall Summary
 
 | Metric | Count |
 |--------|-------|
 | Total behaviors audited | 229 |
-| Tested (all tech) | 120 |
-| **Coverage (all behaviors)** | **52.4%** |
-| **Coverage (excl. not-implemented)** | **61.9%** |
+| Tested (all tech) | 121 |
+| **Coverage (all behaviors)** | **52.8%** |
+| **Coverage (excl. not-implemented)** | **62.1%** |
 | Untested (implemented) | 74 |
-| Not implemented | 35 |
+| Not implemented | 34 |
 
 ### Technology Breakdown
 
@@ -151,7 +149,7 @@
 | SO-53 | Home/End jump to first/last stack | keyboard-map | No | -- | none | jsdom | NOT-IMPLEMENTED |
 | SO-54 | Sticky header area during grid scroll | S2.5 | No | -- | none | pw | NOT-IMPLEMENTED |
 | SO-55 | Non-adjacent stack selection (Ctrl+Click) | S2.5 | No | -- | none | jsdom | NOT-IMPLEMENTED |
-| SO-56 | Stack card progress badges (undecided/done) | S2.4 [S8] | No | -- | none | jsdom | NOT-IMPLEMENTED |
+| SO-56 | Stack card finalized badge | S2.4 [S10D] | Yes | finalized stack shows checkmar... | jsdom | jsdom | TESTED-DOM-ONLY |
 | SO-57 | ? Help overlay for StackOverview shortcuts | S2.5 [S12] | No | -- | none | jsdom | NOT-IMPLEMENTED |
 | SO-58 | Stacks count + complete/remaining summary | S2.4 [S10] | No | -- | none | jsdom | NOT-IMPLEMENTED |
 | SO-59 | Bottom shortcut hint bar | S2.4 [S12] | No | -- | none | jsdom | NOT-IMPLEMENTED |
@@ -167,7 +165,7 @@
 ## 3. StackFocus (Wireframe Section 3)
 
 **Component:** `src/lib/components/screens/StackFocus.svelte`
-**Unit tests:** `src/lib/components/screens/StackFocus.test.ts`
+**Unit tests:** `src/lib/components/screens/StackFocus.test.ts`, `StackFocus.restore.test.ts`, `StackFocus.finalize.test.ts`
 **E2E:** `tests/e2e/culling-flow.spec.ts`, `visual-feedback.spec.ts`
 
 | ID | Behavior | Wireframe | Impl? | Test | Current | Correct | Status |
@@ -501,13 +499,13 @@
 | Screen | Total | Visual | DOM-Only | Wrong-Tech | Untested | Not-Impl | Coverage % |
 |--------|-------|--------|----------|------------|----------|----------|------------|
 | ProjectList | 40 | 4 | 10 | 0 | 23 | 3 | 35.0% |
-| StackOverview | 65 | 6 | 34 | 0 | 17 | 8 | 61.5% |
+| StackOverview | 65 | 6 | 35 | 0 | 17 | 7 | 63.1% |
 | StackFocus | 47 | 7 | 16 | 0 | 14 | 10 | 48.9% |
 | SingleView | 40 | 6 | 23 | 0 | 5 | 6 | 72.5% |
 | HelpOverlay | 37 | 0 | 14 | 0 | 15 | 8 | 37.8% |
-| **TOTAL** | **229** | **23** | **97** | **0** | **74** | **35** | **52.4%** |
+| **TOTAL** | **229** | **23** | **98** | **0** | **74** | **34** | **52.8%** |
 
-Coverage excluding not-implemented behaviors: **61.9%** (120 tested / 194 implemented).
+Coverage excluding not-implemented behaviors: **62.1%** (121 tested / 195 implemented).
 
 ---
 
@@ -515,10 +513,128 @@ Coverage excluding not-implemented behaviors: **61.9%** (120 tested / 194 implem
 
 | Layer | Count | Runner |
 |-------|-------|--------|
-| Rust unit/integration tests | 214 | cargo test (1 ignored perf test) |
-| Vitest component tests (jsdom) | 215 | npm test (jsdom) |
-| vitest-browser-svelte tests | 20 | npm test (Chromium) |
-| Playwright E2E tests | 27 | npm run test:e2e |
-| **Total** | **476** | |
+| Rust unit/integration tests | 452 (+ 23 ignored) | `cargo test` |
+| Vitest component tests (jsdom) | 480 | `npm test` (jsdom) |
+| vitest-browser-svelte tests | 32 | `npm run test:browser` (Chromium) |
+| Playwright E2E tests | 29 | `npm run test:e2e` |
+| **Total (running)** | **993** | |
+| **Total (`cargo test` + `npm test`)** | **932** | |
 
-**Note:** These 476 tests cover the 120 tested behaviors identified in this matrix. The remaining 109 behaviors (74 untested + 35 not-implemented) have zero automated test coverage. All 12 formerly wrong-tech behaviors have been migrated to vitest-browser-svelte and now carry TESTED-VISUAL status.
+> The "932" figure counts only the two main CI commands (`cargo test` = 452 passed, `npm test` = 480 passed). Adding browser (32) and E2E (29) brings the full suite to 993 runnable tests (1016 including 23 ignored Rust tests).
+
+### Rust Test Files (475 `#[test]`, 452 run + 23 ignored)
+
+| File | Tests | Notes |
+|------|-------|-------|
+| `src-tauri/src/import/test_fixtures.rs` | 112 | TestLibraryBuilder fixture generation |
+| `src-tauri/src/decisions/engine.rs` | 60 | Decision engine: rounds, commit, restore, finalize, reopen, crash-recovery |
+| `src-tauri/src/photos/repository.rs` | 43 | Photo CRUD and queries |
+| `src-tauri/src/commands/ipc_tests.rs` | 39 | Tauri IPC command integration |
+| `src-tauri/src/import/integration_tests.rs` | 34 | Import pipeline end-to-end |
+| `src-tauri/src/import/thumbnails.rs` | 29 | Thumbnail generation (2 ignored perf tests) |
+| `src-tauri/src/import/test_fixtures_validation.rs` | 21 | Fixture validation (all 21 ignored — slow) |
+| `src-tauri/src/import/exif.rs` | 20 | EXIF extraction |
+| `src-tauri/src/projects/slug.rs` | 16 | Slug generation |
+| `src-tauri/src/projects/integration_tests.rs` | 15 | Project lifecycle |
+| `src-tauri/src/import/orientation_tests.rs` | 13 | Orientation/rotation |
+| `src-tauri/src/import/metadata_tests.rs` | 11 | Metadata parsing |
+| `src-tauri/src/projects/manager.rs` | 11 | Project manager |
+| `src-tauri/src/db/migrations.rs` | 10 | DB schema migrations |
+| `src-tauri/src/import/pairs.rs` | 7 | RAW+JPEG pairing |
+| `src-tauri/src/import/scanner.rs` | 7 | File scanner |
+| `src-tauri/src/import/stacks.rs` | 7 | Stack grouping |
+| `src-tauri/src/asset_scope_tests.rs` | 6 | Asset scope security |
+| `src-tauri/src/projects/repository.rs` | 5 | Project repository |
+| `src-tauri/src/state.rs` | 4 | App state management |
+| `src-tauri/src/import/stacks_tests.rs` | 2 | Stack edge cases |
+| `src-tauri/src/commands/import.rs` | 1 | Import command |
+| `src-tauri/src/import/pipeline.rs` | 1 | Pipeline |
+| `src-tauri/src/import/util.rs` | 1 | Import utilities |
+
+### Frontend Test Files — jsdom (480 tests across 27 files)
+
+| File | Tests | Notes |
+|------|-------|-------|
+| `src/lib/components/screens/StackOverview.test.ts` | 96 | Grid, indexing, merge, burst-gap, finalized badge |
+| `src/lib/components/screens/StackFocus.test.ts` | 71 | Culling, navigation, decisions, rounds |
+| `src/lib/components/screens/SingleView.test.ts` | 51 | Full-screen view, EXIF, decisions, rounds |
+| `src/lib/components/screens/ProjectList.test.ts` | 31 | Project CRUD, auto-open, resume |
+| `src/lib/components/HelpOverlay.test.ts` | 28 | Context-aware shortcut overlay |
+| `src/lib/components/PhotoFrame.test.ts` | 28 | Shared photo frame component |
+| `src/lib/components/screens/ComparisonView.test.ts` | 26 | Side-by-side comparison |
+| `src/lib/utils/keyboard.test.ts` | 18 | Keyboard handler utilities |
+| `src/lib/utils/display.test.ts` | 16 | Display formatting |
+| `src/lib/components/PhotoFrame.ring-indicators.test.ts` | 11 | Ring/indicator variants |
+| `src/lib/utils/decisions.test.ts` | 11 | Decision helper functions |
+| `src/lib/components/screens/ScreenMigration.test.ts` | 10 | PhotoFrame migration integration |
+| `src/lib/stores/navigation.test.ts` | 9 | Navigation store |
+| `src/lib/components/PhotoFrame.absorbed-decision.test.ts` | 8 | Absorbed decision styling |
+| `src/lib/components/PhotoFrame.cleanup.test.ts` | 8 | PhotoFrame cleanup/unmount |
+| `src/lib/utils/photos.test.ts` | 8 | Photo utilities |
+| `src/lib/utils/selection.test.ts` | 8 | Selection utilities |
+| `src/lib/utils/filepath.test.ts` | 7 | Filepath utilities |
+| `src/lib/components/screens/StackFocus.finalize.test.ts` | 7 | **Sprint 10D:** finalize/reopen stack |
+| `src/lib/components/screens/StackFocus.restore.test.ts` | 5 | **Sprint 10D:** restore eliminated photos |
+| `src/lib/components/PhotoFrame.layout-variants.test.ts` | 4 | Layout variant rendering |
+| `src/lib/components/PhotoFrame.ring-inset.test.ts` | 4 | Ring inset positioning |
+| `src/lib/utils/date.test.ts` | 4 | Date formatting |
+| `src/lib/utils/errors.test.ts` | 4 | Error utilities |
+| `src/lib/api/index.test.ts` | 3 | API layer |
+| `src/lib/components/RoundTabBar.test.ts` | 3 | **Sprint 10D:** round tab bar |
+| `src/lib/tauri-config.test.ts` | 1 | Tauri config |
+
+### Frontend Test Files — vitest-browser-svelte (32 tests across 4 files)
+
+| File | Tests | Notes |
+|------|-------|-------|
+| `src/lib/components/screens/StackOverview.browser.test.ts` | 10 | Visual: grid, focus ring, selection ring, progress bars |
+| `src/lib/components/screens/StackFocus.browser.test.ts` | 9 | Visual: badges, dimming, focus ring |
+| `src/lib/components/screens/SingleView.browser.test.ts` | 8 | Visual: full-screen, red border, dim overlay |
+| `src/lib/components/screens/ComparisonView.browser.test.ts` | 5 | Visual: panel layout, focus ring |
+
+### E2E Test Files — Playwright (29 tests across 9 files)
+
+| File | Tests | E2E Coverage |
+|------|-------|--------------|
+| `tests/e2e/burst-gap-config.spec.ts` | 5 | Burst gap config panel |
+| `tests/e2e/import-flow.spec.ts` | 5 | Import + indexing pipeline |
+| `tests/e2e/project-management.spec.ts` | 4 | Project create, list, delete, navigate |
+| `tests/e2e/thumbnail-resume.spec.ts` | 4 | Thumbnail resume on re-open |
+| `tests/e2e/culling-flow.spec.ts` | 3 | Full culling journey, decisions persist |
+| `tests/e2e/thumbnail-progressive.spec.ts` | 3 | Progressive thumbnail loading |
+| `tests/e2e/merge-flow.spec.ts` | 2 | Stack merge + undo |
+| `tests/e2e/orientation.spec.ts` | 2 | EXIF orientation handling |
+| `tests/e2e/visual-feedback.spec.ts` | 1 | Visual decision feedback |
+
+### E2E Coverage by Feature
+
+| Feature | Has E2E? | Spec File |
+|---------|----------|-----------|
+| Project management (create/list/delete) | Yes | `project-management.spec.ts` |
+| Import + indexing | Yes | `import-flow.spec.ts` |
+| Thumbnail generation | Yes | `thumbnail-progressive.spec.ts`, `thumbnail-resume.spec.ts` |
+| Culling (Y/X/commit) | Yes | `culling-flow.spec.ts` |
+| Decision visual feedback | Yes | `visual-feedback.spec.ts` |
+| Stack merge + undo | Yes | `merge-flow.spec.ts` |
+| Burst gap config | Yes | `burst-gap-config.spec.ts` |
+| EXIF orientation | Yes | `orientation.spec.ts` |
+| Restore eliminated photos | No | -- |
+| Finalize/reopen stack | No | -- |
+| ComparisonView | No | -- |
+| HelpOverlay | No | -- |
+| Multi-round navigation | No | -- |
+
+### Sprint 10D Test Additions
+
+| Area | File | Tests | What was added |
+|------|------|-------|----------------|
+| Restore (frontend) | `StackFocus.restore.test.ts` | 5 | R key restore on eliminated, no-op on kept/undecided, disabled in historical round, badge update |
+| Finalize (frontend) | `StackFocus.finalize.test.ts` | 7 | Ctrl+Shift+Enter finalize/reopen toggle, Y/X/U disabled when finalized, Reopen button, confirmation auto-dismiss |
+| Finalized badge (frontend) | `StackOverview.test.ts` | 1 | Finalized stack shows checkmark badge (C5 section) |
+| RoundTabBar (frontend) | `RoundTabBar.test.ts` | 3 | Tab rendering, active round marking, click handler |
+| Restore (Rust) | `decisions/engine.rs` | 9 | restore_eliminated_photo: success, already-member noop, committed-round error, not-eliminated error, count updates, restore-then-eliminate, restore-then-undo, idempotent, lifecycle invariant |
+| Finalize (Rust) | `decisions/engine.rs` | 5 | finalize_stack: auto-commits undecided, already-committed, no-rounds error, already-finalized, zero-survivors |
+| Reopen (Rust) | `decisions/engine.rs` | 3 | reopen_stack: basic reopen, already-active noop, reopen-then-decide |
+| Crash recovery (Rust) | `decisions/engine.rs` | 1 | SC#22: Round 2 decisions persist after reconnect |
+
+**Note:** The behavior coverage matrix (sections 1-5) was authored during Sprint 7 and audits behaviors from wireframe sections S1-S7. Sprint 8-10 features (ComparisonView, PhotoFrame, RoundTabBar, restore, finalize) are tested but not yet audited as individual behavior rows in the matrix above. All 12 formerly wrong-tech behaviors have been migrated to vitest-browser-svelte and now carry TESTED-VISUAL status.

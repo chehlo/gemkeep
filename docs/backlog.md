@@ -2,7 +2,7 @@
 
 Single source of truth for all pending work. Items sourced from sprint-plan, screen-review-gaps, sprint-improvements, code-improvements, and test-improvements.
 
-**Last updated:** 2026-03-21 (after Sprint 7+8 squash-merge to main)
+**Last updated:** 2026-03-29 (after Sprint 10 completion — all phases A-D merged to main)
 
 ---
 
@@ -18,44 +18,15 @@ Single source of truth for all pending work. Items sourced from sprint-plan, scr
 | S6 | main | Done | Burst config UI, thumbnail resume, progress display |
 | S7 | main | Done | Decision engine, SingleView, camera params, stack merge, visual feedback |
 | S8 | main | Done | Bug fixes: viewport overflow, sticky headers, RAW preview quality |
+| S9 | main | Done | Comparison View, auto-fill, lock, undo, stack progress, auto-advance |
+| S10 | main | Done | Multi-round engine (A: round-scoping, B: progression/overrides/snapshots, C: round navigation UI, D: restore eliminated + finalize/reopen) |
 
-**Test counts (current):** 385 Rust + 452 frontend = 837 total.
-
----
-
-## Next Sprint: S9 — Comparison View & Stack Workflow
-
-From sprint-plan.md §Sprint 8 (renumbered to S9 since actual S8 was bug fixes).
-
-**User Stories:** §6 (side-by-side comparison, auto-fill, lock), §5.6 (auto-advance toggle), §9.5 (status bar), §18 (visual stack progress)
-
-### Features
-- Side-by-side comparison view (C key) — PRIMARY decision-making view
-- Auto-fill on eliminate (next undecided fills slot)
-- Lock comparison layout (L key)
-- Undo last decision (Ctrl+Z / U)
-- Stack decision progress indicator ("5/12 decided | 3 kept | 2 eliminated")
-- Stack completion detection + advance to next stack
-- Auto-advance toggle (Caps Lock)
-- Stack Overview progress badges (untouched / in-progress / complete)
-
-### Success criteria
-See `docs/sprints/sprint-plan.md` §Sprint 8 success criteria (items 1-10).
+**Test counts (current):** 452 Rust + 480 frontend + 10 E2E = 942 total.
 
 ---
 
-## Future Sprints
+## Next Sprint: S11 — GemStack — Final Curation
 
-### S10 — Multi-Round Engine & Restoration
-- Multi-round progression (Round 1 → 2 → 3)
-- Immutable round snapshots
-- Decision overrides in later rounds
-- Restore eliminated photos
-- Round navigation ([ ] keys)
-- Round finalize action
-- **undo_merge round restoration**: Currently undo_merge creates fresh round 1 for restored stacks. Should restore original rounds (they're still in DB — no FK cascade). Design decision: what happens to decisions made in the merged stack's round?
-
-### S11 — GemStack — Final Curation
 - GemStack: special stack for final curation (G key promotes survivors)
 - GemStack behaves like a regular stack (same round engine, Y/X, comparison)
 - Re-promotion replaces previous promotions from that stack
@@ -63,6 +34,42 @@ See `docs/sprints/sprint-plan.md` §Sprint 8 success criteria (items 1-10).
 - Promoted badge on stack cards in StackOverview
 - F key jumps to GemStack from StackOverview
 - Project-wide progress indicators (stacks promoted / total)
+
+---
+
+## Pre-S11 Cleanup
+
+Items to address before starting Sprint 11:
+
+### Missing E2E tests
+- No E2E coverage for multi-round workflow (Sprint 10 spec called for 2 Playwright journeys: full multi-round R1 → commit → R2 → finalize, and restore eliminated + re-eliminate)
+- No E2E coverage for round navigation ([ ] keys, round tab bar clicks, read-only mode in committed rounds)
+- Existing 10 E2E specs cover S1-S9 flows only
+
+### Stale docs updates
+- `docs/sprints/sprint-10.md` header still says "Phases A-C delivered; Phase D deferred" — Phase D is now complete
+- `docs/keyboard-map.md` — verify R key (restore), Ctrl+Shift+Enter (finalize/reopen), [ ] (round nav) are documented
+- `docs/ui-wireframes.md` — verify round tab bar, finalized badge, restore UX wireframes exist
+- `docs/user_stories.md` — update Sprint 10 user story statuses to Done
+
+### Quick wins from code-improvements.md (13 trivial items)
+1. **DUP-05** — RAW extension list duplicated (scanner.rs vs exif.rs)
+2. **DUP-09** — Duplicate Esc handling between App.svelte and screens
+3. **DUP-10** — Thumbnail progress bar HTML duplicated in StackOverview
+4. **DEAD-01** — ThumbnailStrategy.use_exif_fast_path computed but never read
+5. **DEAD-02** — generate_thumbnail_from_bytes is dead code
+6. **DEAD-03** — merges table appears dead/legacy
+7. **DEAD-04** — find_missing_thumbnail_targets unnecessary wrapper
+8. **DEAD-05** — Two separate restack implementations
+9. **DEAD-06** — Two redundant dispatch functions for EXIF extraction
+10. **DEAD-07** — Redundant cancel check in pipeline step 3
+11. **MIS-03** — Hardcoded thumbnail size 256x256
+12. **MIS-04** — Cache dir path construction repeated 5+ places
+13. **INC-05** — Orientation applied after resize in thumbnails
+
+---
+
+## Future Sprints
 
 ### S12 — Export & Labels
 - Export GemStack survivors (copy / hard-link / JPEG-only)
@@ -73,7 +80,7 @@ See `docs/sprints/sprint-plan.md` §Sprint 8 success criteria (items 1-10).
 
 ### S13 — Zoom, Search & Polish
 - Zoom/pan in Single View (+/-, mouse wheel, 100% / fit)
-- RAW toggle on demand (R key)
+- RAW toggle on demand (R key — note: R is now "restore" in StackFocus historical views; RAW toggle needs a different key or context-aware binding)
 - Fuzzy search (/ key)
 - Metadata filters in Stack Overview
 - ~~Keyboard help overlay (? key)~~ **[DONE]**
@@ -117,7 +124,7 @@ See `docs/sprints/sprint-plan.md` §Sprint 8 success criteria (items 1-10).
 
 ## Code Quality (from code-improvements.md)
 
-28 items remaining. Full details in `docs/code-improvements.md`.
+31 items remaining (12 resolved through S8-S10). Full details in `docs/code-improvements.md`.
 
 ### HIGH impact (do first)
 - **ABS-05**: burst_gap_secs global → per-project [MEDIUM effort]
@@ -127,10 +134,16 @@ See `docs/sprints/sprint-plan.md` §Sprint 8 success criteria (items 1-10).
 - **ABS-02**: Near-duplicate JPEG/RAW EXIF extractors [LARGE]
 
 ### Quick wins (TRIVIAL effort)
-- DUP-05, DEAD-01 through DEAD-07, MIS-03/04/06, DUP-09/10/11, INC-05 (13 items)
+- DUP-05, DEAD-01 through DEAD-07, MIS-03/04, DUP-09/10, INC-05 (13 items)
+- ~~MIS-06~~ [RESOLVED], ~~DUP-11~~ [RESOLVED]
 
 ### SMALL effort
 - DUP-04, ABS-03/04, DEAD-05/06, DUP-06/07, INC-01/02/03 (10 items)
+
+### Frontend (MEDIUM effort)
+- **SVE-05**: Decision key handling (Y/X/U) duplicated across 3 screens
+- **SVE-11**: StackFocus handleKey still ~232 lines (depends on SVE-05)
+- **UX-01**: Stack ID display inconsistent after merges
 
 ---
 
@@ -159,6 +172,8 @@ See `docs/sprints/sprint-plan.md` §Sprint 8 success criteria (items 1-10).
 
 2. **Shared visual components** — PhotoFrame.svelte is the unified frame component. CameraParams, FormatBadges, formatCaptureTime still duplicated across screens. [screen-review-gaps §Architecture]
 
+3. **undo_merge round restoration** — (deferred from S10) Currently `undo_merge` creates fresh Round 1 for restored stacks. Should restore original rounds (they're still in DB — no FK cascade). Design question: what happens to decisions made in the merged stack's round?
+
 ---
 
 ## Reference Documents (kept, not consolidated)
@@ -176,5 +191,6 @@ See `docs/sprints/sprint-plan.md` §Sprint 8 success criteria (items 1-10).
 | `docs/competitive-analysis.md` | Competitor analysis (Photo Mechanic, LR, etc.) |
 | `docs/manual-tests.md` | Non-automated test checklist |
 | `docs/test-fixture-design.md` | Manifest-driven fixture pattern |
-| `docs/code-improvements.md` | Detailed code refactoring items (28 remaining) |
+| `docs/code-improvements.md` | Detailed code refactoring items (31 remaining) |
+| `docs/sprints/sprint-10.md` | Sprint 10 spec — multi-round engine (all phases A-D complete) |
 | `docs/test-improvements.md` | Detailed test infrastructure items (10 remaining) |

@@ -65,21 +65,21 @@
 
 ────────────────────────────────────────────────────────────
 
-- As a user, I want to refine logical photos inside one stack using linear rounds. **[P0] [PARTIAL]**
-- As a user, I want only active (not eliminated) logical photos shown in the current round. **[P0] [NOT STARTED]**
+- As a user, I want to refine logical photos inside one stack using linear rounds. **[P0] [DONE]** *(Sprint 10 Phase B — multi-round progression)*
+- As a user, I want only active (not eliminated) logical photos shown in the current round. **[P0] [DONE]** *(Sprint 10 Phase A — round-scoped photo lists)*
 - As a user, I want to keep / eliminate logical photos (pairs or singles) using only keyboard shortcuts. **[P0] [DONE]**
 - As a user, I want to perform bulk keep / eliminate on multiple selected logical photos in multi-view. **[P1] [NOT STARTED]**
 - As a user, I want instant visual feedback (color / icon / dimming) for keep / eliminate decisions. **[P0] [DONE]**
-- As a user, I want auto-advance to the next undecided photo within the stack after a keep or eliminate decision (inspired by Lightroom P/X + Caps Lock pattern). **[P1] [NOT STARTED]**
-- As a user, I want to toggle auto-advance on/off (e.g., Caps Lock or a visible toggle) so I can linger on a photo to zoom or check focus before deciding. Auto-advance OFF is the default (deliberate workflow). **[P1] [NOT STARTED]**
+- As a user, I want auto-advance to the next undecided photo within the stack after a keep or eliminate decision (inspired by Lightroom P/X + Caps Lock pattern). **[P1] [DONE]** *(Sprint 9 — auto-advance with A key toggle)*
+- As a user, I want to toggle auto-advance on/off (e.g., Caps Lock or a visible toggle) so I can linger on a photo to zoom or check focus before deciding. Auto-advance OFF is the default (deliberate workflow). **[P1] [DONE]** *(Sprint 9 — A key toggle, default off)*
 
 ## 6. Comparison / Side-by-Side in Multi-View
 
 ────────────────────────────────────────────────────────────
 
-- As a user, in Stack Focus multi-photo grid, I want to select / highlight two logical photos for side-by-side or 2-up comparison (e.g., larger preview, split view, or locked zoom/scroll). This is my primary decision-making view. **[P0] [NOT STARTED]**
-- As a user, when I eliminate one of the compared photos, I want the grid / view to automatically fill the empty slot with the next undecided photo from the stack (maintaining comparison flow without manual reload). **[P0] [NOT STARTED]**
-- As a user, I want to optionally lock / freeze the current comparison layout (prevent auto-advance until I manually proceed or unselect). **[P1] [NOT STARTED]**
+- As a user, in Stack Focus multi-photo grid, I want to select / highlight two logical photos for side-by-side or 2-up comparison (e.g., larger preview, split view, or locked zoom/scroll). This is my primary decision-making view. **[P0] [DONE]** *(Sprint 9 — ComparisonView with C key)*
+- As a user, when I eliminate one of the compared photos, I want the grid / view to automatically fill the empty slot with the next undecided photo from the stack (maintaining comparison flow without manual reload). **[P0] [DONE]** *(Sprint 9 — auto-fill on eliminate)*
+- As a user, I want to optionally lock / freeze the current comparison layout (prevent auto-advance until I manually proceed or unselect). **[P1] [DONE]** *(Sprint 9 — L key lock)*
 
 ## 7. GemStack — Final Curation
 
@@ -98,15 +98,15 @@
 
 ────────────────────────────────────────────────────────────
 
-- As a user, I want strictly linear rounds: Round 1 -> Round 2 -> Round 3 -> ... **[P0] [NOT STARTED]**
-- As a user, I want each round to be an immutable snapshot of decisions at that point. **[P0] [NOT STARTED]**
-- As a user, I want later rounds to override earlier decisions without changing history. **[P0] [NOT STARTED]**
-- As a user, I want to restore an eliminated photo by navigating to the round where it existed, pressing R to bring it into the current open round as undecided, because I often reconsider after seeing other photos. **[P0] [NOT STARTED]**
-- As a user, I want to freely navigate between rounds and see the exact state at the end of each round. **[P0] [NOT STARTED]**
-- As a user, I want auto-save of the current round state on every decision or round switch. **[P0] [DONE]**
-- As a user, I want to manually "commit" or "freeze" the current round state (for a stack or the GemStack) via a dedicated keyboard shortcut (e.g., Ctrl+Enter), rather than automatic commit on every action. Manual commit is the explicit moment when the round is sealed -- auto-save protects against crashes but does not finalize the round. **[P0] [DONE]**
-- As a user, I want a clear "Start Next Round" or "Commit Round" action (non-modal) to advance based on current active photos after manual review. **[P0] [NOT STARTED]**
-- As a user, when finalizing the last round in a stack or the GemStack, I want an explicit action / confirmation to mark it as "done" / "finalized" (locking survivors until I choose to restore or reopen). **[P1] [NOT STARTED]**
+- As a user, I want strictly linear rounds: Round 1 -> Round 2 -> Round 3 -> ... **[P0] [DONE]** *(Sprint 10 Phase B — multi-round progression)*
+- As a user, I want each round to be an immutable snapshot of decisions at that point. **[P0] [DONE]** *(Sprint 10 Phase C — get_round_snapshot)*
+- As a user, I want later rounds to override earlier decisions without changing history. **[P0] [DONE]** *(Sprint 10 Phase B — decision overrides)*
+- As a user, I want to restore an eliminated photo by navigating to the round where it existed, pressing R to bring it into the current open round as undecided, because I often reconsider after seeing other photos. **[P0] [DONE]** *(Sprint 10 Phase D — restore_eliminated_photo + R key)*
+- As a user, I want to freely navigate between rounds and see the exact state at the end of each round. **[P0] [DONE]** *(Sprint 10 Phase C — round tab bar + bracket key navigation)*
+- As a user, I want auto-save of the current round state on every decision or round switch. **[P0] [DONE]** *(Sprint 7/8 — SQLite write-through on every decision)*
+- As a user, I want to manually "commit" or "freeze" the current round state (for a stack or the GemStack) via a dedicated keyboard shortcut (e.g., Ctrl+Enter), rather than automatic commit on every action. Manual commit is the explicit moment when the round is sealed -- auto-save protects against crashes but does not finalize the round. **[P0] [DONE]** *(Sprint 7/8 — commit_round via Ctrl+Enter)*
+- As a user, I want a clear "Start Next Round" or "Commit Round" action (non-modal) to advance based on current active photos after manual review. **[P0] [DONE]** *(Sprint 10 Phase B — commit_round via Ctrl+Enter creates next round)*
+- As a user, when finalizing the last round in a stack or the GemStack, I want an explicit action / confirmation to mark it as "done" / "finalized" (locking survivors until I choose to restore or reopen). **[P1] [DONE]** *(Sprint 10 Phase D — finalize_stack + reopen_stack via Ctrl+Shift+Enter)*
 
 ## 9. User Interface & Interaction Consistency
 
@@ -118,7 +118,7 @@
 - As a user, I want no modal dialogs during photo review / culling. **[P0] [DONE]**
 - As a user, I want mouse fallback / click support for every important keyboard action (some people prefer mouse). **[P1] [PARTIAL]**
 - As a user, I want a keyboard shortcut help overlay (e.g., `?` key) that shows all available shortcuts for the current mode, so shortcuts are discoverable without memorization. **[P1] [DONE]**
-- As a user, I want a status bar or progress indicator showing my current position within a stack (e.g., "Photo 3 of 12 | 2 kept, 1 eliminated, 9 undecided"). **[P1] [DONE]**
+- As a user, I want a status bar or progress indicator showing my current position within a stack (e.g., "Photo 3 of 12 | 2 kept, 1 eliminated, 9 undecided"). **[P1] [DONE]** *(Sprint 9 — progress counter in StackFocus)*
 
 ## 10. Single View Controls (Zoom & Pan)
 
@@ -162,7 +162,7 @@
 
 ────────────────────────────────────────────────────────────
 
-- As a user, I want structural changes, pair detections, and round decisions to survive application crashes. **[P0] [DONE]**
+- As a user, I want structural changes, pair detections, and round decisions to survive application crashes. **[P0] [DONE]** *(Sprint 7/8 — SQLite persistence; Sprint 10B — multi-round crash recovery verified)*
 - As a user, I want a readable operation log inside the project folder (merges, restores, round starts, pair groupings). **[P2] [NOT STARTED]**
 - As a user, I want clear error messages when files cannot be read / thumbnails cannot be generated / pairs mismatch. **[P1] [DONE]**
 
@@ -192,9 +192,9 @@
 
 *Competitive insight: Every major culling tool (Photo Mechanic, Lightroom, Capture One) implements auto-advance. It halves total keystrokes. For 5000 photos, that is 5000 fewer keypresses.*
 
-- As a user, I want an option to auto-advance to the next undecided photo after any keep/eliminate decision. Default is OFF (deliberate workflow) but can be toggled on for speed passes. **[P1] [NOT STARTED]**
-- As a user, I want auto-advance to also work at the stack level: after all photos in a stack are decided, auto-advance to the next undecided stack in Stack Overview. **[P1] [DONE]**
-- As a user, I want a visible toggle (and/or Caps Lock convention) to switch auto-advance on/off, so I can switch between deliberate study and fast passes. **[P1] [NOT STARTED]**
+- As a user, I want an option to auto-advance to the next undecided photo after any keep/eliminate decision. Default is OFF (deliberate workflow) but can be toggled on for speed passes. **[P1] [DONE]** *(Sprint 9 — A key toggle)*
+- As a user, I want auto-advance to also work at the stack level: after all photos in a stack are decided, auto-advance to the next undecided stack in Stack Overview. **[P1] [DONE]** *(Sprint 9 — down-arrow advance to next stack)*
+- As a user, I want a visible toggle (and/or Caps Lock convention) to switch auto-advance on/off, so I can switch between deliberate study and fast passes. **[P1] [DONE]** *(Sprint 9 — A key toggle with visible indicator)*
 
 ## 18. Visual Stack Progress
 
@@ -202,9 +202,9 @@
 
 *Competitive insight: Lightroom and Capture One show progress overlays on thumbnails. Photographers need at-a-glance status without counting manually.*
 
-- As a user, I want to see a progress summary on each stack card in Stack Overview (e.g., "3/12 decided, 2 kept, 1 eliminated") so I know which stacks still need attention. **[P1] [DONE]**
+- As a user, I want to see a progress summary on each stack card in Stack Overview (e.g., "3/12 decided, 2 kept, 1 eliminated") so I know which stacks still need attention. **[P1] [DONE]** *(Sprint 9 — StackOverview progress badges)*
 - As a user, I want to see an overall project progress indicator (e.g., "142/387 stacks promoted, 245 remaining") so I know how much culling work remains. **[P1] [NOT STARTED]**
-- As a user, I want stack cards to visually distinguish their state: untouched (no decisions), in-progress (some decisions), complete (all decided or finalized), promoted (sent to GemStack). **[P1] [NOT STARTED]**
+- As a user, I want stack cards to visually distinguish their state: untouched (no decisions), in-progress (some decisions), complete (all decided or finalized), promoted (sent to GemStack). **[P1] [PARTIAL]** *(Sprint 9 — progress badges; Sprint 10D — finalized badge; promoted badge not yet implemented)*
 
 ## 19. Quick Preview in Stack Overview
 

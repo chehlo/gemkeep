@@ -6,7 +6,7 @@ import { navigate, navigation } from '$lib/stores/navigation.svelte.js'
 import type { PhotoDetail, RoundStatus, LogicalPhotoSummary, PhotoDecisionStatus } from '$lib/api/index.js'
 import { OPEN_ROUND, ROUND_2_PHOTOS, makeRoundStatus, makeDecisionResult, makeDecisionStatus, makePhotoDetail, PHOTO_DETAIL, SINGLE_VIEW_PHOTO_LIST } from '$test/fixtures'
 import { mockSingleViewRouter } from '$test/helpers'
-import { ELIMINATE_BORDER_SELECTOR, DIM_OVERLAY_SELECTOR } from '$test/decision-helpers'
+import { DECISION_SELECTORS, assertDecisionEliminated, assertDecisionDimmed, assertStatusTextStyle } from '$test/decision-helpers'
 import SingleView from './SingleView.svelte'
 
 const mockInvoke = vi.mocked(invoke)
@@ -196,36 +196,36 @@ describe('SingleView — status bar', () => {
     })
   })
 
-  it('V4: KEPT status text has text-green-400 class', async () => {
+  it('V4: KEPT status text is styled as kept', async () => {
     mockInvoke.mockImplementation(mockSingleViewRouter({
       get_photo_detail: { ...PHOTO_DETAIL, current_status: 'keep' },
     }))
     render(SingleView)
     await waitFor(() => {
       const keptSpan = screen.getByText(/KEPT/)
-      expect(keptSpan.className).toContain('text-green-400')
+      assertStatusTextStyle(keptSpan, 'keep')
     })
   })
 
-  it('V4: ELIMINATED status text has text-red-400 class', async () => {
+  it('V4: ELIMINATED status text is styled as eliminated', async () => {
     mockInvoke.mockImplementation(mockSingleViewRouter({
       get_photo_detail: { ...PHOTO_DETAIL, current_status: 'eliminate' },
     }))
     render(SingleView)
     await waitFor(() => {
       const elimSpan = screen.getByText(/ELIMINATED/)
-      expect(elimSpan.className).toContain('text-red-400')
+      assertStatusTextStyle(elimSpan, 'eliminate')
     })
   })
 
-  it('V4: UNDECIDED status text has text-gray-400 class', async () => {
+  it('V4: UNDECIDED status text is styled as undecided', async () => {
     mockInvoke.mockImplementation(mockSingleViewRouter({
       get_photo_detail: { ...PHOTO_DETAIL, current_status: 'undecided' },
     }))
     render(SingleView)
     await waitFor(() => {
       const undecidedSpan = screen.getByText(/UNDECIDED/)
-      expect(undecidedSpan.className).toContain('text-gray-400')
+      assertStatusTextStyle(undecidedSpan, 'undecided')
     })
   })
 
@@ -380,12 +380,10 @@ describe('SingleView — eliminate visual feedback', () => {
     await fireEvent.keyDown(document, { key: 'x' })
 
     await waitFor(() => {
-      // Red border should be present
-      const borderEl = document.querySelector(ELIMINATE_BORDER_SELECTOR)
-      expect(borderEl).toBeInTheDocument()
-      // Dim overlay should also be present for eliminated photos
-      const dimOverlay = document.querySelector(DIM_OVERLAY_SELECTOR)
-      expect(dimOverlay).toBeInTheDocument()
+      const frame = document.querySelector('[data-testid="photo-frame"]') as HTMLElement
+      expect(frame).not.toBeNull()
+      assertDecisionEliminated(frame)
+      assertDecisionDimmed(frame)
     })
   })
 })

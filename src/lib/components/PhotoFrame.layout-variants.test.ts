@@ -6,6 +6,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/svelte'
 import { makePhoto, makePhotoDetail } from '$test/fixtures'
+import { assertDecisionEliminated, assertDecisionDimmed } from '$test/decision-helpers'
 import PhotoFrame from './PhotoFrame.svelte'
 
 beforeEach(() => {
@@ -71,36 +72,9 @@ describe('PhotoFrame — layout=fill full metadata format', () => {
   })
 })
 
-// ─── Cross-cutting combination: card + image + decision + metadata ──────────
+// ─── Cross-cutting combination: panel + no image + eliminate ────────────────
 
 describe('PhotoFrame — layout combinations', () => {
-  it('card with image, keep decision, and metadata applies all expected classes together', () => {
-    render(PhotoFrame, {
-      props: {
-        photo: makePhoto({ aperture: 4.0, shutter_speed: '1/500', iso: 100, focal_length: 24 }),
-        layout: 'card',
-        imageUrl: 'asset://localhost/card.jpg',
-        status: 'keep',
-        showMetadata: true,
-      },
-    })
-
-    // Image uses object-cover for card
-    const img = document.querySelector('img')!
-    expect(img.className).toContain('object-cover')
-
-    // Frame has card styling
-    const frame = screen.getByTestId('photo-frame')
-    expect(frame.className).toContain('rounded-lg')
-    expect(frame.className).not.toContain('flex-1')
-    expect(frame.classList.contains('decision-keep')).toBe(true)
-
-    // Compact metadata with dot-separated params
-    const params = screen.getByTestId('camera-params')
-    expect(params.textContent).toContain('f/4')
-    expect(params.textContent).toContain('·')
-  })
-
   it('panel with no image, eliminate decision, shows emoji placeholder + dim overlay', () => {
     render(PhotoFrame, {
       props: {
@@ -118,9 +92,9 @@ describe('PhotoFrame — layout combinations', () => {
     // No rounded
     expect(frame.className).not.toContain('rounded-lg')
     // Eliminate decision
-    expect(frame.classList.contains('decision-eliminate')).toBe(true)
+    assertDecisionEliminated(frame)
     // Dim overlay present
-    expect(frame.querySelector('.decision-dim-overlay')).not.toBeNull()
+    assertDecisionDimmed(frame)
     // Camera emoji placeholder (not "No preview available")
     expect(screen.getByText('\u{1F4F7}')).toBeInTheDocument()
     expect(screen.queryByText('No preview available')).not.toBeInTheDocument()

@@ -1,7 +1,7 @@
 // StackOverview visual tests — vitest-browser-svelte (real Chromium)
 // Covers: SO-09 (progress bar width), SO-12 (determinate bar width%),
 //         SO-14 (bar NOT full-width), SO-16 (4-column grid layout),
-//         SO-20 (blue focused border), SO-44 (yellow multi-select ring)
+//         SO-20 (focused card indicator), SO-44 (multi-select indicator)
 // These tests verify actual computed CSS values, not class names.
 
 import { render } from 'vitest-browser-svelte'
@@ -12,11 +12,17 @@ import type { SourceFolder, IndexingStatus } from '$lib/api/index.js'
 import { IDLE_STATUS, makeStack } from '$test/fixtures'
 import { mockStackOverviewRouter } from '$test/helpers'
 import { waitForCards as _waitForCards } from '$test/browser-helpers'
+import {
+  assertVisuallyFocused, assertNotVisuallyFocused,
+  assertVisuallySelected, assertNotVisuallySelected,
+  waitForVisualFocus, waitForSelectionCount, countVisuallySelected,
+} from '$test/selection-visual-helpers'
 import StackOverview from './StackOverview.svelte'
 
 const mockInvoke = vi.mocked(invoke)
 
 const FOLDER_A: SourceFolder = { id: 1, path: '/home/user/Photos/Iceland' }
+
 
 const RUNNING_STATUS: IndexingStatus = {
   running: true, thumbnails_running: false, total: 1290, processed: 340, errors: 0,
@@ -76,8 +82,8 @@ describe('StackOverview — SO-09: indexing progress bar width (visual)', () => 
     // Wait for progress bar to appear
     let barInner: HTMLElement | null = null
     await vi.waitFor(() => {
-      // The progress bar structure: outer div.bg-gray-800 > inner div.bg-blue-500 with style="width: X%"
-      const bars = document.querySelectorAll('.bg-blue-500.h-2') as NodeListOf<HTMLElement>
+      // Locate progress-bar fill elements (the inner div with style="width: X%")
+      const bars = document.querySelectorAll('[data-testid="progress-bar-fill"]') as NodeListOf<HTMLElement>
       for (const bar of bars) {
         const w = bar.style.width
         if (w && w !== '0%') {
@@ -113,7 +119,7 @@ describe('StackOverview — SO-12: thumbnail determinate bar width% (visual)', (
 
     let barInner: HTMLElement | null = null
     await vi.waitFor(() => {
-      const bars = document.querySelectorAll('.bg-blue-500.h-2') as NodeListOf<HTMLElement>
+      const bars = document.querySelectorAll('[data-testid="progress-bar-fill"]') as NodeListOf<HTMLElement>
       for (const bar of bars) {
         if (bar.style.width === '42%') {
           barInner = bar
@@ -149,7 +155,7 @@ describe('StackOverview — SO-14: thumbnail progress bar is NOT full-width (vis
     let barInner: HTMLElement | null = null
     let barOuter: HTMLElement | null = null
     await vi.waitFor(() => {
-      const bars = document.querySelectorAll('.bg-blue-500.h-2') as NodeListOf<HTMLElement>
+      const bars = document.querySelectorAll('[data-testid="progress-bar-fill"]') as NodeListOf<HTMLElement>
       for (const bar of bars) {
         if (bar.style.width && bar.style.width !== '100%') {
           barInner = bar
@@ -239,10 +245,10 @@ describe('StackOverview — SO-16: 4-column grid layout (visual)', () => {
   })
 })
 
-// ── SO-20: Focused stack card has blue border ring ──
+// ── SO-20: Focused stack card shows focus indicator ──
 
-describe('StackOverview — SO-20: focused card has blue border (visual)', () => {
-  it('first card has blue border color by default', async () => {
+describe('StackOverview — SO-20: focused card shows focus indicator (visual)', () => {
+  it('first card is visually focused by default', async () => {
     mockInvoke.mockImplementation(mockStackOverviewRouter({
       list_source_folders: [[FOLDER_A]],
       list_stacks: [[STACK_WITH_THUMB_1, STACK_WITH_THUMB_2, STACK_WITH_THUMB_3]],
@@ -253,16 +259,14 @@ describe('StackOverview — SO-20: focused card has blue border (visual)', () =>
 
     const cards = await waitForCards(3)
 
-    // Card 0 should have blue border (border-blue-500 = rgb(59, 130, 246))
-    const borderColor0 = getComputedStyle(cards[0]).borderColor
-    expect(borderColor0).toBe('rgb(59, 130, 246)')
+    // Card 0 should have focus indicator
+    await assertVisuallyFocused(cards[0])
 
-    // Card 1 should NOT have blue border
-    const borderColor1 = getComputedStyle(cards[1]).borderColor
-    expect(borderColor1).not.toBe('rgb(59, 130, 246)')
+    // Card 1 should NOT have focus indicator
+    await assertNotVisuallyFocused(cards[1])
   })
 
-  it('ArrowRight moves blue border to next card', async () => {
+  it('ArrowRight moves focus indicator to next card', async () => {
     mockInvoke.mockImplementation(mockStackOverviewRouter({
       list_source_folders: [[FOLDER_A]],
       list_stacks: [[STACK_WITH_THUMB_1, STACK_WITH_THUMB_2, STACK_WITH_THUMB_3]],
@@ -273,29 +277,26 @@ describe('StackOverview — SO-20: focused card has blue border (visual)', () =>
 
     const cards = await waitForCards(3)
 
-    // Initially card 0 has blue border
-    expect(getComputedStyle(cards[0]).borderColor).toBe('rgb(59, 130, 246)')
+    // Initially card 0 has focus indicator
+    await assertVisuallyFocused(cards[0])
 
     // Press ArrowRight
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
 
-    await vi.waitFor(() => {
-      if (getComputedStyle(cards[1]).borderColor !== 'rgb(59, 130, 246)') {
-        throw new Error('Card 1 not yet focused')
-      }
-    }, { timeout: 3000 })
+    // Wait for focus to move to card 1
+    await waitForVisualFocus(cards[1])
 
-    // Card 0 should no longer have blue border
-    expect(getComputedStyle(cards[0]).borderColor).not.toBe('rgb(59, 130, 246)')
-    // Card 1 has blue border
-    expect(getComputedStyle(cards[1]).borderColor).toBe('rgb(59, 130, 246)')
+    // Card 0 should no longer be focused
+    await assertNotVisuallyFocused(cards[0])
+    // Card 1 should now be focused
+    await assertVisuallyFocused(cards[1])
   })
 })
 
-// ── SO-44: Shift+Arrow selects multiple stacks (yellow ring) ──
+// ── SO-44: Shift+Arrow selects multiple stacks (selection indicator) ──
 
-describe('StackOverview — SO-44: Shift+Arrow multi-select yellow ring (visual)', () => {
-  it('Shift+ArrowRight adds yellow border/ring to selected cards', async () => {
+describe('StackOverview — SO-44: Shift+Arrow multi-select (visual)', () => {
+  it('Shift+ArrowRight marks covered cards as selected', async () => {
     mockInvoke.mockImplementation(mockStackOverviewRouter({
       list_source_folders: [[FOLDER_A]],
       list_stacks: [[STACK_WITH_THUMB_1, STACK_WITH_THUMB_2, STACK_WITH_THUMB_3]],
@@ -306,30 +307,19 @@ describe('StackOverview — SO-44: Shift+Arrow multi-select yellow ring (visual)
 
     const cards = await waitForCards(3)
 
-    // Initially no yellow ring on any card
-    for (const card of cards) {
-      const bc = getComputedStyle(card).borderColor
-      // Yellow-400 = rgb(250, 204, 21)
-      expect(bc).not.toBe('rgb(250, 204, 21)')
-    }
+    // Initially no selection indicator on any card
+    for (const card of cards) await assertNotVisuallySelected(card)
 
     // Shift+ArrowRight to select card 0 and move to card 1
     document.dispatchEvent(new KeyboardEvent('keydown', {
       key: 'ArrowRight', shiftKey: true, bubbles: true,
     }))
 
-    // Wait for yellow border to appear on selected cards (yellow-400 = rgb(250, 204, 21))
-    await vi.waitFor(() => {
-      if (getComputedStyle(cards[0]).borderColor !== 'rgb(250, 204, 21)') {
-        throw new Error('Card 0 not yet selected')
-      }
-      if (getComputedStyle(cards[1]).borderColor !== 'rgb(250, 204, 21)') {
-        throw new Error('Card 1 not yet selected')
-      }
-    }, { timeout: 3000 })
+    // Wait for both cards to show selection indicator
+    await waitForSelectionCount(() => [cards[0], cards[1]], 2)
 
-    // Card 2 should NOT have yellow border
-    expect(getComputedStyle(cards[2]).borderColor).not.toBe('rgb(250, 204, 21)')
+    // Card 2 should NOT be selected
+    await assertNotVisuallySelected(cards[2])
   })
 
   it('Shift+ArrowRight twice selects 3 consecutive cards', async () => {
@@ -343,7 +333,6 @@ describe('StackOverview — SO-44: Shift+Arrow multi-select yellow ring (visual)
 
     const cards = await waitForCards(3)
 
-    // Shift+ArrowRight twice
     document.dispatchEvent(new KeyboardEvent('keydown', {
       key: 'ArrowRight', shiftKey: true, bubbles: true,
     }))
@@ -351,20 +340,12 @@ describe('StackOverview — SO-44: Shift+Arrow multi-select yellow ring (visual)
       key: 'ArrowRight', shiftKey: true, bubbles: true,
     }))
 
-    await vi.waitFor(() => {
-      const allSelected = [0, 1, 2].every(i =>
-        getComputedStyle(cards[i]).borderColor === 'rgb(250, 204, 21)'
-      )
-      if (!allSelected) throw new Error('Not all 3 cards selected yet')
-    }, { timeout: 3000 })
+    await waitForSelectionCount(() => cards, 3)
 
-    // All 3 should have yellow border
-    for (const card of cards) {
-      expect(getComputedStyle(card).borderColor).toBe('rgb(250, 204, 21)')
-    }
+    for (const card of cards) await assertVisuallySelected(card)
   })
 
-  it('ArrowRight WITHOUT shift preserves yellow selection (moves focus only)', async () => {
+  it('ArrowRight WITHOUT shift preserves selection (moves focus only)', async () => {
     const fourStacks = [
       STACK_WITH_THUMB_1, STACK_WITH_THUMB_2, STACK_WITH_THUMB_3, STACK_WITH_THUMB_4,
     ]
@@ -378,17 +359,11 @@ describe('StackOverview — SO-44: Shift+Arrow multi-select yellow ring (visual)
 
     const cards = await waitForCards(4)
 
-    // Select 2 cards with Shift+ArrowRight
     document.dispatchEvent(new KeyboardEvent('keydown', {
       key: 'ArrowRight', shiftKey: true, bubbles: true,
     }))
 
-    await vi.waitFor(() => {
-      const selected = Array.from(cards).filter(c =>
-        getComputedStyle(c).borderColor === 'rgb(250, 204, 21)'
-      )
-      if (selected.length < 2) throw new Error('Selection not applied yet')
-    }, { timeout: 3000 })
+    await waitForSelectionCount(() => cards, 2)
 
     // Now press ArrowRight WITHOUT shift
     document.dispatchEvent(new KeyboardEvent('keydown', {
@@ -396,17 +371,7 @@ describe('StackOverview — SO-44: Shift+Arrow multi-select yellow ring (visual)
     }))
 
     // Selection should persist — arrow only moves focus
-    await vi.waitFor(() => {
-      const selected = Array.from(cards).filter(c =>
-        getComputedStyle(c).borderColor === 'rgb(250, 204, 21)'
-      )
-      if (selected.length < 2) throw new Error('Selection should persist after plain arrow')
-    }, { timeout: 3000 })
-
-    // At least 2 cards should still have yellow border (selection persists)
-    const selected = Array.from(cards).filter(c =>
-      getComputedStyle(c).borderColor === 'rgb(250, 204, 21)'
-    )
-    expect(selected.length).toBeGreaterThanOrEqual(2)
+    await waitForSelectionCount(() => cards, 2)
+    expect(await countVisuallySelected(cards)).toBeGreaterThanOrEqual(2)
   })
 })

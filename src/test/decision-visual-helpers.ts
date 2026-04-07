@@ -1,111 +1,71 @@
-// src/test/decision-visual-helpers.ts
-// Style-agnostic visual assertion helpers for browser tests (real Chromium).
+// Decision visual assertion helpers for browser tests (real Chromium).
 //
-// These helpers detect which visual style is active (border-frame vs badge-dot)
-// and assert the correct CSS property. When introducing A/B style variants,
-// update only this file — not every browser test.
+// Pixel-truth semantics: these helpers read actual rendered pixels via
+// page.screenshot(), so they verify what the user ACTUALLY sees after the
+// browser's paint + composite + clip pipeline.
+//
+// All helpers are async. Tests must `await` each assertion.
 
 import { expect } from 'vitest'
-import { DECISION_SELECTORS } from '$lib/constants/decisions'
+import { DECISION_SELECTORS, DECISION_COLORS } from '$lib/constants/decisions'
+import { resolveMarker } from './visual-channel'
+import {
+  assertColorVisibleInElementArea,
+  assertColorNotVisibleInElementArea,
+} from './pixel-verifier'
 
-// ── Color constants ──────────────────────────────────────────────────────────
-
-const KEEP_GREEN = 'rgb(34, 197, 94)'      // Tailwind green-500
-const ELIMINATE_RED = 'rgb(239, 68, 68)'    // Tailwind red-500
-
-function hasColor(element: HTMLElement, color: string): boolean {
-  const style = getComputedStyle(element)
-  return style.backgroundColor === color || style.borderColor === color
+function resolveKeepTarget(el: HTMLElement): HTMLElement | null {
+  return resolveMarker(el, DECISION_SELECTORS.keep)
+}
+function resolveEliminateTarget(el: HTMLElement): HTMLElement | null {
+  return resolveMarker(el, DECISION_SELECTORS.eliminate)
 }
 
-// ── Public assertion helpers ─────────────────────────────────────────────────
+/** Assert that the kept indicator color is visible in the element's pixels. */
+export async function assertVisuallyKept(element: HTMLElement) {
+  const target = resolveKeepTarget(element)
+  expect(target, `element must carry keep marker (${DECISION_SELECTORS.keep})`).not.toBeNull()
+  await assertColorVisibleInElementArea(target!, DECISION_COLORS.keep)
+}
 
-/**
- * Assert that a card is visually marked as "kept" (green indicator).
- * Works for both border-frame style (border-green-500) and badge style (bg-green-500).
- */
-export function assertVisuallyKept(card: HTMLElement) {
-  const indicator = card.querySelector(DECISION_SELECTORS.keep) as HTMLElement
-  expect(indicator, 'keep indicator element must exist on card').not.toBeNull()
-
-  // Indicator must be visible (non-zero dimensions)
-  const box = indicator.getBoundingClientRect()
-  expect(box.width, 'keep indicator must have non-zero width').toBeGreaterThan(0)
-  expect(box.height, 'keep indicator must have non-zero height').toBeGreaterThan(0)
-
-  // Green color via either backgroundColor or borderColor
-  expect(
-    hasColor(indicator, KEEP_GREEN),
-    `keep indicator must be green via backgroundColor or borderColor (got bg=${getComputedStyle(indicator).backgroundColor}, border=${getComputedStyle(indicator).borderColor})`,
-  ).toBe(true)
-
-  // Indicator must be contained within the card
-  const cardBox = card.getBoundingClientRect()
-  expect(box.top).toBeGreaterThanOrEqual(cardBox.top)
-  expect(box.left).toBeGreaterThanOrEqual(cardBox.left)
-  expect(box.right).toBeLessThanOrEqual(cardBox.right + 1) // +1 for sub-pixel rounding
-  expect(box.bottom).toBeLessThanOrEqual(cardBox.bottom + 1)
+/** Assert that the eliminated indicator color is visible in the element's pixels. */
+export async function assertVisuallyEliminated(element: HTMLElement) {
+  const target = resolveEliminateTarget(element)
+  expect(target, `element must carry eliminate marker (${DECISION_SELECTORS.eliminate})`).not.toBeNull()
+  await assertColorVisibleInElementArea(target!, DECISION_COLORS.eliminate)
 }
 
 /**
- * Assert that a card is visually marked as "eliminated" (red indicator).
- * Works for both border-frame style (border-red-500) and badge style (bg-red-500).
+ * Assert that an element is visually dimmed (eliminated appearance).
+ * Supports: dim-overlay child, OR reduced card opacity (~0.5).
+ * (No pixel check — dimming is a full-element effect, not a color channel.)
  */
-export function assertVisuallyEliminated(card: HTMLElement) {
-  const indicator = card.querySelector(DECISION_SELECTORS.eliminate) as HTMLElement
-  expect(indicator, 'eliminate indicator element must exist on card').not.toBeNull()
-
-  // Indicator must be visible (non-zero dimensions)
-  const box = indicator.getBoundingClientRect()
-  expect(box.width, 'eliminate indicator must have non-zero width').toBeGreaterThan(0)
-  expect(box.height, 'eliminate indicator must have non-zero height').toBeGreaterThan(0)
-
-  // Red color via either backgroundColor or borderColor
-  expect(
-    hasColor(indicator, ELIMINATE_RED),
-    `eliminate indicator must be red via backgroundColor or borderColor (got bg=${getComputedStyle(indicator).backgroundColor}, border=${getComputedStyle(indicator).borderColor})`,
-  ).toBe(true)
-
-  // Indicator must be contained within the card
-  const cardBox = card.getBoundingClientRect()
-  expect(box.top).toBeGreaterThanOrEqual(cardBox.top)
-  expect(box.right).toBeLessThanOrEqual(cardBox.right + 1)
-}
-
-/**
- * Assert that a card is visually dimmed (eliminated appearance).
- * Supports two styles:
- *   - Overlay child: a `.decision-dim-overlay` element with bg-black/50
- *   - Card opacity: the card itself has opacity ~0.5
- */
-export function assertVisuallyDimmed(card: HTMLElement) {
-  const overlay = card.querySelector(DECISION_SELECTORS.dimOverlay) as HTMLElement | null
-  const cardOpacity = parseFloat(getComputedStyle(card).opacity)
+export function assertVisuallyDimmed(element: HTMLElement) {
+  const overlay = element.querySelector(DECISION_SELECTORS.dimOverlay) as HTMLElement | null
+  const cardOpacity = parseFloat(getComputedStyle(element).opacity)
 
   const hasDimOverlay = overlay !== null && overlay.getBoundingClientRect().width > 0
   const hasReducedOpacity = Math.abs(cardOpacity - 0.5) < 0.1
 
   expect(
     hasDimOverlay || hasReducedOpacity,
-    `eliminated card must be dimmed (overlay present: ${hasDimOverlay}, card opacity: ${cardOpacity})`,
+    `element must be dimmed (overlay present: ${hasDimOverlay}, opacity: ${cardOpacity})`,
   ).toBe(true)
 }
 
-/**
- * Assert that a card has NO decision indicators (undecided state).
- */
-export function assertVisuallyUndecided(card: HTMLElement) {
-  expect(card.querySelector(DECISION_SELECTORS.keep), 'undecided card must not have keep indicator').toBeNull()
-  expect(card.querySelector(DECISION_SELECTORS.eliminate), 'undecided card must not have eliminate indicator').toBeNull()
+/** Assert that neither the kept nor the eliminated color appears in the element's pixels. */
+export async function assertVisuallyUndecided(element: HTMLElement) {
+  await assertColorNotVisibleInElementArea(element, DECISION_COLORS.keep)
+  await assertColorNotVisibleInElementArea(element, DECISION_COLORS.eliminate)
 }
 
 /**
- * Assert that a card has full opacity (not dimmed).
+ * Assert that an element has full opacity (not dimmed).
  */
-export function assertNotDimmed(card: HTMLElement) {
-  const cardOpacity = parseFloat(getComputedStyle(card).opacity)
-  expect(cardOpacity, 'non-eliminated card must have full opacity').toBeCloseTo(1.0, 1)
+export function assertNotDimmed(element: HTMLElement) {
+  const cardOpacity = parseFloat(getComputedStyle(element).opacity)
+  expect(cardOpacity, 'non-eliminated element must have full opacity').toBeCloseTo(1.0, 1)
 
-  const overlay = card.querySelector(DECISION_SELECTORS.dimOverlay)
-  expect(overlay, 'non-eliminated card must not have dim overlay').toBeNull()
+  const overlay = element.querySelector(DECISION_SELECTORS.dimOverlay)
+  expect(overlay, 'non-eliminated element must not have dim overlay').toBeNull()
 }

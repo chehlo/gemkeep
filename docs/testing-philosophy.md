@@ -65,291 +65,7 @@ tests. The tests were not wrong — they were testing the wrong things.
 
 ---
 
-## Section 2: Sprint 3 Bug Retrospective
-
-### BUG-01: Config::default() reset burst_gap_secs to 0
-
-**What the bug was.**
-`Config` implemented `Default` via a hand-written `impl Default`, but an earlier
-version had used `#[derive(Default)]`. The `#[serde(default = "default_burst_gap")]`
-attribute ensures correct values during JSON *deserialization*, but the `Default` trait
-is a separate, independent Rust concept. Any code path that called `Config::default()`
-directly received `burst_gap_secs = 0`. Because `open_project_inner` built its config
-update using `..Config::default()` struct update syntax (BUG-02), every project open
-or create wrote `burst_gap_secs = 0` to disk. With a gap of zero seconds, no two
-photos can be within the gap, so every logical photo was assigned its own stack of
-size 1. Burst grouping was silently disabled for every project.
-
-**Tests that existed and why they missed it.**
-`test_write_and_read_config_round_trip` verified that `last_opened_slug` survived a
-write-read cycle. It did not assert the value of `burst_gap_secs`. The bug was
-invisible because the test never checked the field that was wrong.
-
-**What would have caught it.**
-A single unit test added to `manager.rs`:
-
-```rust
-#[test]
-fn test_config_default_burst_gap_is_3() {
-    let config = Config::default();
-    assert_eq!(
-        config.burst_gap_secs, 3,
-        "Config::default() must have burst_gap_secs=3, got {}",
-        config.burst_gap_secs
-    );
-}
-```
-
-This test is now present in the codebase. It would have caught any future regression
-in the `Default` implementation immediately.
-
-**Layers involved:** Rust unit, pipeline integration.
-
----
-
-### BUG-02: open_project clobbered burst_gap_secs in config
-
-**What the bug was.**
-`open_project_inner` (in `projects/manager.rs`) needed to update `last_opened_slug`
-in the config and write it back. The original implementation constructed the updated
-config using struct update syntax:
-
-```rust
-let updated = Config {
-    last_opened_slug: Some(slug.to_string()),
-    ..Config::default()         // BUG: fills all other fields with defaults
-};
-```
-
-`..Config::default()` fills every unspecified field with the `Default` value. For
-`burst_gap_secs` that meant 0 (before BUG-01 was fixed) or 3 (after). Either way,
-the existing on-disk value of `burst_gap_secs` was discarded. Any user who had
-configured a non-default burst gap would have it reset to 3 on the next project open.
-
-**Tests that existed and why they missed it.**
-No test verified that config fields other than `last_opened_slug` were preserved across
-an `open_project` call. The test surface only covered the field being written, not the
-fields being preserved.
-
-**What would have caught it.**
-A round-trip test that writes a non-default config, calls the slug-update operation,
-re-reads, and asserts the non-default value survived:
-
-```rust
-#[test]
-fn test_burst_gap_preserved_when_updating_slug() {
-    let tmp = temp_home();
-    let home = tmp.path();
-    let initial = Config { last_opened_slug: None, burst_gap_secs: 5 };
-    write_config(home, &initial).unwrap();
-    // Simulate open_project: read existing, update slug, write back
-    let mut config = read_config(home).unwrap_or_default();
-    config.last_opened_slug = Some("my-project".to_string());
-    write_config(home, &config).unwrap();
-    let loaded = read_config(home).unwrap();
-    assert_eq!(loaded.burst_gap_secs, 5, "burst_gap_secs must not be reset by slug update");
-}
-```
-
-This test is now present in the codebase.
-
-**Layers involved:** Rust integration.
-
----
-
-### BUG-03: JPEG thumbnail orientation not applied
-
-**What the bug was.**
-Camera photos taken in portrait orientation are stored with EXIF orientation tag = 6
-(90-degree rotation). `generate_thumbnail` must read this tag and apply the rotation
-before writing the output thumbnail. The implementation read the orientation parameter
-but did not apply the transformation. Portrait photos rendered as landscape in the
-stack grid — visually obvious once you have real photos, completely invisible to tests
-that only checked whether the output file existed.
-
-**Tests that existed and why they missed it.**
-The existing thumbnail tests verified:
-- The function returns `Ok(())`
-- The output file exists at the expected path
-- The output file starts with JPEG magic bytes `FF D8`
-
-None of these assertions required the output to have the correct dimensions or
-orientation. A function that wrote a corrupt file or a sideways image would pass all
-three checks.
-
-**What would have caught it.**
-A test using a landscape source image with orientation tag = 6, asserting that the
-output has portrait dimensions (height > width):
-
-```rust
-#[test]
-fn test_thumbnail_orientation_rotation_applied() {
-    // synthetic landscape JPEG (w > h) with EXIF orientation=6 (90-degree CW)
-    let src = create_synthetic_landscape_jpeg_with_orientation(6);
-    let out_dir = tempfile::tempdir().unwrap();
-    generate_thumbnail(&src, &PhotoFormat::Jpeg, 1, out_dir.path(), Some(6));
-    let img = image::open(out_dir.path().join("1.jpg")).unwrap();
-    assert!(
-        img.height() > img.width(),
-        "orientation=6 must rotate landscape to portrait, got {}x{}",
-        img.width(), img.height()
-    );
-}
-```
-
-**Layers involved:** Rust unit.
-
----
-
-### BUG-04: Scroll position restore works once, breaks on second navigation
-
-**What the bug was.**
-`StackOverview` restored scroll position via `requestAnimationFrame` (rAF). The rAF
-callback was scheduled inside `loadAll()` while `initialLoading` was still `true`.
-The stack cards are rendered inside an `{#if !initialLoading}` block. When the rAF
-callback fired, the cards were not yet in the DOM, so `scrollIntoView` silently did
-nothing. The first navigation appeared to work because the browser retained scroll
-position from the previous render. The second navigation navigated to a different
-card (changing the expected scroll target), and the restore reliably failed.
-
-**Tests that existed and why they missed it.**
-A single navigation unit test verified that after navigating to a stack and returning,
-the previously focused card index was stored. It did not verify that `scrollIntoView`
-was called at the right time relative to DOM availability, and it only performed one
-round trip.
-
-**What would have caught it.**
-An E2E test (or a component test with a full Svelte lifecycle) performing two
-complete round trips with different target positions:
-
-```
-1. Navigate to stack card 7 → press Escape → verify card 7 is scrolled into view
-2. Navigate to stack card 12 → press Escape → verify card 12 is scrolled into view
-```
-
-The second step reliably triggers the timing bug because the expected scroll target
-has changed.
-
-**Layers involved:** Svelte component lifecycle, E2E.
-
----
-
-### BUG-05: Stacking algorithm correct in unit tests but wrong in production
-
-**What the bug was.**
-`assign_stacks_by_burst` was correct. Its unit tests were thorough and all passed.
-But the unit tests called the function with `burst_gap_secs = 3` hardcoded. Production
-called the function with `burst_gap_secs = 0` (delivered by the broken config system,
-BUG-01). With a gap of 0, no two photos can be within the burst gap — every logical
-photo becomes its own stack of size 1. The algorithm was correct; the input was wrong;
-and no test had ever threaded real config values through the full call chain.
-
-This is the canonical example of Pattern A: isolated correctness, wrong runtime inputs.
-The unit tests and the integration gap lived in parallel universes that never intersected.
-
-**Tests that existed and why they missed it.**
-- `test_stack_burst_3s` — hardcoded gap of 3
-- `test_stack_gap` — hardcoded gap of 2
-- `test_stack_configurable_gap` — called the function with a fixed value; the "config"
-  in the test name referred to the parameter, not the real config system
-
-None of these tests exercised the path: read config → extract burst_gap_secs → pass to
-pipeline → pipeline calls assign_stacks_by_burst.
-
-**What would have caught it.**
-A pipeline integration test that runs the full pipeline with two different config values
-and asserts that the output differs:
-
-```rust
-#[test]
-fn test_pipeline_burst_gap_config_affects_stacks() {
-    let (conn, project_dir) = setup_test_db();
-    let folder = create_burst_photos_in_tmpdir(3); // 3 photos 1 second apart
-
-    let stats_gap0 = run_pipeline(&conn, ..., burst_gap_secs: 0, ...);
-    let stats_gap3 = run_pipeline_fresh(&conn, ..., burst_gap_secs: 3, ...);
-
-    assert_eq!(stats_gap0.stacks_generated, 3, "gap=0: every photo is its own stack");
-    assert_eq!(stats_gap3.stacks_generated, 1, "gap=3: all 3 photos in one stack");
-}
-```
-
-An E2E complement: index a folder containing burst photos, assert that at least one
-stack has `logical_photo_count > 1`.
-
-**Layers involved:** Pipeline integration, E2E.
-
----
-
-### BUG-06: SQLite deadlock on concurrent navigation (Sprint 2, caught late)
-
-**What the bug was.**
-`list_projects` held a long-running read lock on the SQLite connection while
-`open_project` attempted a write. In WAL mode this produces a serialization delay
-rather than a hard deadlock, but the delay reached 3,000–5,000 ms — long enough to
-appear as a navigation freeze to the user.
-
-The existing IPC timing test caught something, but its threshold was set at 1,000 ms.
-The actual operation took approximately 50 ms under normal conditions. A threshold of
-1,000 ms is 20x the measured time — large enough that the test passed while the real
-freeze (5,000 ms) was happening in edge cases.
-
-**Tests that existed and why they missed it.**
-`test_ipc_open_then_list_no_freeze` used a 1,000 ms threshold. The intent was correct;
-the threshold was not calibrated to the actual measurement.
-
-**What would have caught it.**
-Setting the threshold to 3x the measured time: if the operation takes 50 ms under
-normal conditions, the threshold should be 150 ms. This would have caught the
-deadlock-induced delay on the first occurrence.
-
-Additionally, an E2E test that performs rapid project switches while polling
-`list_projects` and asserts that each response arrives within 200 ms.
-
-**Layers involved:** IPC integration, E2E.
-
----
-
-### BUG-07: Duplicate key crash when listing 2+ projects (Sprint 2, caught late)
-
-**What the bug was.**
-`ProjectList` used `{#each projects as p (p.id)}`. Each project has its own SQLite
-database, and SQLite `INTEGER PRIMARY KEY` auto-increment starts at 1 in every new
-database. Two projects created in sequence both have `id = 1`. Svelte's keyed `#each`
-block treats the key as a global identifier within the list, so two items with the
-same key produce a duplicate key runtime error that crashes the component.
-
-The fix was to use `project.slug` as the key, since slugs are unique across all
-projects (they are the directory names).
-
-**Tests that existed and why they missed it.**
-`ProjectList.test.ts` mocked a list containing a single project. No test ever rendered
-the component with two projects, so the duplicate key condition never arose in the
-test environment.
-
-**What would have caught it.**
-A component test with two mock projects, both with `id: 1`:
-
-```typescript
-it('renders two projects with duplicate numeric ids without crashing', async () => {
-    const projects = [
-        { id: 1, name: 'Iceland 2024', slug: 'iceland-2024', ... },
-        { id: 1, name: 'Wedding 2023', slug: 'wedding-2023', ... },
-    ];
-    render(ProjectList, { props: { projects } });
-    expect(screen.getByText('Iceland 2024')).toBeInTheDocument();
-    expect(screen.getByText('Wedding 2023')).toBeInTheDocument();
-});
-```
-
-This test would have failed immediately with the `(p.id)` key and passed after the
-fix to `(p.slug)`.
-
-**Layers involved:** Svelte component, E2E.
-
----
-
-## Section 3: The Testing Pyramid
+## Section 2: The Testing Pyramid
 
 ```
                     ┌──────────────────┐
@@ -418,7 +134,7 @@ No mocked IPC. Real SQLite, real filesystem, real asset:// protocol.
 
 ---
 
-## Section 4: Rules for Writing Tests
+## Section 3: Rules for Writing Tests
 
 ### Rule 1: Test the actual output, not the return type
 
@@ -749,87 +465,107 @@ restructuring debt that led to the test-improvements sprint.
 | `mockSingleViewMount()` | `src/test/helpers.ts` | SingleView mount mocking |
 | `waitForCards()` | `src/test/browser-helpers.ts` | Browser tests waiting for card elements |
 | `DECISION_SELECTORS` | `src/test/decision-helpers.ts` | Querying decision badge elements |
-| `assertVisuallyKept()` etc. | `src/test/decision-visual-helpers.ts` | Style-agnostic visual assertions (Rule 17) |
+| `assertVisuallyKept()` etc. | `src/test/decision-visual-helpers.ts` | Pixel-verified decision/focus/selection assertions (Rule 17) |
+| `assertColorVisibleInElementArea()` | `src/test/pixel-verifier.ts` | Low-level pixel ring scan via `page.screenshot()` |
+| `SELECTION_COLORS`, `DECISION_COLORS` | `src/lib/constants/{selection,decisions}.ts` | Single source of truth for all indicator colors |
 
 **Before creating any new helper:** grep the `src/test/` directory and existing test files
 for similar functionality. If a helper exists, use it. If it needs extension, extend it.
 
-### Rule 17: Visual assertions must be style-agnostic
+### Rule 17: Visual assertions must be style-agnostic AND pixel-verified
 
-**Browser tests that check computed CSS must use semantic assertion helpers, not raw
-`getComputedStyle` checks against specific CSS properties.** This enables future A/B
-testing of visual styles without rewriting every test.
+**Browser tests that verify visual indicators must use semantic assertion
+helpers that read actual rendered pixels — not `getComputedStyle()`.** Pixel
+reads see what the user sees (see Rule 18 for why CSS-property reads are
+insufficient). When the visual design changes (border → outline → badge-dot),
+only the helper's pixel-sampling strategy updates — tests don't change.
 
-**Bad** — tightly coupled to one CSS implementation:
-```ts
-const bgColor = getComputedStyle(badge).backgroundColor
-expect(bgColor).toBe('rgb(34, 197, 94)')
+**Helpers (all async, all pixel-verified):**
+
+| Helper | Location | Verifies |
+|--------|----------|----------|
+| `assertVisuallyKept(el)` | `src/test/decision-visual-helpers.ts` | Kept color visible in el's pixels |
+| `assertVisuallyEliminated(el)` | `src/test/decision-visual-helpers.ts` | Eliminated color visible in el's pixels |
+| `assertVisuallyDimmed(el)` | `src/test/decision-visual-helpers.ts` | Overlay present or opacity < 0.6 |
+| `assertVisuallyUndecided(el)` | `src/test/decision-visual-helpers.ts` | NO decision colors in el's pixels |
+| `assertVisuallyFocused(el)` | `src/test/selection-visual-helpers.ts` | Focus color visible in el's pixels |
+| `assertVisuallySelected(el)` | `src/test/selection-visual-helpers.ts` | Selection color visible in el's pixels |
+| `assertNotVisuallyFocused/Selected(el)` | `src/test/selection-visual-helpers.ts` | Color NOT in el's pixels |
+| `waitForVisualFocus/Selection(el)` | `src/test/selection-visual-helpers.ts` | Polls until pixels show the color |
+| `countVisuallySelected(els)` | `src/test/selection-visual-helpers.ts` | How many show the selection color |
+
+**How pixel verification works** (`src/test/pixel-verifier.ts`):
+`page.screenshot({ base64: true })` captures the viewport; crop to a 3px-inside
++ 3px-outside ring around the element's border-box (stays inside gap-3 / gap-6
+grid gaps so neighbours don't bleed in); scan for pixels matching the expected
+color within ±3 tolerance. Two pass conditions:
+(1) enough matching pixels exist (dynamically scaled to ≥5% of the element's
+perimeter — so a 2px frame easily clears but a one-edge sliver of 6 pixels
+fails), AND (2) matching pixels appear on ALL 4 sides (top, right, bottom,
+left) of the element — ensuring the indicator forms a visible frame, not a
+leaked sliver on one edge. Failure diagnostics report the top 5 actual colors
+and which sides are missing.
+
+**Color constants are the single source of truth.**
+`SELECTION_COLORS.focused/selected` (`src/lib/constants/selection.ts`) and
+`DECISION_COLORS.keep/eliminate` (`src/lib/constants/decisions.ts`) define every
+indicator color. Even these constants do not appear in test bodies — tests call
+semantic helpers, helpers reference the constants (see Rule 24).
+
+**When the visual design changes:**
+- Border → outline → badge-dot: **zero test changes**. The ring scan finds the
+  color regardless of which CSS channel drew it.
+- Color palette swap: update the constant file; no test changes.
+- New indicator kind (e.g. "locked"): add constant + helper + tests; existing
+  tests untouched.
+
+### Rule 18: Browser tests must verify pixels, not class names or CSS properties
+
+**"The user saw it" is the only meaningful assertion for a visual test.** Three
+rungs exist on the visibility ladder — each catches a different class of bug,
+and each higher rung subsumes the lower one:
+
+1. **Class name check** (`className.contains('ring-blue-500')`) — proves a class
+   is set. Doesn't prove it compiled, was applied, or rendered.
+2. **Computed style check** (`getComputedStyle(el).outlineColor === '...'`) —
+   proves CSS resolved the class. Doesn't prove the pixels survived the
+   paint/composite/clip pipeline.
+3. **Pixel read** (`page.screenshot()` + scan for the color) — proves the user
+   actually sees the color. **Only rung that matches user experience.**
+
+**Every `.browser.test.ts` visual indicator check must use rung 3** via the
+Rule 17 helpers. Class-name assertions remain OK in `.test.ts` (jsdom) tests
+for prop → class logic.
+
+**The rendering pipeline** (and where each rung reads):
+
+```
+  Svelte → HTML      [0: DOM]
+  Tailwind → CSS     [1: computed styles]   ← getComputedStyle() HERE
+  Layout engine      [2: element positions] ← getBoundingClientRect() HERE
+  Paint              [3: pixels drawn, paint order applied]
+  Composite          [4: layers merged, ancestor/viewport clipping]
+  Display            [5: pixels the user sees] ← page.screenshot() HERE
 ```
 
-**Good** — style-agnostic, survives implementation changes:
-```ts
-import { assertVisuallyKept } from '$test/decision-visual-helpers'
-assertVisuallyKept(cards[0])
-```
+Bugs below Stage 3 are invisible to `getComputedStyle`:
+- **Paint-order occlusion:** `ring-inset` is painted BEFORE border → border
+  covers it. `outline` is painted AFTER border → outline covers border on
+  overlap.
+- **Ancestor clipping:** `outline-offset: 0` draws outside the element; an
+  `overflow: hidden` ancestor clips those pixels.
+- **Sibling overdraw:** a later-DOM-order sibling with a solid background
+  paints over an earlier sibling's outline/shadow pixels.
+- **Viewport clipping:** element fills the viewport; outline extends beyond;
+  clipped.
 
-**Infrastructure:**
-
-| Helper | Location | Purpose |
-|--------|----------|---------|
-| `assertVisuallyKept(card)` | `src/test/decision-visual-helpers.ts` | Card has green indicator (border or background) |
-| `assertVisuallyEliminated(card)` | `src/test/decision-visual-helpers.ts` | Card has red indicator (border or background) |
-| `assertVisuallyDimmed(card)` | `src/test/decision-visual-helpers.ts` | Card is dimmed (overlay or opacity) |
-| `assertVisuallyUndecided(card)` | `src/test/decision-visual-helpers.ts` | Card has no decision indicators |
-| `assertNotDimmed(card)` | `src/test/decision-visual-helpers.ts` | Card has full opacity, no overlay |
-
-**The pattern applies beyond decisions.** Any visual assertion that checks a
-computed style (color, opacity, size, visibility) should go through a helper that
-accepts multiple valid implementations. When a new visual style variant is added,
-update the helper — not every test file.
-
-**Why:** Commit `b3ed905` changed decision indicators from bg-filled badges to
-border-frame overlays but only updated CSS selectors in tests, not the property
-assertions. This left 3 browser tests permanently broken — caught months later.
-Style-agnostic helpers prevent this class of bug entirely.
-
-### Rule 18: Browser tests must assert computed styles, never class names
-
-**In browser tests (`.browser.test.ts`), never use `className.contains()`,
-`className.toMatch()`, or `className.includes()` to verify visual appearance.**
-These assertions prove the code sets a CSS class — they do NOT prove the user sees
-the intended result. A class can be present but visually invisible due to CSS
-specificity, property conflicts, or one property hiding another.
-
-**Always assert computed styles** (`getComputedStyle()`) or use the style-agnostic
-helpers from Rule 17.
-
-**Bad** — class name is present but visual result is broken:
-```ts
-// PASSES even when the blue ring is hidden behind a gray border
-expect(frame.className).toContain('ring-blue-500')
-```
-
-**Good** — asserts what the user actually sees:
-```ts
-// FAILS when the border is gray, proving the blue indicator is not visible
-const borderColor = getComputedStyle(frame).borderColor
-expect(borderColor).toBe('rgb(59, 130, 246)')
-```
-
-**Also good** — style-agnostic helper (preferred, see Rule 17):
-```ts
-assertVisuallyFocused(frame)  // checks the right computed property
-```
-
-**Class-name assertions are fine in jsdom tests** (`.test.ts`) where you are
-testing prop→class logic, not visual rendering. The rule applies only to browser
-tests, whose entire purpose is to verify what the user sees.
-
-**Why:** Commit `a7f0284` added `ring-2 ring-inset ring-blue-500` for focused
-PhotoFrame cards. All browser tests passed — they checked `className.contains('ring-blue-500')`.
-But `ring-inset` produces a `box-shadow` that is painted BEHIND the `border-2 border-gray-700`
-on the same element. The blue ring was invisible. A `getComputedStyle().borderColor` assertion
-would have caught it immediately: the border was gray, not blue.
+**Why — two escalations, both landed in ComparisonView:**
+1. `ring-2 ring-inset ring-blue-500` — `className.contains('ring-blue-500')`
+   passed. Inset box-shadow painted BEHIND `border-2 border-gray-700`; blue ring
+   invisible. Introduced: "use computed styles, not class names".
+2. `outline outline-offset-0` — `getComputedStyle(...).outlineColor` passed.
+   Outline clipped by `<main overflow-hidden>` and overdrawn by sibling panel;
+   user saw nothing. Escalated: "computed styles are not enough — verify pixels."
 
 ### Rule 19: Zero unhandled errors — not just zero failures
 
@@ -903,32 +639,9 @@ shown, and status bar missing stack name.
 - Name says "each card has correct class" but only checks one card
 - Fix: widen assertion to match promised scope
 
-**Examples:**
-```
-Category A:
-BAD:  "shows green border" (jsdom, checks class)
-GOOD: "keep status applies decision-keep class" (jsdom)
-GOOD: "keep status shows green border" (browser, computedStyle)
-
-Category B:
-BAD:  "C key with 2 selected navigates to ComparisonView with selected photos"
-      → only checks navigation.kind, never checks photoIds
-GOOD: "C key with 2 selected navigates to ComparisonView with selected photos"
-      → checks navigation.kind AND navigation.photoIds === [1, 3]
-
-Category C:
-BAD:  "Status bar shows stack name and round number"
-      → only checks "Round 1", never checks stack name
-GOOD: checks BOTH "Stack" AND "Round 1" in status bar text
-
-Category D:
-BAD:  "C key with 1-photo stack shows error"
-      → only checks navigation stays, no error element assertion
-GOOD: checks navigation stays AND error testid exists
-```
-
-**Enforced by:** `validateTestEnvironmentTask` in both behavioral-tdd and
-sprint-development processes. Checks all 4 categories at the RED review breakpoint.
+**Enforced by:** `validateTestEnvironmentTask` in behavioral-tdd and
+sprint-development processes — checks all 4 categories at the RED review
+breakpoint.
 
 #### Process rule
 
@@ -949,69 +662,188 @@ ran one operation on a fresh DB. No test ever ran import → merge → undo → 
 which is what users do. SQLite reused deleted row IDs, orphaned rounds matched new
 stacks, and photos disappeared from the UI — all invisible to single-operation tests.
 
-**The pattern: define an invariant, assert it after every mutation.**
-
-An invariant is a property that must hold at ALL times, regardless of what operations
-were performed. It doesn't test a specific operation — it tests the contract between
-the system and the user.
+**The pattern: define a user-visible invariant, assert it after every
+mutation in a realistic operation sequence.** An invariant is a contract
+that must hold at all times regardless of which operations ran.
 
 ```rust
-// The invariant: photos visible through the round == photos in the stack
+// Invariant: photos visible through the round == photos in the stack
 fn assert_round_photo_invariant(conn: &Connection, project_id: i64) {
     for (stack_id, lp_count) in get_all_stacks(conn, project_id) {
         let round_id = get_round_id_for_stack(conn, project_id, stack_id);
-        let round_photos = query_logical_photos_by_round(conn, round_id);
-        assert_eq!(round_photos.len(), lp_count,
-            "INVARIANT: stack {} has {} photos but round shows {}",
-            stack_id, lp_count, round_photos.len());
+        assert_eq!(query_logical_photos_by_round(conn, round_id).len(), lp_count);
     }
 }
 
 #[test]
 fn test_invariant_survives_full_lifecycle() {
-    // Setup
-    init_stacks();
-    assert_round_photo_invariant(conn, project_id);  // after import
-
-    merge_stacks(conn, ...);
-    assert_round_photo_invariant(conn, project_id);  // after merge
-
-    undo_last_merge(conn, ...);
-    assert_round_photo_invariant(conn, project_id);  // after undo
-
-    restack(conn, ...);
-    assert_round_photo_invariant(conn, project_id);  // after restack
+    init_stacks();                         assert_round_photo_invariant(...);
+    merge_stacks(conn, ...);               assert_round_photo_invariant(...);
+    undo_last_merge(conn, ...);            assert_round_photo_invariant(...);
+    restack(conn, ...);                    assert_round_photo_invariant(...);
 }
 ```
 
-**Key properties of a good invariant test:**
-1. **The invariant is a user-visible contract** — not an implementation detail.
-   "I see the photos in my stack" — not "round_photos table has N rows."
-2. **Assert after EVERY mutation** — not just at the end. The first failure
-   pinpoints which operation broke the invariant.
-3. **Exercise the realistic sequence** — import → decisions → merge → undo →
-   restack → more decisions. This is what users do.
-4. **The test doesn't know about specific bugs** — it catches ANY bug that
-   violates the invariant, including bugs that don't exist yet.
+**Good invariants are user-visible contracts** ("I see my stack photos"),
+not implementation details ("table has N rows"). Assert after EVERY mutation
+— the first failure pinpoints which operation broke it. Exercise realistic
+user sequences (import → decide → merge → undo → restack).
 
-**Invariants to consider for new features:**
-- Navigation: after any sequence of screen transitions, `back()` returns to
-  the correct parent screen
-- Decisions: `current_status` derived from decisions log matches what the UI shows
-- Stacks: every logical_photo belongs to exactly one active stack
-- Thumbnails: every displayed photo has a loadable thumbnail path
-- Data integrity: no orphaned foreign keys after any operation sequence
+**Write invariant tests when** a feature touches persistent data, multiple
+code paths modify the same data, undo/redo is involved, or after a single-
+operation test misses a bug.
 
-**When to write lifecycle invariant tests:**
-- When a feature touches data that persists across operations (DB state, file system)
-- When multiple code paths modify the same data (import creates stacks, merge creates
-  stacks, restack creates stacks — all must maintain the same invariant)
-- When undo/redo is involved — the forward and reverse paths must both preserve invariants
-- After discovering a bug that single-operation tests missed
+### Rule 22: Indicator combinations must have explicit pixel coverage per view
+
+**Every view rendering a photo with state must test every meaningful
+combination of indicators, not each in isolation.** One photo can carry three
+independent states simultaneously: decision (keep/eliminate/undecided),
+selection (selected/none), focus (focused/none). A bug where two indicators
+collide — one covers the other, one is clipped by a layout, one is absent in
+a specific state combination — is invisible to tests that exercise indicators
+alone. Existing coverage is patchy; see `docs/test-coverage-matrix.md` for
+the current state.
+
+**Minimum per-view coverage** — each row is a distinct visual rendering, each
+needs one pixel-verified test:
+
+| decision | selection | focus |
+|---|---|---|
+| undecided | none | focused |
+| undecided | selected | focused |
+| keep | none | focused |
+| keep | selected | focused |
+| eliminate | none | focused |
+| eliminate | selected | focused |
+
+```ts
+it('focused + kept + selected photo shows ALL three indicators', async () => {
+  const frame = /* set up with focused=true, status=keep, selected=true */
+  await assertVisuallyFocused(frame)
+  await assertVisuallyKept(frame)
+  await assertVisuallySelected(frame)
+})
+```
+
+**Why:** Sprint 10's outline-offset bug manifested per combination.
+`focused+kept` in StackFocus had the outline covering the decision border.
+`focused+undecided` in ComparisonView had the outline clipped by
+`<main overflow-hidden>`. Neither was covered before the refactor landed —
+each existing test exercised one indicator in one view that happened to
+work. A single `focused+kept` test per view would have caught it
+immediately.
+
+### Rule 23: Photo fixtures in visual tests must not contain indicator colors
+
+**Test photos used in pixel-verified tests must have `thumbnail_path: null`
+or use dedicated known-color fixture images.** The pixel-verifier scans a
+decoration ring that includes the element's own content near the border — a
+photo with blue sky or green forest pixels would match `SELECTION_COLORS.focused`
+or `DECISION_COLORS.keep` by accident, producing false positives.
+
+- **Default:** `thumbnail_path: null` triggers the `bg-gray-900` dark
+  placeholder inside PhotoFrame — no content colors at all. Example:
+  `{ ..._PHOTO_1, thumbnail_path: null }`.
+- **When real image data is needed** (e.g. thumbnail cropping/orientation
+  tests), use dedicated fixture photos with known solid-color content that
+  cannot collide with any `SELECTION_COLORS` or `DECISION_COLORS` entry.
+  Document the exact RGB content alongside the fixture.
+- **Never** use real-world photos as visual test inputs.
+
+For pipeline tests that consume real image data (thumbnail generation, EXIF
+parsing, crop, rotation), see Rule 25 — fixtures with designed properties.
+
+### Rule 24: Test bodies are functional descriptions — no colors, no visual `expect()`
+
+**Test files read as sequences of semantic actions and semantic assertions.**
+Implementation details (color values, CSS properties, DOM traversal) live in
+helpers. Two hard constraints enforce this:
+
+**Constraint 1 — No color literals in tests.** `rgb(`, `rgba(`, `#rrggbb`,
+and Tailwind color-scale class names (`green-500`, `yellow-400`, etc.) must
+not appear in `*.test.ts` files (including comments). Colors live in
+`SELECTION_COLORS`, `DECISION_COLORS`, and similar constants; helpers consume
+them; tests call helpers. If a test needs to reference a color, it should be
+a helper instead.
+
+**Constraint 2 — No `expect()` on visual state in browser test bodies.**
+`expect(getComputedStyle(...))`, `expect(...boundingBox...)`,
+`expect(el.className).toContain(...)` — all belong inside helpers, not tests.
+Tests call a semantic helper; the helper contains the `expect()`.
+
+`expect()` remains appropriate for non-visual assertions: IPC calls, navigation
+state, counts, data shape.
+
+**Gates (must pass before commit):**
+```bash
+# Constraint 1
+grep -rn -E "rgb\(|#[0-9a-fA-F]{6}|(green|red|blue|yellow)-[0-9]" \
+  src/ --include="*.test.ts" | grep -v "pixel-verifier.browser.test.ts"
+# → zero matches (pixel-verifier's own smoke tests are the one exception)
+
+# Constraint 2
+grep -rn -E "expect\(getComputedStyle|expect\(.*\.(borderColor|outlineColor|backgroundColor|boxShadow)|expect\(.*\.className\)\.toContain\(" \
+  src/ --include="*.browser.test.ts"
+# → zero matches
+```
+
+**Good — test reads like English:**
+```ts
+it('ArrowRight moves focus to the next card', async () => {
+  render(StackFocus)
+  const cards = await waitForCards(3)
+  await assertVisuallyFocused(cards[0])
+  await assertNotVisuallyFocused(cards[1])
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+  await waitForVisualFocus(cards[1])
+  await assertNotVisuallyFocused(cards[0])
+})
+```
+
+No colors, no CSS property names, no `expect()` for visual state. When the
+indicator substrate changes (border → outline → badge-dot → screenshot diff),
+the test is untouched.
+
+**Why:** Sprint 10 had 42 browser-test call sites asserting visual state via
+`expect(getComputedStyle(...))`. When the indicator substrate switched twice
+in one week, every `expect()` had to be edited separately. Semantic helpers
+let us change the substrate four times without touching any test body.
+
+### Rule 25: Image-processing pipelines are verified via designed fixture photos
+
+**Every pipeline that reads, transforms, or extracts data from photos is
+verified against fixture images designed to make the output unambiguous.**
+"Looks right on a real photo" is human review, not a test — deterministic
+properties of known-input fixtures are.
+
+**Shape of a pipeline test:** fixture with known content → run pipeline →
+assert output properties derived from the known content.
+
+**What fixtures provide** (designed-in, not accidental):
+- Known pixel content — corner markers + center patterns → verifies composition preserved
+- Known metadata — EXIF orientation, timestamp, camera, exposure → verifies parsing
+- Known file structure — with/without embedded preview, with/without RAW pair → exercises alternate paths
+- Minimal size — small dimensions + lowest quality → fast tests
+- Catalogued in `src/test/fixtures/photos/README.md` alongside the files, listing each fixture's designed properties
+
+**What pipeline tests assert** (not "looks right"):
+- Corner markers present in correct quadrants → no crop, correct rotation
+- Parsed EXIF matches baked-in values → metadata extraction correct
+- Output aspect ratio ≈ input aspect ratio → resize preserves shape
+- Pixels at known fixture locations match known colors → decoding correct
+
+**When to add a fixture:** you are writing a pipeline stage and no existing
+fixture exercises its unique input — new codec, new EXIF tag, new size
+path, new orientation, new format. Or a bug escaped because no fixture
+covered the scenario.
+
+**Applies to all image pipelines:** EXIF parsing, orientation application,
+thumbnail generation (fast embedded-preview path AND slow full-decode path),
+RAW decoding, crop/resize, preview extraction.
 
 ---
 
-## Section 5: Test Infrastructure
+## Section 4: Test Infrastructure
 
 ### Rust Tests
 ```bash
@@ -1077,184 +909,20 @@ Every IPC command used by the frontend must have:
 
 ---
 
-## Section 6: Thumbnail Performance Analysis
+## Section 5: Visual Testing Methodology
 
-### Current Approach and Why It Is Too Slow
-
-Sprint 3's thumbnail pipeline (Step 5 in `pipeline.rs`) calls `image::open()` on each
-JPEG representative photo. `image::open()` performs a full decode of the entire image.
-
-**Benchmark data (measured 2026-02-21, AMD Ryzen 5 5625U):**
-
-| Metric | Value |
-|--------|-------|
-| Test folder | `/home/ilya/ssd_disk/photo/venice 2026/il/2` |
-| Files | 1,935 (968 CR2 + 967 JPG) |
-| Logical photos | 968 (one per RAW+JPEG pair) |
-| JPEG dimensions | 6000 x 4000 (24 MP) |
-| JPEG file size | ~6.1 MB per file |
-| Uncompressed RAM per decode | ~72 MB (6000 x 4000 x 3 bytes) |
-| Python Pillow / native libjpeg: decode | 1.21 s |
-| Python Pillow / native libjpeg: resize | 0.15 s |
-| **Python Pillow total per photo** | **1.36 s** |
-| Rust `image` crate (pure Rust jpeg-decoder) | estimated 2.7–4 s per photo |
-| rayon threads available | 10 (12 cores - 2) |
-| **Estimated total (Rust, 10 threads)** | **5–8 minutes for 968 photos** |
-
-Five to eight minutes to generate thumbnails for a single 968-photo session is
-unacceptable. A photographer processing a 5,000-photo shoot would wait 25–40 minutes
-before seeing any thumbnails.
-
-### Root Cause
-
-The `image` crate's `image::open()` decodes the full 24 MP image into a 72 MB
-uncompressed buffer before any resizing occurs. Generating a 256 px thumbnail
-requires decoding 24,000,000 pixels to produce 65,536 pixels — a 366x waste ratio.
-The `image` crate's pure-Rust JPEG decoder is also 2–3x slower than native libjpeg.
-
-### Correct Approach (ordered by speed)
-
-**Option 1: EXIF embedded thumbnail (fastest — use this first)**
-
-Every camera JPEG contains an embedded preview image stored in the EXIF APP1 marker
-segment. Canon CR2 files shot in RAW+JPEG mode pair with JPEGs that contain this
-preview. The embedded thumbnail is typically 160x120 or 320x213, stored as a JPEG
-within the EXIF data (~10–30 KB). Extracting and upscaling this thumbnail requires
-reading only the first 60–150 KB of the file rather than the full 6 MB.
-
-Estimated time per photo: 0.01–0.05 s
-Estimated total for 968 photos (10 threads): **3–15 seconds** (30–50x speedup)
-
-Library: `kamadak-exif` can locate the embedded thumbnail; alternatively parse the
-EXIF APP1 marker directly using `nom` or a purpose-built parser.
-
-**Option 2: libjpeg DCT scaling (fast fallback)**
-
-libjpeg supports scale-at-decode: `--scale 1/8` produces a 750x500 output from a
-6000x4000 source with 64x less work than full decode. Available via the `jpeg-decoder`
-crate with the `platform_independent = false` feature (uses native libjpeg) or the
-`mozjpeg` crate.
-
-Estimated time per photo: 0.05–0.1 s (still 10–20x faster than current approach)
-
-**Option 3: Full decode (current — use only if embedded thumbnail absent)**
-
-The current `image::open()` approach is correct as a last resort. It should only
-be reached when the file has no embedded thumbnail and DCT scaling is unavailable.
-
----
-
-## Section 7: BUG-08 — StackFocus badge escapes card (Sprint 7)
-
-**What the bug was.**
-Decision badges (`.badge-keep`, `.badge-eliminate`) in StackFocus used
-`absolute top-1 right-1` positioning, but the parent card div had no
-`position: relative`. The badges floated to the nearest positioned ancestor
-(the page body), rendering at `y=4` while the card was at `y=73`.
-
-**Tests that existed and why they missed it.**
-Vitest/jsdom component tests verified `document.querySelector('.badge-keep')` existed
-after pressing Y. jsdom has no layout engine — it cannot compute bounding boxes or
-detect that an absolutely-positioned element escaped its intended container.
-
-**What caught it.**
-A Playwright E2E test using `boundingBox()` comparison:
-```typescript
-const cardBox = await firstCard.boundingBox()
-const badgeBox = await badge.boundingBox()
-expect(badgeBox!.y).toBeGreaterThanOrEqual(cardBox!.y) // FAILED: 4 < 73
-```
-
-**Fix:** Add `relative` to the card div's class list.
-
-**Layers involved:** Playwright E2E (Layer 4, visual CSS assertions).
-Note: with vitest-browser-svelte (Layer 3), this class of bug can now be caught
-at the component level, which is faster and more targeted.
-This bug established Rule 14 and Section 8 of this document.
-
----
-
-## Section 8: Visual Testing Methodology
-
-### The Problem jsdom Cannot Solve
-
-jsdom has no layout engine. It parses HTML and builds a DOM tree, but it does not
-compute CSS layout, resolve `position: absolute` containment, apply `opacity`
-transitions, or compile Tailwind utility classes into actual pixel values.
-
-A jsdom test can verify that `element.classList.contains('border-green-500')` is true.
-It cannot verify that the border is visible, correctly positioned, or the right color.
-The following bugs are **invisible to jsdom**:
-
-| Bug | jsdom sees | Real Chromium sees (vitest-browser-svelte / Playwright) |
-|-----|------------|----------------------------------------------------------|
-| `absolute` badge escapes card (no `relative` on parent) | Class present, element exists | `boundingBox()` outside card bounds |
-| Tailwind class purged from build (not in content scan) | Class present in source | `getComputedStyle().borderColor` = transparent |
-| `opacity-50` not reactively applied after state change | Class added to DOM | `getComputedStyle().opacity` = 1.0 (stale) |
-| `z-index` stacking hides badge behind sibling | Element exists | `isVisible()` returns false |
-
-### Visual Assertions with Real Chromium
-
-Both vitest-browser-svelte (Layer 3) and Playwright (Layer 4) run real Chromium
-with full CSS layout, Tailwind compilation, and computed styles. The assertion
-patterns are similar but use different APIs. Use vitest-browser-svelte for
-component-scoped tests; use Playwright for journey-level tests.
-
-**Bounding box containment** — verify positioned elements stay within their parent:
-```typescript
-// vitest-browser-svelte (Layer 3 — component-scoped)
-const card = screen.getByTestId('photo-card')
-const badge = card.getByRole('status')  // or appropriate selector
-const cardBox = await card.element().getBoundingClientRect()
-const badgeBox = await badge.element().getBoundingClientRect()
-expect(badgeBox.y).toBeGreaterThanOrEqual(cardBox.y)
-
-// Playwright (Layer 4 — journey-level)
-const card = page.locator('[data-testid="photo-card"]').first()
-const badge = card.locator('.badge-keep')
-const cardBox = await card.boundingBox()
-const badgeBox = await badge.boundingBox()
-expect(badgeBox!.y).toBeGreaterThanOrEqual(cardBox!.y)
-expect(badgeBox!.x + badgeBox!.width).toBeLessThanOrEqual(cardBox!.x + cardBox!.width)
-```
-
-**Computed style verification** — verify CSS values after Tailwind compilation:
-```typescript
-// vitest-browser-svelte (Layer 3)
-const el = screen.getByTestId('photo-card')
-const opacity = getComputedStyle(el.element()).opacity
-expect(parseFloat(opacity)).toBeCloseTo(0.5, 1)
-
-// Playwright (Layer 4)
-const opacity = await page.evaluate(() => {
-  const el = document.querySelector('[data-testid="photo-card"]')
-  return getComputedStyle(el!).opacity
-})
-expect(parseFloat(opacity)).toBeCloseTo(0.5, 1)
-```
-
-**Color verification** — verify Tailwind colors are compiled and applied:
-```typescript
-// vitest-browser-svelte (Layer 3)
-const badge = screen.getByRole('status')
-const bgColor = getComputedStyle(badge.element()).backgroundColor
-expect(bgColor).toBe('rgb(34, 197, 94)') // Tailwind bg-green-500
-
-// Playwright (Layer 4)
-const bgColor = await page.evaluate(() => {
-  const badge = document.querySelector('.badge-keep')
-  return getComputedStyle(badge!).backgroundColor
-})
-expect(bgColor).toBe('rgb(34, 197, 94)') // Tailwind bg-green-500
-```
+Visibility has three levels — class present, CSS applied, pixels displayed —
+and each hides a different class of bug. Rules 14, 17, and 18 explain the
+progression. This section covers what remains: test tiering, decision guide,
+cross-engine limits, and the manual verification checklist.
 
 ### Cross-Engine Rendering Gap
 
-Both vitest-browser-svelte and Playwright tests run in Chromium. The production app
-uses WebKitGTK (Linux) or WebKit (macOS). CSS edge cases can behave differently
-between engines. Chromium-based visual tests catch the majority of bugs (missing
-`relative`, purged classes, broken reactivity), but **pixel-exact rendering must be
-verified manually** in the real app for each sprint.
+vitest-browser-svelte and Playwright tests run in Chromium. The production app
+uses WebKitGTK (Linux) or WebKit (macOS). CSS edge cases behave differently
+between engines. Chromium-based visual tests catch the majority of bugs
+(missing `relative`, purged classes, broken reactivity, clipping), but
+**pixel-exact rendering must be verified manually** in the real app each sprint.
 
 ### Test Tiering Strategy
 
@@ -1373,14 +1041,14 @@ style bugs. The following must still be verified manually in the real app
 - [ ] Colors render correctly in WebKitGTK (not just Chromium)
 - [ ] Animations/transitions are smooth (no jank)
 - [ ] Visual indicators are visible at all viewport sizes used in practice
-- [ ] Keyboard focus indicators (blue ring) are clearly visible against photo backgrounds
+- [ ] Keyboard focus and selection indicators are clearly visible against photo backgrounds (including bright edge colors like sky/snow)
 
 ---
 
-## Section 9: Pre-Sprint-Done Checklist (Tier 3)
+## Section 6: Pre-Sprint-Done Checklist (Tier 3)
 
 This checklist corresponds to **Tier 3** — the full gate before a sprint is done.
-See Section 8 for Tier 1 (pre-commit) and Tier 2 (pre-push) definitions.
+See Section 5 for Tier 1 (pre-commit) and Tier 2 (pre-push) definitions.
 
 ```
 ### Rust Unit Tests
@@ -1436,7 +1104,7 @@ See Section 8 for Tier 1 (pre-commit) and Tier 2 (pre-push) definitions.
 
 ---
 
-## Section 10: Coverage Targets
+## Section 7: Coverage Targets
 
 Coverage targets are per-layer, not a single number. Different layers have
 different cost-benefit curves — obsessing over 100% in the wrong layer wastes

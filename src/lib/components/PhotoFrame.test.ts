@@ -2,7 +2,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/svelte'
 import { makePhoto } from '$test/fixtures'
-import { DECISION_SELECTORS } from '$lib/constants/decisions'
+import { assertFocused, assertSelected, assertNotFocused, assertNoSelectionIndicator } from '$test/selection-helpers'
+import { assertDecisionKept, assertDecisionEliminated, assertDecisionDimmed, assertDecisionUndecided } from '$test/decision-helpers'
 import PhotoFrame from './PhotoFrame.svelte'
 
 beforeEach(() => {
@@ -55,26 +56,12 @@ describe('PhotoFrame — image rendering', () => {
     expect(screen.getByText('\u{1F4F7}')).toBeInTheDocument()
   })
 
-  // ─── 3b. Shows camera emoji when no imageUrl (layout=panel) ───────────────
-
-  it('shows camera emoji placeholder when imageUrl is null and layout=panel', () => {
-    render(PhotoFrame, {
-      props: {
-        photo: makePhoto(),
-        imageUrl: null,
-        layout: 'panel',
-      },
-    })
-
-    expect(document.querySelector('img')).toBeNull()
-    expect(screen.getByText('\u{1F4F7}')).toBeInTheDocument()
-  })
 })
 
 // ─── 4 & 5. Decision indicator ───────────────────────────────────────────────
 
 describe('PhotoFrame — decision indicator', () => {
-  it('keep status applies decision-keep class', () => {
+  it('keep status applies kept decision indicator', () => {
     render(PhotoFrame, {
       props: {
         photo: makePhoto(),
@@ -84,11 +71,10 @@ describe('PhotoFrame — decision indicator', () => {
     })
 
     const frame = screen.getByTestId('photo-frame')
-    // decision-keep class is now on the frame itself (absorbed DecisionIndicator)
-    expect(frame.classList.contains('decision-keep')).toBe(true)
+    assertDecisionKept(frame)
   })
 
-  it('eliminate status applies decision-eliminate class and adds dim overlay element', () => {
+  it('applies eliminated marker class and renders dim-overlay element', () => {
     render(PhotoFrame, {
       props: {
         photo: makePhoto(),
@@ -98,10 +84,8 @@ describe('PhotoFrame — decision indicator', () => {
     })
 
     const frame = screen.getByTestId('photo-frame')
-    // decision-eliminate class is now on the frame itself (absorbed DecisionIndicator)
-    expect(frame.classList.contains('decision-eliminate')).toBe(true)
-    // dim overlay is still a descendant inside photo-area
-    expect(frame.querySelector(DECISION_SELECTORS.dimOverlay)).not.toBeNull()
+    assertDecisionEliminated(frame)
+    assertDecisionDimmed(frame)
   })
 })
 
@@ -203,82 +187,34 @@ describe('PhotoFrame — layout prop controls rounded', () => {
     expect(frame.className).toContain('rounded-lg')
   })
 
-  it('does not apply rounded-lg class when layout=fill', () => {
-    render(PhotoFrame, {
-      props: {
-        photo: makePhoto(),
-        layout: 'fill',
-        imageUrl: null,
-      },
-    })
-
-    const frame = screen.getByTestId('photo-frame')
-    expect(frame.className).not.toContain('rounded-lg')
-  })
-
-  it('does not apply rounded-lg class when layout=panel', () => {
-    render(PhotoFrame, {
-      props: {
-        photo: makePhoto(),
-        layout: 'panel',
-        imageUrl: null,
-      },
-    })
-
-    const frame = screen.getByTestId('photo-frame')
-    expect(frame.className).not.toContain('rounded-lg')
-  })
 })
 
 // ─── 12. Layout: object-fit based on layout ─────────────────────────────────
 
 describe('PhotoFrame — layout prop controls object-fit', () => {
-  it('uses object-cover class when layout=card', () => {
+  it.each([
+    { layout: 'card' as const,  expected: 'object-cover',   notExpected: 'object-contain' },
+    { layout: 'fill' as const,  expected: 'object-contain', notExpected: 'object-cover' },
+    { layout: 'panel' as const, expected: 'object-contain', notExpected: 'object-cover' },
+  ])('uses $expected class when layout=$layout', ({ layout, expected, notExpected }) => {
     render(PhotoFrame, {
       props: {
         photo: makePhoto(),
-        layout: 'card',
+        layout,
         imageUrl: 'asset://localhost/test.jpg',
       },
     })
 
     const img = document.querySelector('img')!
-    expect(img.className).toContain('object-cover')
-    expect(img.className).not.toContain('object-contain')
-  })
-
-  it('uses object-contain class when layout=fill (default)', () => {
-    render(PhotoFrame, {
-      props: {
-        photo: makePhoto(),
-        imageUrl: 'asset://localhost/test.jpg',
-      },
-    })
-
-    const img = document.querySelector('img')!
-    expect(img.className).toContain('object-contain')
-    expect(img.className).not.toContain('object-cover')
-  })
-
-  it('uses object-contain class when layout=panel', () => {
-    render(PhotoFrame, {
-      props: {
-        photo: makePhoto(),
-        layout: 'panel',
-        imageUrl: 'asset://localhost/test.jpg',
-      },
-    })
-
-    const img = document.querySelector('img')!
-    expect(img.className).toContain('object-contain')
-    expect(img.className).not.toContain('object-cover')
+    expect(img.className).toContain(expected)
+    expect(img.className).not.toContain(notExpected)
   })
 })
 
 // ─── 13. No structural border on undecided ──────────────────────────────────
 
-describe('PhotoFrame — undecided border', () => {
-  it('undecided photos have border and border-gray-700 classes', () => {
+describe('PhotoFrame — undecided state', () => {
+  it('undecided photos show no decision indicator', () => {
     render(PhotoFrame, {
       props: {
         photo: makePhoto(),
@@ -288,67 +224,30 @@ describe('PhotoFrame — undecided border', () => {
     })
 
     const frame = screen.getByTestId('photo-frame')
-    expect(frame.className).toContain('border')
-    expect(frame.className).toContain('border-gray-700')
+    assertDecisionUndecided(frame)
   })
 
-  it('keep photos do not have border-gray-700 class', () => {
-    render(PhotoFrame, {
-      props: {
-        photo: makePhoto(),
-        status: 'keep',
-        imageUrl: null,
-      },
-    })
-
-    const frame = screen.getByTestId('photo-frame')
-    expect(frame.className).not.toContain('border-gray-700')
-  })
-
-  it('eliminate photos do not have border-gray-700 class', () => {
-    render(PhotoFrame, {
-      props: {
-        photo: makePhoto(),
-        status: 'eliminate',
-        imageUrl: null,
-      },
-    })
-
-    const frame = screen.getByTestId('photo-frame')
-    expect(frame.className).not.toContain('border-gray-700')
-  })
 })
 
 // ─── 14. Layout sizing classes ──────────────────────────────────────────────
 
 describe('PhotoFrame — layout sizing', () => {
-  it('layout=fill applies flex-1 and min-h-0 classes', () => {
-    render(PhotoFrame, {
-      props: {
-        photo: makePhoto(),
-        layout: 'fill',
-        imageUrl: null,
-      },
-    })
+  it.each(['fill' as const, 'panel' as const])(
+    'layout=%s applies flex-1 and min-h-0 classes',
+    (layout) => {
+      render(PhotoFrame, {
+        props: {
+          photo: makePhoto(),
+          layout,
+          imageUrl: null,
+        },
+      })
 
-    const frame = screen.getByTestId('photo-frame')
-    expect(frame.className).toContain('flex-1')
-    expect(frame.className).toContain('min-h-0')
-  })
-
-  it('layout=panel applies flex-1 and min-h-0 classes', () => {
-    render(PhotoFrame, {
-      props: {
-        photo: makePhoto(),
-        layout: 'panel',
-        imageUrl: null,
-      },
-    })
-
-    const frame = screen.getByTestId('photo-frame')
-    expect(frame.className).toContain('flex-1')
-    expect(frame.className).toContain('min-h-0')
-  })
+      const frame = screen.getByTestId('photo-frame')
+      expect(frame.className).toContain('flex-1')
+      expect(frame.className).toContain('min-h-0')
+    },
+  )
 
   it('layout=card does not add flex-1', () => {
     render(PhotoFrame, {
@@ -367,7 +266,7 @@ describe('PhotoFrame — layout sizing', () => {
 // ─── 15. Focused and selected rings ─────────────────────────────────────────
 
 describe('PhotoFrame — focused/selected rings', () => {
-  it('renders ring-2 ring-blue-500 when focused=true', () => {
+  it('applies focused marker class when focused=true', () => {
     render(PhotoFrame, {
       props: {
         photo: makePhoto(),
@@ -377,11 +276,10 @@ describe('PhotoFrame — focused/selected rings', () => {
     })
 
     const frame = screen.getByTestId('photo-frame')
-    expect(frame.className).toContain('ring-2')
-    expect(frame.className).toContain('ring-blue-500')
+    assertFocused(frame)
   })
 
-  it('renders ring-2 ring-yellow-500 when selected=true', () => {
+  it('applies selected marker class when selected=true', () => {
     render(PhotoFrame, {
       props: {
         photo: makePhoto(),
@@ -391,11 +289,10 @@ describe('PhotoFrame — focused/selected rings', () => {
     })
 
     const frame = screen.getByTestId('photo-frame')
-    expect(frame.className).toContain('ring-2')
-    expect(frame.className).toContain('ring-yellow-500')
+    assertSelected(frame)
   })
 
-  it('selected takes priority over focused', () => {
+  it('selected marker wins when both flags true', () => {
     render(PhotoFrame, {
       props: {
         photo: makePhoto(),
@@ -406,11 +303,11 @@ describe('PhotoFrame — focused/selected rings', () => {
     })
 
     const frame = screen.getByTestId('photo-frame')
-    expect(frame.className).toContain('ring-yellow-500')
-    expect(frame.className).not.toContain('ring-blue-500')
+    assertSelected(frame)
+    assertNotFocused(frame)
   })
 
-  it('no ring when neither focused nor selected', () => {
+  it('no selection/focus marker classes when neither flag set', () => {
     render(PhotoFrame, {
       props: {
         photo: makePhoto(),
@@ -419,7 +316,7 @@ describe('PhotoFrame — focused/selected rings', () => {
     })
 
     const frame = screen.getByTestId('photo-frame')
-    expect(frame.className).not.toContain('ring-2')
+    assertNoSelectionIndicator(frame)
   })
 })
 

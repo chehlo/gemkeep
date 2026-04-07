@@ -18,7 +18,8 @@ import {
 } from '$test/fixtures'
 import { resetInvokeMock, mockSingleViewMount, mockStackFocusMount, mockStackFocusRouter } from '$test/helpers'
 import { makeRoundSummary, makeRoundStatus } from '$test/fixtures'
-import { DECISION_SELECTORS } from '$test/decision-helpers'
+import { DECISION_SELECTORS, assertDecisionKept, assertDecisionEliminated, assertDecisionDimmed, assertDecisionUndecided, queryKeepIndicator, queryEliminateIndicator, queryDimOverlay } from '$test/decision-helpers'
+import { assertFocused, assertNotFocused, assertNotSelected, assertSelected, assertNoSelectionIndicator } from '$test/selection-helpers'
 import SingleView from './SingleView.svelte'
 import ComparisonView from './ComparisonView.svelte'
 import StackFocus from './StackFocus.svelte'
@@ -38,7 +39,7 @@ describe('F4-SV: SingleView visual delegation to PhotoFrame', () => {
     navigate({ kind: 'single-view', projectSlug: 'test-project', projectName: 'Test', stackId: 1, photoId: 1 })
   })
 
-  it('keep status propagates decision-keep and border-green-500 classes to PhotoFrame', async () => {
+  it('keep status propagates kept decision indicator to PhotoFrame', async () => {
     mockSingleViewMount({
       detail: makePhotoDetail({ current_status: 'keep' }),
       decisions: makeDecisionList(['keep', 'undecided', 'undecided']),
@@ -46,25 +47,22 @@ describe('F4-SV: SingleView visual delegation to PhotoFrame', () => {
     render(SingleView)
 
     await waitFor(() => {
-      const frame = document.querySelector('[data-testid="photo-frame"]')
+      const frame = document.querySelector('[data-testid="photo-frame"]') as HTMLElement
       expect(frame).not.toBeNull()
-      expect(frame!.className).toContain('decision-keep')
-      expect(frame!.className).toContain('border-green-500')
+      assertDecisionKept(frame)
     })
   })
 
-  it('undecided status propagates border-gray-700 class to PhotoFrame without decision markers', async () => {
+  it('undecided status propagates undecided state to PhotoFrame without decision markers', async () => {
     mockSingleViewMount({
       detail: makePhotoDetail({ current_status: 'undecided' }),
     })
     render(SingleView)
 
     await waitFor(() => {
-      const frame = document.querySelector('[data-testid="photo-frame"]')
+      const frame = document.querySelector('[data-testid="photo-frame"]') as HTMLElement
       expect(frame).not.toBeNull()
-      expect(frame!.className).toContain('border-gray-700')
-      expect(frame!.className).not.toContain('decision-keep')
-      expect(frame!.className).not.toContain('decision-eliminate')
+      assertDecisionUndecided(frame)
     })
   })
 
@@ -73,11 +71,10 @@ describe('F4-SV: SingleView visual delegation to PhotoFrame', () => {
     render(SingleView)
 
     await waitFor(() => {
-      const frame = document.querySelector('[data-testid="photo-frame"]')
+      const frame = document.querySelector('[data-testid="photo-frame"]') as HTMLElement
       expect(frame).not.toBeNull()
       // SingleView never passes focused or selected props
-      expect(frame!.className).not.toContain('ring-blue-500')
-      expect(frame!.className).not.toContain('ring-yellow-500')
+      assertNoSelectionIndicator(frame)
     })
   })
 })
@@ -101,7 +98,7 @@ describe('F4-CV: ComparisonView visual delegation to PhotoFrame', () => {
     navigate({ kind: 'comparison-view', projectSlug: 'test-project', stackId: 1, projectName: 'Test' })
   })
 
-  it('left focused + keep propagates ring-blue-500 and decision-keep classes to PhotoFrame', async () => {
+  it('left focused + keep propagates focus indicator and kept decision indicator to PhotoFrame', async () => {
     // All photos already decided → ComparisonView falls back to default indices (0, 1)
     mockComparisonMount(
       [PHOTO_1, PHOTO_2, PHOTO_3],
@@ -112,14 +109,13 @@ describe('F4-CV: ComparisonView visual delegation to PhotoFrame', () => {
 
     await waitFor(() => {
       const left = screen.getByTestId('comparison-left')
-      const cls = frameClass(left)
-      expect(cls).toContain('ring-blue-500')
-      expect(cls).toContain('decision-keep')
-      expect(cls).toContain('border-green-500')
+      const frame = left.querySelector('[data-testid="photo-frame"]') as HTMLElement
+      assertFocused(frame)
+      assertDecisionKept(frame)
     })
   })
 
-  it('right focused + eliminate propagates ring-blue-500 and decision-eliminate classes with dim overlay element', async () => {
+  it('right focused + eliminate propagates focus indicator and eliminated decision indicator with dim overlay', async () => {
     // All decided → default indices: left=0 (keep), right=1 (eliminate)
     mockComparisonMount(
       [PHOTO_1, PHOTO_2, PHOTO_3],
@@ -135,26 +131,25 @@ describe('F4-CV: ComparisonView visual delegation to PhotoFrame', () => {
 
     await waitFor(() => {
       const right = screen.getByTestId('comparison-right')
-      const cls = frameClass(right)
-      expect(cls).toContain('ring-blue-500')
-      expect(cls).toContain('decision-eliminate')
-      expect(cls).toContain('border-red-500')
-      // Dim overlay should be inside the frame
-      const dimOverlay = right.querySelector(DECISION_SELECTORS.dimOverlay)
-      expect(dimOverlay).not.toBeNull()
+      const frame = right.querySelector('[data-testid="photo-frame"]') as HTMLElement
+      assertFocused(frame)
+      assertDecisionEliminated(frame)
+      assertDecisionDimmed(frame)
     })
   })
 
-  it('ComparisonView does not pass selected → no ring-yellow-500 on any panel', async () => {
+  it('ComparisonView does not pass selected → no selection indicator on any panel', async () => {
     mockComparisonMount()
     render(ComparisonView)
 
     await waitFor(() => {
       const left = screen.getByTestId('comparison-left')
       const right = screen.getByTestId('comparison-right')
+      const leftFrame = left.querySelector('[data-testid="photo-frame"]') as HTMLElement
+      const rightFrame = right.querySelector('[data-testid="photo-frame"]') as HTMLElement
       // Neither panel should have selection ring
-      expect(frameClass(left)).not.toContain('ring-yellow-500')
-      expect(frameClass(right)).not.toContain('ring-yellow-500')
+      assertNotSelected(leftFrame)
+      assertNotSelected(rightFrame)
     })
   })
 })
@@ -193,21 +188,20 @@ describe('F4-SF: StackFocus visual delegation to PhotoFrame', () => {
       expect(cards).toHaveLength(3)
 
       // Card 0: keep
-      expect(frameClass(cards[0])).toContain('decision-keep')
-      expect(frameClass(cards[0])).toContain('border-green-500')
+      const frame0 = cards[0].querySelector('[data-testid="photo-frame"]') as HTMLElement
+      assertDecisionKept(frame0)
 
       // Card 1: eliminate
-      expect(frameClass(cards[1])).toContain('decision-eliminate')
-      expect(frameClass(cards[1])).toContain('border-red-500')
+      const frame1 = cards[1].querySelector('[data-testid="photo-frame"]') as HTMLElement
+      assertDecisionEliminated(frame1)
 
       // Card 2: undecided
-      expect(frameClass(cards[2])).toContain('border-gray-700')
-      expect(frameClass(cards[2])).not.toContain('decision-keep')
-      expect(frameClass(cards[2])).not.toContain('decision-eliminate')
+      const frame2 = cards[2].querySelector('[data-testid="photo-frame"]') as HTMLElement
+      assertDecisionUndecided(frame2)
     })
   })
 
-  it('focused + selected + keep propagates ring-yellow-500 and border-green-500 classes together', async () => {
+  it('focused + selected + keep propagates selection indicator and kept decision indicator together', async () => {
     // Photo 1 is kept; focusedIndex defaults to 0; we'll select it too
     mockStackFocusMount(
       mockPhotos,
@@ -219,7 +213,8 @@ describe('F4-SF: StackFocus visual delegation to PhotoFrame', () => {
     await waitFor(() => {
       const cards = screen.getAllByTestId('photo-card')
       // Focus is on card 0 by default
-      expect(frameClass(cards[0])).toContain('ring-blue-500')
+      const frame0 = cards[0].querySelector('[data-testid="photo-frame"]') as HTMLElement
+      assertFocused(frame0)
     })
 
     // Select the focused card with 's' key
@@ -227,12 +222,11 @@ describe('F4-SF: StackFocus visual delegation to PhotoFrame', () => {
 
     await waitFor(() => {
       const cards = screen.getAllByTestId('photo-card')
-      const cls = frameClass(cards[0])
-      // Selected takes priority for ring: ring-yellow-500 (not ring-blue-500)
-      expect(cls).toContain('ring-yellow-500')
-      // Decision border: border-green-500 coexists with selection ring
-      expect(cls).toContain('border-green-500')
-      expect(cls).toContain('decision-keep')
+      const frame0 = cards[0].querySelector('[data-testid="photo-frame"]') as HTMLElement
+      // Selected takes priority for ring: selected indicator (not focused)
+      assertSelected(frame0)
+      // Decision indicator coexists with selection ring
+      assertDecisionKept(frame0)
     })
   })
 })
@@ -245,7 +239,7 @@ describe('F4-X: No screen applies decision/ring visual classes outside PhotoFram
     resetInvokeMock()
   })
 
-  it('SingleView: border-green-500 only appears inside photo-frame', async () => {
+  it('SingleView: keep decision indicator only appears inside photo-frame', async () => {
     navigate({ kind: 'single-view', projectSlug: 'test-project', projectName: 'Test', stackId: 1, photoId: 1 })
     mockSingleViewMount({
       detail: makePhotoDetail({ current_status: 'keep' }),
@@ -258,14 +252,14 @@ describe('F4-X: No screen applies decision/ring visual classes outside PhotoFram
       expect(frame).not.toBeNull()
     })
 
-    // All border-green-500 elements must be inside a photo-frame
-    const greenBorders = document.querySelectorAll('.border-green-500')
-    for (const el of greenBorders) {
+    // All keep indicator elements must be inside a photo-frame
+    const keepElements = document.querySelectorAll(DECISION_SELECTORS.keep)
+    for (const el of keepElements) {
       expect(el.closest('[data-testid="photo-frame"]')).not.toBeNull()
     }
   })
 
-  it('StackFocus: ring-blue-500 and decision classes only appear inside photo-frame', async () => {
+  it('StackFocus: focus indicator and decision classes only appear inside photo-frame', async () => {
     navigate({ kind: 'stack-focus', projectSlug: 'test-project', projectName: 'Test', stackId: 1 })
     // Use committed round so all decision badges (including eliminate) are visible
     const committedRound = makeRoundStatus({
@@ -289,7 +283,7 @@ describe('F4-X: No screen applies decision/ring visual classes outside PhotoFram
     })
 
     // All visual indicator classes must be inside photo-frame
-    const ringElements = document.querySelectorAll('.ring-blue-500')
+    const ringElements = document.querySelectorAll('.selection-focused')
     for (const el of ringElements) {
       expect(el.closest('[data-testid="photo-frame"]')).not.toBeNull()
     }

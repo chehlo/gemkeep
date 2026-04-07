@@ -6,6 +6,7 @@ import { navigate, navigation } from '$lib/stores/navigation.svelte.js'
 import { PHOTO_1, PHOTO_2, PHOTO_3, ROUND_2_PHOTOS, makePhoto, makeDecisionResult, OPEN_ROUND, UNDECIDED_DECISIONS, makeRoundStatus, makePhotoDetail } from '$test/fixtures'
 import { resetInvokeMock } from '$test/helpers'
 import { DECISION_SELECTORS } from '$lib/constants/decisions'
+import { assertFocused, assertNotFocused } from '$test/selection-helpers'
 import type { LogicalPhotoSummary } from '$lib/api/index.js'
 import ComparisonView from './ComparisonView.svelte'
 
@@ -56,27 +57,27 @@ describe('ComparisonView — layout', () => {
     })
   })
 
-  it('left panel has ring-blue-500 class by default', async () => {
+  it('left panel has focus indicator by default', async () => {
     mockComparisonMount()
     render(ComparisonView)
 
     await waitFor(() => {
       const left = screen.getByTestId('comparison-left')
-      const frame = left.querySelector('[data-testid="photo-frame"]')
+      const frame = left.querySelector('[data-testid="photo-frame"]') as HTMLElement
       expect(frame).not.toBeNull()
-      expect(frame!.className).toContain('ring-blue-500')
+      assertFocused(frame)
     })
   })
 
-  it('right panel does not have ring-blue-500 class by default', async () => {
+  it('right panel does not have focus indicator by default', async () => {
     mockComparisonMount()
     render(ComparisonView)
 
     await waitFor(() => {
       const right = screen.getByTestId('comparison-right')
-      const frame = right.querySelector('[data-testid="photo-frame"]')
+      const frame = right.querySelector('[data-testid="photo-frame"]') as HTMLElement
       expect(frame).not.toBeNull()
-      expect(frame!.className).not.toContain('ring-blue-500')
+      assertNotFocused(frame)
     })
   })
 })
@@ -84,7 +85,7 @@ describe('ComparisonView — layout', () => {
 // ─── Arrow key focus ──────────────────────────────────────────────────────────
 
 describe('ComparisonView — focus navigation', () => {
-  it('ArrowRight moves ring-blue-500 class to right panel', async () => {
+  it('ArrowRight moves focus indicator to right panel', async () => {
     mockComparisonMount()
     render(ComparisonView)
 
@@ -94,17 +95,17 @@ describe('ComparisonView — focus navigation', () => {
 
     await waitFor(() => {
       const right = screen.getByTestId('comparison-right')
-      const rightFrame = right.querySelector('[data-testid="photo-frame"]')
+      const rightFrame = right.querySelector('[data-testid="photo-frame"]') as HTMLElement
       expect(rightFrame).not.toBeNull()
-      expect(rightFrame!.className).toContain('ring-blue-500')
+      assertFocused(rightFrame)
       const left = screen.getByTestId('comparison-left')
-      const leftFrame = left.querySelector('[data-testid="photo-frame"]')
+      const leftFrame = left.querySelector('[data-testid="photo-frame"]') as HTMLElement
       expect(leftFrame).not.toBeNull()
-      expect(leftFrame!.className).not.toContain('ring-blue-500')
+      assertNotFocused(leftFrame)
     })
   })
 
-  it('ArrowLeft moves ring-blue-500 class back to left panel', async () => {
+  it('ArrowLeft moves focus indicator back to left panel', async () => {
     mockComparisonMount()
     render(ComparisonView)
 
@@ -116,9 +117,9 @@ describe('ComparisonView — focus navigation', () => {
 
     await waitFor(() => {
       const left = screen.getByTestId('comparison-left')
-      const frame = left.querySelector('[data-testid="photo-frame"]')
+      const frame = left.querySelector('[data-testid="photo-frame"]') as HTMLElement
       expect(frame).not.toBeNull()
-      expect(frame!.className).toContain('ring-blue-500')
+      assertFocused(frame)
     })
   })
 })

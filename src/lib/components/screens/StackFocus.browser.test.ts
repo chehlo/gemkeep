@@ -1,6 +1,6 @@
 // StackFocus visual tests — vitest-browser-svelte (real Chromium)
-// Covers: SF-07 (green badge), SF-08 (red badge), SF-09 (opacity dimming), SF-10 (blue focus ring)
-// These tests verify actual computed CSS values via style-agnostic helpers,
+// Covers: SF-07 (kept indicator), SF-08 (eliminated indicator), SF-09 (dimming), SF-10 (focus indicator)
+// These tests verify actual rendered visual state via style-agnostic helpers,
 // so they work regardless of whether the indicator is border-frame or badge-dot style.
 
 import { render } from 'vitest-browser-svelte'
@@ -15,6 +15,10 @@ import {
   assertVisuallyKept, assertVisuallyEliminated,
   assertVisuallyDimmed, assertVisuallyUndecided, assertNotDimmed,
 } from '$test/decision-visual-helpers'
+import {
+  assertVisuallyFocused, assertNotVisuallyFocused,
+  assertVisuallySelected, waitForVisualFocus, waitForVisualSelection,
+} from '$test/selection-visual-helpers'
 import StackFocus from './StackFocus.svelte'
 
 const mockInvoke = vi.mocked(invoke)
@@ -38,8 +42,8 @@ async function waitForCards(count: number): Promise<HTMLElement[]> {
   return _waitForCards(count)
 }
 
-describe('StackFocus — SF-07: green badge on kept photos (visual)', () => {
-  it('kept photo has a visible green indicator', async () => {
+describe('StackFocus — SF-07: kept photos show kept indicator (visual)', () => {
+  it('kept photo has a visible kept indicator', async () => {
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
       get_round_decisions: [[
@@ -53,7 +57,7 @@ describe('StackFocus — SF-07: green badge on kept photos (visual)', () => {
     render(StackFocus)
     const cards = await waitForCards(3)
 
-    assertVisuallyKept(cards[0])
+    await assertVisuallyKept(cards[0])
   })
 
   it('undecided photo has no decision indicator', async () => {
@@ -70,13 +74,13 @@ describe('StackFocus — SF-07: green badge on kept photos (visual)', () => {
     const cards = await waitForCards(3)
 
     for (const card of cards) {
-      assertVisuallyUndecided(card)
+      await assertVisuallyUndecided(card)
     }
   })
 })
 
-describe('StackFocus — SF-08: red badge on eliminated photos (visual)', () => {
-  it('eliminated photo has a visible red indicator', async () => {
+describe('StackFocus — SF-08: eliminated photos show eliminated indicator (visual)', () => {
+  it('eliminated photo has a visible eliminated indicator', async () => {
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
       get_round_decisions: [[
@@ -90,7 +94,7 @@ describe('StackFocus — SF-08: red badge on eliminated photos (visual)', () => 
     render(StackFocus)
     const cards = await waitForCards(3)
 
-    assertVisuallyEliminated(cards[1])
+    await assertVisuallyEliminated(cards[1])
   })
 })
 
@@ -118,8 +122,8 @@ describe('StackFocus — SF-09: eliminated photos dimmed to ~50% opacity (visual
   })
 })
 
-describe('StackFocus — SF-10: focused card has blue selection ring (visual)', () => {
-  it('first card (focused by default) has visible blue border', async () => {
+describe('StackFocus — SF-10: focused card shows focus indicator (visual)', () => {
+  it('first card (focused by default) has visible focus indicator', async () => {
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
       get_round_decisions: [[
@@ -135,17 +139,14 @@ describe('StackFocus — SF-10: focused card has blue selection ring (visual)', 
     const frame0 = cards[0].querySelector('[data-testid="photo-frame"]') as HTMLElement
     const frame1 = cards[1].querySelector('[data-testid="photo-frame"]') as HTMLElement
 
-    // Focused frame must have a VISIBLE blue indicator — either via borderColor or boxShadow.
-    // An inset ring behind a gray border is invisible, so borderColor MUST be blue.
-    const borderColor0 = getComputedStyle(frame0).borderColor
-    expect(borderColor0, 'focused frame border must be blue-500, not gray').toBe('rgb(59, 130, 246)')
+    // Focused frame must show the focus indicator
+    await assertVisuallyFocused(frame0)
 
-    // Non-focused frame must NOT have blue border
-    const borderColor1 = getComputedStyle(frame1).borderColor
-    expect(borderColor1, 'non-focused frame must not have blue border').not.toBe('rgb(59, 130, 246)')
+    // Non-focused frame must NOT show the focus indicator
+    await assertNotVisuallyFocused(frame1)
   })
 
-  it('navigating right moves the blue border to the next card', async () => {
+  it('navigating right moves the focus indicator to the next card', async () => {
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
       get_round_decisions: [[
@@ -161,23 +162,133 @@ describe('StackFocus — SF-10: focused card has blue selection ring (visual)', 
     const frame0 = cards[0].querySelector('[data-testid="photo-frame"]') as HTMLElement
     const frame1 = cards[1].querySelector('[data-testid="photo-frame"]') as HTMLElement
 
-    // Initially card 0 has blue border
-    expect(getComputedStyle(frame0).borderColor).toBe('rgb(59, 130, 246)')
+    // Initially card 0 has focus indicator
+    await assertVisuallyFocused(frame0)
 
     // Press ArrowRight to move focus
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
 
-    // Wait for focus to move — check computed border color, not class name
-    await vi.waitFor(() => {
-      if (getComputedStyle(frame1).borderColor !== 'rgb(59, 130, 246)') {
-        throw new Error('Card 1 not yet focused')
-      }
-    }, { timeout: 3000 })
+    // Wait for focus to move to card 1
+    await waitForVisualFocus(frame1)
 
-    // Card 0 should no longer have blue border
-    expect(getComputedStyle(frame0).borderColor).not.toBe('rgb(59, 130, 246)')
-    // Card 1 should now have blue border
-    expect(getComputedStyle(frame1).borderColor).toBe('rgb(59, 130, 246)')
+    // Card 0 should no longer be focused
+    await assertNotVisuallyFocused(frame0)
+    // Card 1 should now be focused
+    await assertVisuallyFocused(frame1)
+  })
+})
+
+// ─── Selection + decision: both indicators must be visually distinct ─────────
+
+describe('StackFocus — selection indicator visible alongside decision indicator', () => {
+  it('selected + kept photo shows BOTH selection indicator AND kept indicator', async () => {
+    // Photo 1 is kept and will be selected via Shift+Arrow
+    mockInvoke.mockImplementation(mockStackFocusRouter({
+      list_logical_photos: [mockPhotos],
+      get_round_decisions: [[
+        { logical_photo_id: 1, current_status: 'keep' },
+        { logical_photo_id: 2, current_status: 'undecided' },
+        { logical_photo_id: 3, current_status: 'undecided' },
+      ]],
+      get_round_status: { ...OPEN_ROUND, decided: 1, kept: 1, undecided: 2 },
+    }))
+
+    render(StackFocus)
+    const cards = await waitForCards(3)
+
+    // Select card 0 (which is kept/green) via S key
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 's', bubbles: true }))
+
+    const frame0 = cards[0].querySelector('[data-testid="photo-frame"]') as HTMLElement
+
+    // Wait for selection to apply, then verify BOTH indicators are visible:
+    // decision (kept) and selection must both be rendered
+    await waitForVisualSelection(frame0)
+    await assertVisuallyKept(frame0)
+    await assertVisuallySelected(frame0)
+  })
+
+  it('focused + eliminated photo shows BOTH focus indicator AND eliminated indicator', async () => {
+    // Photo 1 (index 0) is focused by default, and eliminated
+    mockInvoke.mockImplementation(mockStackFocusRouter({
+      list_logical_photos: [mockPhotos],
+      get_round_decisions: [[
+        { logical_photo_id: 1, current_status: 'eliminate' },
+        { logical_photo_id: 2, current_status: 'undecided' },
+        { logical_photo_id: 3, current_status: 'undecided' },
+      ]],
+      get_round_status: { ...OPEN_ROUND, decided: 1, eliminated: 1, undecided: 2 },
+    }))
+
+    render(StackFocus)
+    const cards = await waitForCards(3)
+
+    const frame0 = cards[0].querySelector('[data-testid="photo-frame"]') as HTMLElement
+
+    // BOTH indicators must be visible simultaneously:
+    // decision (eliminated) and focus must both be rendered
+    await assertVisuallyEliminated(frame0)
+    await assertVisuallyFocused(frame0)
+  })
+})
+
+// ─── Rule 22: selection-overrides-focus combinations ────────────────────────
+
+describe('StackFocus — Rule 22: selection overrides focus indicator', () => {
+  it('SF-Rule22: (undecided + selected) — selection overrides focus indicator on focused card', async () => {
+    // Card 0 is focused by default and undecided; press S to select the
+    // focused card. Because selected=true wins over focused=true, the
+    // focus-indicator color must NOT be present in the frame's pixels.
+    mockInvoke.mockImplementation(mockStackFocusRouter({
+      list_logical_photos: [mockPhotos],
+      get_round_decisions: [[
+        { logical_photo_id: 1, current_status: 'undecided' },
+        { logical_photo_id: 2, current_status: 'undecided' },
+        { logical_photo_id: 3, current_status: 'undecided' },
+      ]],
+    }))
+
+    render(StackFocus)
+    const cards = await waitForCards(3)
+    const frame0 = cards[0].querySelector('[data-testid="photo-frame"]') as HTMLElement
+
+    // Select the currently-focused card via S key.
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 's', bubbles: true }))
+    await waitForVisualSelection(frame0)
+
+    // Selection wins over focus: focus indicator must NOT be visible.
+    await assertVisuallySelected(frame0)
+    await assertNotVisuallyFocused(frame0)
+    // Still undecided (no decision color).
+    await assertVisuallyUndecided(frame0)
+  })
+
+  it('SF-Rule22: (eliminate + selected) — selection overrides focus on eliminated focused card', async () => {
+    // Card 0 is focused by default and already eliminated; press S to select
+    // it. Selection indicator must be visible, focus indicator suppressed,
+    // eliminated indicator + dim still visible.
+    mockInvoke.mockImplementation(mockStackFocusRouter({
+      list_logical_photos: [mockPhotos],
+      get_round_decisions: [[
+        { logical_photo_id: 1, current_status: 'eliminate' },
+        { logical_photo_id: 2, current_status: 'undecided' },
+        { logical_photo_id: 3, current_status: 'undecided' },
+      ]],
+      get_round_status: { ...OPEN_ROUND, decided: 1, eliminated: 1, undecided: 2 },
+    }))
+
+    render(StackFocus)
+    const cards = await waitForCards(3)
+    const frame0 = cards[0].querySelector('[data-testid="photo-frame"]') as HTMLElement
+
+    // Select focused eliminated card 0 via S key.
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 's', bubbles: true }))
+    await waitForVisualSelection(frame0)
+
+    await assertVisuallyEliminated(frame0)
+    await assertVisuallySelected(frame0)
+    await assertNotVisuallyFocused(frame0)
+    assertVisuallyDimmed(cards[0])
   })
 })
 
@@ -253,9 +364,9 @@ describe('StackFocus — B5: after Ctrl+Enter, grid shows only undecided survivo
     // Wait for initial 3 cards with decision indicators
     const initialCards = await waitForCards(3)
     // First card should be visually kept (green)
-    assertVisuallyKept(initialCards[0])
+    await assertVisuallyKept(initialCards[0])
     // Second card should be visually eliminated (red + dimmed)
-    assertVisuallyEliminated(initialCards[1])
+    await assertVisuallyEliminated(initialCards[1])
 
     // Press Ctrl+Enter to commit
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true }))
@@ -265,7 +376,7 @@ describe('StackFocus — B5: after Ctrl+Enter, grid shows only undecided survivo
 
     // ALL survivor cards must be visually undecided (no green/red indicators)
     for (const card of survivorCards) {
-      assertVisuallyUndecided(card)
+      await assertVisuallyUndecided(card)
     }
 
     // Survivors must NOT be dimmed (full opacity)

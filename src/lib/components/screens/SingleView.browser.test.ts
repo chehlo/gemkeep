@@ -1,6 +1,6 @@
 // SingleView visual tests — vitest-browser-svelte (real Chromium)
-// Covers: SV-02 (photo fills viewport), SV-10 (X key marks ELIMINATED — red border + dim)
-// These tests verify actual computed CSS values, not class names.
+// Covers: SV-02 (photo fills viewport), SV-10 (X key marks ELIMINATED — visual indicator + dim)
+// These tests verify actual rendered visual state via style-agnostic helpers.
 
 import { render } from 'vitest-browser-svelte'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
@@ -8,6 +8,11 @@ import { invoke } from '@tauri-apps/api/core'
 import { navigate } from '$lib/stores/navigation.svelte.js'
 import { makeDecisionResult, makePhotoDetail } from '$test/fixtures'
 import { mockSingleViewRouter } from '$test/helpers'
+import { DECISION_SELECTORS } from '$test/decision-helpers'
+import {
+  assertVisuallyEliminated, assertVisuallyDimmed,
+  assertVisuallyKept, assertVisuallyUndecided,
+} from '$test/decision-visual-helpers'
 import SingleView from './SingleView.svelte'
 
 const mockInvoke = vi.mocked(invoke)
@@ -156,42 +161,62 @@ describe('SingleView — BUG-10b: RAW-only photo uses preview_path for quality d
   })
 })
 
-describe('SingleView — SV-10: X key marks photo ELIMINATED — red border + dim (visual)', () => {
-  it('X key produces red border overlay with correct border color', async () => {
-    mockInvoke.mockImplementation(mockSingleViewRouter({
-      make_decision: makeDecisionResult({ action: 'eliminate', current_status: 'eliminate' }),
-    }))
+// ─── Rule 22: focus + decision combinations (SingleView is single-panel,
+// no multi-select, so the 'selected' dimension is N/A). ────────────────────
+
+describe('SingleView — Rule 22: focus + decision combinations', () => {
+  it('SV-Rule22: undecided + focused baseline shows focus indicator without decision', async () => {
     render(SingleView)
     await waitForImage()
 
-    // Before pressing X: no red border overlay
-    let redBorder = document.querySelector('.border-red-500') as HTMLElement | null
-    expect(redBorder).toBeNull()
-
-    // Press X to eliminate
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'x', bubbles: true }))
-
-    // Wait for the red border to appear
-    await vi.waitFor(() => {
-      redBorder = document.querySelector('.border-red-500') as HTMLElement | null
-      if (!redBorder) throw new Error('Red border not yet visible')
-    }, { timeout: 5000 })
-
-    // Verify the border color is red via getComputedStyle
-    const borderColor = getComputedStyle(redBorder!).borderColor
-    // Tailwind border-red-500 = rgb(239, 68, 68)
-    expect(borderColor).toBe('rgb(239, 68, 68)')
-
-    // Verify border width is 2px (border-2, absorbed into PhotoFrame container)
-    const borderWidth = getComputedStyle(redBorder!).borderWidth
-    expect(borderWidth).toBe('2px')
-
-    // Container uses relative positioning (not an absolute overlay anymore)
-    const position = getComputedStyle(redBorder!).position
-    expect(position).toBe('relative')
+    const frame = document.querySelector('[data-testid="photo-frame"]') as HTMLElement
+    expect(frame).not.toBeNull()
+    // Undecided: no decision color present.
+    await assertVisuallyUndecided(frame)
   })
 
-  it('X key produces dim overlay with reduced opacity', async () => {
+  it('SV-Rule22: keep + focused shows focus + kept indicator (Y key path)', async () => {
+    mockInvoke.mockImplementation(mockSingleViewRouter({
+      make_decision: makeDecisionResult({ action: 'keep', current_status: 'keep' }),
+    }))
+    render(SingleView)
+    await waitForImage()
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'y', bubbles: true }))
+
+    await vi.waitFor(async () => {
+      const frame = document.querySelector('[data-testid="photo-frame"]') as HTMLElement
+      await assertVisuallyKept(frame)
+    }, { timeout: 5000 })
+  })
+})
+
+describe('SingleView — SV-10: X key marks photo ELIMINATED (visual)', () => {
+  it('X key produces eliminated visual indicator', async () => {
+    mockInvoke.mockImplementation(mockSingleViewRouter({
+      make_decision: makeDecisionResult({ action: 'eliminate', current_status: 'eliminate' }),
+    }))
+    render(SingleView)
+    await waitForImage()
+
+    // Before pressing X: no eliminate marker
+    let marker = document.querySelector(DECISION_SELECTORS.eliminate) as HTMLElement | null
+    expect(marker).toBeNull()
+
+    // Press X to eliminate
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'x', bubbles: true }))
+
+    // Wait for the eliminate marker to appear
+    await vi.waitFor(() => {
+      marker = document.querySelector(DECISION_SELECTORS.eliminate) as HTMLElement | null
+      if (!marker) throw new Error('Eliminate marker not yet visible')
+    }, { timeout: 5000 })
+
+    // Verify the element visually shows the eliminate indicator
+    await assertVisuallyEliminated(marker!)
+  })
+
+  it('X key visually dims the photo', async () => {
     mockInvoke.mockImplementation(mockSingleViewRouter({
       make_decision: makeDecisionResult({ action: 'eliminate', current_status: 'eliminate' }),
     }))
@@ -201,27 +226,10 @@ describe('SingleView — SV-10: X key marks photo ELIMINATED — red border + di
     // Press X to eliminate
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'x', bubbles: true }))
 
-    // Wait for the dim overlay to appear (bg-black/50)
-    let dimOverlay: HTMLElement | null = null
+    // Wait for dimming to apply
     await vi.waitFor(() => {
-      // The dim overlay has bg-black/50 which translates to background-color with alpha
-      const overlays = document.querySelectorAll('.pointer-events-none') as NodeListOf<HTMLElement>
-      for (const el of overlays) {
-        const bg = getComputedStyle(el).backgroundColor
-        // bg-black/50 = rgba(0, 0, 0, 0.5)
-        if (bg.includes('0, 0, 0') && bg.includes('0.5')) {
-          dimOverlay = el
-          break
-        }
-      }
-      if (!dimOverlay) throw new Error('Dim overlay not yet visible')
+      const frame = document.querySelector('[data-testid="photo-frame"]') as HTMLElement
+      assertVisuallyDimmed(frame)
     }, { timeout: 5000 })
-
-    // Verify the dim overlay has correct background
-    const bg = getComputedStyle(dimOverlay!).backgroundColor
-    expect(bg).toBe('rgba(0, 0, 0, 0.5)')
-
-    // Verify overlay is absolutely positioned (inset-0)
-    expect(getComputedStyle(dimOverlay!).position).toBe('absolute')
   })
 })

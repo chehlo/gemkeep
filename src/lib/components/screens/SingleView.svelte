@@ -6,7 +6,7 @@
     type PhotoDetail, type LogicalPhotoSummary, type PhotoDecisionStatus, type RoundStatus, type DecisionStatus
   } from '$lib/api/index.js'
   import PhotoFrame from '$lib/components/PhotoFrame.svelte'
-  import { DECISION_TEXT, DECISION_TEXT_COLORS } from '$lib/constants/decisions'
+  import { DECISION_TEXT, DECISION_TEXT_COLORS, STATUS_TEXT_MARKERS } from '$lib/constants/decisions'
   import { handleDecisionKey } from '$lib/utils/decisions.js'
   import { createTimedError } from '$lib/utils/errors.js'
   import { resolveDisplaySrc } from '$lib/utils/display.js'
@@ -198,7 +198,8 @@
   }
 
   const statusText = (s: DecisionStatus) => DECISION_TEXT[s] || 'UNDECIDED'
-  const statusClass = (s: DecisionStatus) => DECISION_TEXT_COLORS[s] || 'text-gray-400'
+  const statusClass = (s: DecisionStatus) =>
+    `${STATUS_TEXT_MARKERS[s] ?? STATUS_TEXT_MARKERS.undecided} ${DECISION_TEXT_COLORS[s] ?? 'text-gray-400'}`
 
   const displaySrc = $derived(resolveDisplaySrc('full', currentPhoto))
 </script>

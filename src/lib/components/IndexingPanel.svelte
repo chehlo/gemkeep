@@ -110,6 +110,7 @@
         <div
           class="bg-blue-500 h-2 rounded-full transition-all duration-300"
           style="width: {progressPct}%"
+          data-testid="progress-bar-fill"
         ></div>
       </div>
       <div class="text-xs text-gray-500">

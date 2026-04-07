@@ -8,6 +8,7 @@ import { navigate, navigation } from '$lib/stores/navigation.svelte.js'
 import type { SourceFolder, IndexingStatus, StackSummary } from '$lib/api/index.js'
 import { IDLE_STATUS, makeStack } from '$test/fixtures'
 import { mockStackOverviewRouter } from '$test/helpers'
+import { SELECTION_CLASSES } from '$lib/constants/selection'
 import StackOverview from './StackOverview.svelte'
 
 const mockOpen = vi.mocked(open)
@@ -336,7 +337,7 @@ describe("StackOverview — add-folder workflow gap", () => {
 })
 
 describe('StackOverview — scroll position restore', () => {
-  it('returning from StackFocus applies border-blue-500 class to previously focused card', async () => {
+  it('returning from StackFocus shows focus indicator on previously focused card', async () => {
     const STACK_COUNT = 8
     const mockStacks: StackSummary[] = Array.from({ length: STACK_COUNT }, (_, i) => ({
       stack_id: i + 1,
@@ -365,8 +366,8 @@ describe('StackOverview — scroll position restore', () => {
 
     // Card at index 5 must have the blue focus ring; card 0 must not
     const cards = document.querySelectorAll('[data-stack-card]')
-    expect(cards[5].className).toContain('border-blue-500')
-    expect(cards[0].className).not.toContain('border-blue-500')
+    expect(cards[5].className).toContain(SELECTION_CLASSES.focused)
+    expect(cards[0].className).not.toContain(SELECTION_CLASSES.focused)
 
     // The saved index must be cleared after use (no stale state)
     expect(navigation.stackOverviewFocusIndex).toBeNull()
@@ -761,7 +762,7 @@ describe('StackOverview — thumbnail auto-resume (TH-D1..TH-D3)', () => {
 })
 
 describe('StackOverview — Sprint 7: multi-select and merge', () => {
-  it('Shift+ArrowRight adds selection ring classes to stacks', async () => {
+  it('Shift+ArrowRight adds selection indicators to stacks', async () => {
     mockInvoke.mockImplementation(mockStackOverviewRouter({
       list_source_folders: [[FOLDER_A]],
       list_stacks: [[STACK_1, STACK_2, STACK_3]],
@@ -776,7 +777,7 @@ describe('StackOverview — Sprint 7: multi-select and merge', () => {
 
     const cards = document.querySelectorAll('[data-stack-card]')
     // At least 2 cards should have selection indicator
-    const selectedCards = Array.from(cards).filter(c => c.className.includes('ring-yellow') || c.className.includes('border-yellow'))
+    const selectedCards = Array.from(cards).filter(c => c.className.includes(SELECTION_CLASSES.selected))
     expect(selectedCards.length).toBeGreaterThanOrEqual(2)
   })
 
@@ -840,7 +841,7 @@ describe('StackOverview — Sprint 7: multi-select and merge', () => {
     expect(mockInvoke).not.toHaveBeenCalledWith('merge_stacks', expect.anything())
   })
 
-  it('successful merge removes selection ring classes from stacks', async () => {
+  it('successful merge removes selection indicators from stacks', async () => {
     mockInvoke.mockImplementation(mockStackOverviewRouter({
       list_source_folders: [[FOLDER_A]],
       list_stacks: [[STACK_1, STACK_2, STACK_3]],
@@ -862,7 +863,7 @@ describe('StackOverview — Sprint 7: multi-select and merge', () => {
     await waitFor(() => {
       const cards = document.querySelectorAll('[data-stack-card]')
       const selectedCards = Array.from(cards).filter(c =>
-        c.className.includes('ring-yellow') || c.className.includes('border-yellow')
+        c.className.includes(SELECTION_CLASSES.selected)
       )
       expect(selectedCards.length).toBe(0)
     })
@@ -913,7 +914,7 @@ describe('StackOverview — Sprint 7: multi-select and merge', () => {
     // Verify selection exists
     let cards = document.querySelectorAll('[data-stack-card]')
     let selectedCards = Array.from(cards).filter(c =>
-      c.className.includes('ring-yellow') || c.className.includes('border-yellow')
+      c.className.includes(SELECTION_CLASSES.selected)
     )
     expect(selectedCards.length).toBeGreaterThanOrEqual(2)
 
@@ -923,12 +924,12 @@ describe('StackOverview — Sprint 7: multi-select and merge', () => {
     // Selection should persist — arrow only moves focus, not clears selection
     cards = document.querySelectorAll('[data-stack-card]')
     selectedCards = Array.from(cards).filter(c =>
-      c.className.includes('ring-yellow') || c.className.includes('border-yellow')
+      c.className.includes(SELECTION_CLASSES.selected)
     )
     expect(selectedCards.length).toBeGreaterThanOrEqual(2)
   })
 
-  it('after merge, border-blue-500 class moves to merged stack position', async () => {
+  it('after merge, focus indicator moves to merged stack position', async () => {
     const STACK_4: StackSummary = {
       stack_id: 4, logical_photo_count: 2, earliest_capture: null,
       has_raw: false, has_jpeg: true, thumbnail_path: null
@@ -964,7 +965,7 @@ describe('StackOverview — Sprint 7: multi-select and merge', () => {
       const cards = document.querySelectorAll('[data-stack-card]')
       expect(cards.length).toBe(3)
       // The focused card (index 0 = merged stack) should have the focus ring
-      expect(cards[0].className).toContain('border-blue-500')
+      expect(cards[0].className).toContain(SELECTION_CLASSES.focused)
     })
   })
 })
@@ -1115,7 +1116,7 @@ describe('StackOverview — SO-10: pause/resume buttons', () => {
 // ── SO-22: Arrow Left moves focus left (stops at first) ──────────────────────
 
 describe('StackOverview — SO-22: ArrowLeft navigation', () => {
-  it('ArrowLeft moves border-blue-500 class to previous card', async () => {
+  it('ArrowLeft moves focus indicator to previous card', async () => {
     mockInvoke.mockImplementation(mockStackOverviewRouter({
       list_source_folders: [[FOLDER_A]],
       list_stacks: [[STACK_1, STACK_2, STACK_3]],
@@ -1128,16 +1129,16 @@ describe('StackOverview — SO-22: ArrowLeft navigation', () => {
     // Move right first so we're at index 1
     await fireEvent.keyDown(document, { key: 'ArrowRight' })
     let cards = document.querySelectorAll('[data-stack-card]')
-    expect(cards[1].className).toContain('border-blue-500')
+    expect(cards[1].className).toContain(SELECTION_CLASSES.focused)
 
     // Now move left back to index 0
     await fireEvent.keyDown(document, { key: 'ArrowLeft' })
     cards = document.querySelectorAll('[data-stack-card]')
-    expect(cards[0].className).toContain('border-blue-500')
-    expect(cards[1].className).not.toContain('border-blue-500')
+    expect(cards[0].className).toContain(SELECTION_CLASSES.focused)
+    expect(cards[1].className).not.toContain(SELECTION_CLASSES.focused)
   })
 
-  it('ArrowLeft keeps border-blue-500 class on first card at boundary', async () => {
+  it('ArrowLeft keeps focus indicator on first card at boundary', async () => {
     mockInvoke.mockImplementation(mockStackOverviewRouter({
       list_source_folders: [[FOLDER_A]],
       list_stacks: [[STACK_1, STACK_2, STACK_3]],
@@ -1152,14 +1153,14 @@ describe('StackOverview — SO-22: ArrowLeft navigation', () => {
     await fireEvent.keyDown(document, { key: 'ArrowLeft' })
 
     const cards = document.querySelectorAll('[data-stack-card]')
-    expect(cards[0].className).toContain('border-blue-500')
+    expect(cards[0].className).toContain(SELECTION_CLASSES.focused)
   })
 })
 
 // ── SO-24: Arrow Up moves focus up (-4 cols) ────────────────────────────────
 
 describe('StackOverview — SO-24: ArrowUp navigation', () => {
-  it('ArrowUp moves border-blue-500 class up by 4 positions', async () => {
+  it('ArrowUp moves focus indicator up by 4 positions', async () => {
     // Need at least 5 stacks to span 2 rows in a 4-col grid
     const manyStacks: StackSummary[] = Array.from({ length: 8 }, (_, i) => ({
       stack_id: i + 1,
@@ -1182,16 +1183,16 @@ describe('StackOverview — SO-24: ArrowUp navigation', () => {
     // Navigate to row 2, card 5 (index 4) using ArrowDown from index 0
     await fireEvent.keyDown(document, { key: 'ArrowDown' })
     let cards = document.querySelectorAll('[data-stack-card]')
-    expect(cards[4].className).toContain('border-blue-500')
+    expect(cards[4].className).toContain(SELECTION_CLASSES.focused)
 
     // ArrowUp should take us back to index 0
     await fireEvent.keyDown(document, { key: 'ArrowUp' })
     cards = document.querySelectorAll('[data-stack-card]')
-    expect(cards[0].className).toContain('border-blue-500')
-    expect(cards[4].className).not.toContain('border-blue-500')
+    expect(cards[0].className).toContain(SELECTION_CLASSES.focused)
+    expect(cards[4].className).not.toContain(SELECTION_CLASSES.focused)
   })
 
-  it('ArrowUp keeps border-blue-500 class on first row at boundary', async () => {
+  it('ArrowUp keeps focus indicator on first row at boundary', async () => {
     mockInvoke.mockImplementation(mockStackOverviewRouter({
       list_source_folders: [[FOLDER_A]],
       list_stacks: [[STACK_1, STACK_2, STACK_3]],
@@ -1205,7 +1206,7 @@ describe('StackOverview — SO-24: ArrowUp navigation', () => {
     await fireEvent.keyDown(document, { key: 'ArrowUp' })
 
     const cards = document.querySelectorAll('[data-stack-card]')
-    expect(cards[0].className).toContain('border-blue-500')
+    expect(cards[0].className).toContain(SELECTION_CLASSES.focused)
   })
 })
 
@@ -1591,7 +1592,7 @@ describe('StackOverview — SO-63/64/65: Shift+Arrow multi-select directions', (
     thumbnail_path: null,
   }))
 
-  it('SO-63: Shift+ArrowLeft adds selection ring classes to current and previous stacks', async () => {
+  it('SO-63: Shift+ArrowLeft adds selection indicators to current and previous stacks', async () => {
     mockInvoke.mockImplementation(mockStackOverviewRouter({
       list_source_folders: [[FOLDER_A]],
       list_stacks: [MANY_STACKS],
@@ -1610,15 +1611,15 @@ describe('StackOverview — SO-63/64/65: Shift+Arrow multi-select directions', (
 
     const cards = document.querySelectorAll('[data-stack-card]')
     const selectedCards = Array.from(cards).filter(c =>
-      c.className.includes('ring-yellow') || c.className.includes('border-yellow')
+      c.className.includes(SELECTION_CLASSES.selected)
     )
     expect(selectedCards.length).toBeGreaterThanOrEqual(2)
     // Both index 1 and 2 should be selected (stack_ids 2 and 3)
-    expect(cards[1].className).toMatch(/ring-yellow|border-yellow/)
-    expect(cards[2].className).toMatch(/ring-yellow|border-yellow/)
+    expect(cards[1].className).toContain(SELECTION_CLASSES.selected)
+    expect(cards[2].className).toContain(SELECTION_CLASSES.selected)
   })
 
-  it('SO-64: Shift+ArrowDown adds selection ring classes to current and stack 4 below', async () => {
+  it('SO-64: Shift+ArrowDown adds selection indicators to current and stack 4 below', async () => {
     mockInvoke.mockImplementation(mockStackOverviewRouter({
       list_source_folders: [[FOLDER_A]],
       list_stacks: [MANY_STACKS],
@@ -1633,11 +1634,11 @@ describe('StackOverview — SO-63/64/65: Shift+Arrow multi-select directions', (
 
     const cards = document.querySelectorAll('[data-stack-card]')
     // Both index 0 and 4 should be selected
-    expect(cards[0].className).toMatch(/ring-yellow|border-yellow/)
-    expect(cards[4].className).toMatch(/ring-yellow|border-yellow/)
+    expect(cards[0].className).toContain(SELECTION_CLASSES.selected)
+    expect(cards[4].className).toContain(SELECTION_CLASSES.selected)
   })
 
-  it('SO-65: Shift+ArrowUp adds selection ring classes to current and stack 4 above', async () => {
+  it('SO-65: Shift+ArrowUp adds selection indicators to current and stack 4 above', async () => {
     mockInvoke.mockImplementation(mockStackOverviewRouter({
       list_source_folders: [[FOLDER_A]],
       list_stacks: [MANY_STACKS],
@@ -1655,8 +1656,8 @@ describe('StackOverview — SO-63/64/65: Shift+Arrow multi-select directions', (
     await fireEvent.keyDown(document, { key: 'ArrowUp', shiftKey: true })
 
     const cards = document.querySelectorAll('[data-stack-card]')
-    expect(cards[5].className).toMatch(/ring-yellow|border-yellow/)
-    expect(cards[1].className).toMatch(/ring-yellow|border-yellow/)
+    expect(cards[5].className).toContain(SELECTION_CLASSES.selected)
+    expect(cards[1].className).toContain(SELECTION_CLASSES.selected)
   })
 })
 
@@ -1907,7 +1908,7 @@ describe('StackOverview — Bug 4: thumbnail-ready debounce', () => {
 // ── K1: hjkl vim navigation in StackOverview ─────────────────────────────
 
 describe('StackOverview — K1: hjkl vim navigation', () => {
-  it('l key moves border-blue-500 class to next card', async () => {
+  it('l key moves focus indicator to next card', async () => {
     mockInvoke.mockImplementation(mockStackOverviewRouter({
       list_source_folders: [[FOLDER_A]],
       list_stacks: [[STACK_1, STACK_2, STACK_3]],
@@ -1919,17 +1920,17 @@ describe('StackOverview — K1: hjkl vim navigation', () => {
 
     // Focus starts at index 0
     let cards = document.querySelectorAll('[data-stack-card]')
-    expect(cards[0].className).toContain('border-blue-500')
+    expect(cards[0].className).toContain(SELECTION_CLASSES.focused)
 
     // Press 'l' to move right
     await fireEvent.keyDown(document, { key: 'l' })
 
     cards = document.querySelectorAll('[data-stack-card]')
-    expect(cards[1].className).toContain('border-blue-500')
-    expect(cards[0].className).not.toContain('border-blue-500')
+    expect(cards[1].className).toContain(SELECTION_CLASSES.focused)
+    expect(cards[0].className).not.toContain(SELECTION_CLASSES.focused)
   })
 
-  it('h key moves border-blue-500 class to previous card', async () => {
+  it('h key moves focus indicator to previous card', async () => {
     mockInvoke.mockImplementation(mockStackOverviewRouter({
       list_source_folders: [[FOLDER_A]],
       list_stacks: [[STACK_1, STACK_2, STACK_3]],
@@ -1942,17 +1943,17 @@ describe('StackOverview — K1: hjkl vim navigation', () => {
     // Move right first
     await fireEvent.keyDown(document, { key: 'ArrowRight' })
     let cards = document.querySelectorAll('[data-stack-card]')
-    expect(cards[1].className).toContain('border-blue-500')
+    expect(cards[1].className).toContain(SELECTION_CLASSES.focused)
 
     // Press 'h' to move left
     await fireEvent.keyDown(document, { key: 'h' })
 
     cards = document.querySelectorAll('[data-stack-card]')
-    expect(cards[0].className).toContain('border-blue-500')
-    expect(cards[1].className).not.toContain('border-blue-500')
+    expect(cards[0].className).toContain(SELECTION_CLASSES.focused)
+    expect(cards[1].className).not.toContain(SELECTION_CLASSES.focused)
   })
 
-  it('j key moves border-blue-500 class down by 4 positions', async () => {
+  it('j key moves focus indicator down by 4 positions', async () => {
     const manyStacks: StackSummary[] = Array.from({ length: 8 }, (_, i) => ({
       stack_id: i + 1, logical_photo_count: 1, earliest_capture: null,
       has_raw: false, has_jpeg: true, thumbnail_path: null,
@@ -1971,11 +1972,11 @@ describe('StackOverview — K1: hjkl vim navigation', () => {
     await fireEvent.keyDown(document, { key: 'j' })
 
     const cards = document.querySelectorAll('[data-stack-card]')
-    expect(cards[4].className).toContain('border-blue-500')
-    expect(cards[0].className).not.toContain('border-blue-500')
+    expect(cards[4].className).toContain(SELECTION_CLASSES.focused)
+    expect(cards[0].className).not.toContain(SELECTION_CLASSES.focused)
   })
 
-  it('k key moves border-blue-500 class up by 4 positions', async () => {
+  it('k key moves focus indicator up by 4 positions', async () => {
     const manyStacks: StackSummary[] = Array.from({ length: 8 }, (_, i) => ({
       stack_id: i + 1, logical_photo_count: 1, earliest_capture: null,
       has_raw: false, has_jpeg: true, thumbnail_path: null,
@@ -1993,17 +1994,17 @@ describe('StackOverview — K1: hjkl vim navigation', () => {
     // Move down first to index 4
     await fireEvent.keyDown(document, { key: 'ArrowDown' })
     let cards = document.querySelectorAll('[data-stack-card]')
-    expect(cards[4].className).toContain('border-blue-500')
+    expect(cards[4].className).toContain(SELECTION_CLASSES.focused)
 
     // Press 'k' to move up
     await fireEvent.keyDown(document, { key: 'k' })
 
     cards = document.querySelectorAll('[data-stack-card]')
-    expect(cards[0].className).toContain('border-blue-500')
-    expect(cards[4].className).not.toContain('border-blue-500')
+    expect(cards[0].className).toContain(SELECTION_CLASSES.focused)
+    expect(cards[4].className).not.toContain(SELECTION_CLASSES.focused)
   })
 
-  it('Ctrl+h does not move border-blue-500 class (modifier guard)', async () => {
+  it('Ctrl+h does not move focus indicator (modifier guard)', async () => {
     mockInvoke.mockImplementation(mockStackOverviewRouter({
       list_source_folders: [[FOLDER_A]],
       list_stacks: [[STACK_1, STACK_2, STACK_3]],
@@ -2016,16 +2017,16 @@ describe('StackOverview — K1: hjkl vim navigation', () => {
     // Move right first so we can detect unwanted left movement
     await fireEvent.keyDown(document, { key: 'ArrowRight' })
     let cards = document.querySelectorAll('[data-stack-card]')
-    expect(cards[1].className).toContain('border-blue-500')
+    expect(cards[1].className).toContain(SELECTION_CLASSES.focused)
 
     // Press Ctrl+h — should NOT move focus
     await fireEvent.keyDown(document, { key: 'h', ctrlKey: true })
 
     cards = document.querySelectorAll('[data-stack-card]')
-    expect(cards[1].className).toContain('border-blue-500')
+    expect(cards[1].className).toContain(SELECTION_CLASSES.focused)
   })
 
-  it('Shift+h does not move border-blue-500 class (modifier guard)', async () => {
+  it('Shift+h does not move focus indicator (modifier guard)', async () => {
     mockInvoke.mockImplementation(mockStackOverviewRouter({
       list_source_folders: [[FOLDER_A]],
       list_stacks: [[STACK_1, STACK_2, STACK_3]],
@@ -2038,20 +2039,20 @@ describe('StackOverview — K1: hjkl vim navigation', () => {
     // Move right first
     await fireEvent.keyDown(document, { key: 'ArrowRight' })
     let cards = document.querySelectorAll('[data-stack-card]')
-    expect(cards[1].className).toContain('border-blue-500')
+    expect(cards[1].className).toContain(SELECTION_CLASSES.focused)
 
     // Press Shift+h — should NOT move focus
     await fireEvent.keyDown(document, { key: 'H', shiftKey: true })
 
     cards = document.querySelectorAll('[data-stack-card]')
-    expect(cards[1].className).toContain('border-blue-500')
+    expect(cards[1].className).toContain(SELECTION_CLASSES.focused)
   })
 })
 
 // ── K3: Home/End in StackOverview ────────────────────────────────────────
 
 describe('StackOverview — K3: Home/End navigation', () => {
-  it('Home key moves border-blue-500 class to first card', async () => {
+  it('Home key moves focus indicator to first card', async () => {
     mockInvoke.mockImplementation(mockStackOverviewRouter({
       list_source_folders: [[FOLDER_A]],
       list_stacks: [[STACK_1, STACK_2, STACK_3]],
@@ -2065,17 +2066,17 @@ describe('StackOverview — K3: Home/End navigation', () => {
     await fireEvent.keyDown(document, { key: 'ArrowRight' })
     await fireEvent.keyDown(document, { key: 'ArrowRight' })
     let cards = document.querySelectorAll('[data-stack-card]')
-    expect(cards[2].className).toContain('border-blue-500')
+    expect(cards[2].className).toContain(SELECTION_CLASSES.focused)
 
     // Press Home
     await fireEvent.keyDown(document, { key: 'Home' })
 
     cards = document.querySelectorAll('[data-stack-card]')
-    expect(cards[0].className).toContain('border-blue-500')
-    expect(cards[2].className).not.toContain('border-blue-500')
+    expect(cards[0].className).toContain(SELECTION_CLASSES.focused)
+    expect(cards[2].className).not.toContain(SELECTION_CLASSES.focused)
   })
 
-  it('End key moves border-blue-500 class to last card', async () => {
+  it('End key moves focus indicator to last card', async () => {
     mockInvoke.mockImplementation(mockStackOverviewRouter({
       list_source_folders: [[FOLDER_A]],
       list_stacks: [[STACK_1, STACK_2, STACK_3]],
@@ -2087,14 +2088,14 @@ describe('StackOverview — K3: Home/End navigation', () => {
 
     // Focus starts at index 0
     let cards = document.querySelectorAll('[data-stack-card]')
-    expect(cards[0].className).toContain('border-blue-500')
+    expect(cards[0].className).toContain(SELECTION_CLASSES.focused)
 
     // Press End
     await fireEvent.keyDown(document, { key: 'End' })
 
     cards = document.querySelectorAll('[data-stack-card]')
-    expect(cards[2].className).toContain('border-blue-500')
-    expect(cards[0].className).not.toContain('border-blue-500')
+    expect(cards[2].className).toContain(SELECTION_CLASSES.focused)
+    expect(cards[0].className).not.toContain(SELECTION_CLASSES.focused)
   })
 })
 
@@ -2112,16 +2113,16 @@ describe('StackOverview — S-key selection persists across navigation', () => {
     // Select card 0 with S
     await fireEvent.keyDown(document, { key: 's' })
     let cards = document.querySelectorAll('[data-stack-card]')
-    expect(cards[0].className).toMatch(/ring-yellow|border-yellow/)
+    expect(cards[0].className).toContain(SELECTION_CLASSES.selected)
 
     // Move focus to card 1 with ArrowRight
     await fireEvent.keyDown(document, { key: 'ArrowRight' })
 
     // Card 0 should STILL be selected (S-key selection is sticky)
     cards = document.querySelectorAll('[data-stack-card]')
-    expect(cards[0].className).toMatch(/ring-yellow|border-yellow/)
-    // Card 1 should have focus (blue) but not selection (yellow)
-    expect(cards[1].className).toContain('border-blue-500')
+    expect(cards[0].className).toContain(SELECTION_CLASSES.selected)
+    // Card 1 should have focus but not selection
+    expect(cards[1].className).toContain(SELECTION_CLASSES.focused)
   })
 
   it('S-key selection on multiple stacks persists across navigation', async () => {
@@ -2143,8 +2144,8 @@ describe('StackOverview — S-key selection persists across navigation', () => {
 
     // Both card 0 and card 2 should be selected
     let cards = document.querySelectorAll('[data-stack-card]')
-    expect(cards[0].className).toMatch(/ring-yellow|border-yellow/)
-    expect(cards[2].className).toMatch(/ring-yellow|border-yellow/)
+    expect(cards[0].className).toContain(SELECTION_CLASSES.selected)
+    expect(cards[2].className).toContain(SELECTION_CLASSES.selected)
 
     // Navigate back to card 0
     await fireEvent.keyDown(document, { key: 'ArrowLeft' })
@@ -2152,8 +2153,8 @@ describe('StackOverview — S-key selection persists across navigation', () => {
 
     // Both selections should still be present
     cards = document.querySelectorAll('[data-stack-card]')
-    expect(cards[0].className).toMatch(/ring-yellow|border-yellow/)
-    expect(cards[2].className).toMatch(/ring-yellow|border-yellow/)
+    expect(cards[0].className).toContain(SELECTION_CLASSES.selected)
+    expect(cards[2].className).toContain(SELECTION_CLASSES.selected)
   })
 })
 
@@ -2179,7 +2180,7 @@ describe('StackOverview — click behavior with selection', () => {
     expect(navigation.current.kind).toBe('stack-overview')
     // Card 1 should now be selected too
     const updatedCards = document.querySelectorAll('[data-stack-card]')
-    expect(updatedCards[1].className).toMatch(/ring-yellow|border-yellow/)
+    expect(updatedCards[1].className).toContain(SELECTION_CLASSES.selected)
   })
 
   it('click with no selection enters stack (default behavior)', async () => {
@@ -2224,7 +2225,7 @@ describe('StackOverview — click behavior with selection', () => {
 })
 
 describe('StackOverview — S key toggle select', () => {
-  it('S key toggles selection ring classes on focused stack', async () => {
+  it('S key toggles selection indicator on focused stack', async () => {
     mockInvoke.mockImplementation(mockStackOverviewRouter({
       list_source_folders: [[FOLDER_A]],
       list_stacks: [[STACK_1, STACK_2, STACK_3]],
@@ -2238,15 +2239,15 @@ describe('StackOverview — S key toggle select', () => {
     await fireEvent.keyDown(document, { key: 's' })
 
     let cards = document.querySelectorAll('[data-stack-card]')
-    // Focused card (index 0) should now have a yellow selection indicator
-    expect(cards[0].className).toMatch(/ring-yellow|border-yellow/)
+    // Focused card (index 0) should now have a selection indicator
+    expect(cards[0].className).toContain(SELECTION_CLASSES.selected)
 
     // Press S again to deselect the focused stack
     await fireEvent.keyDown(document, { key: 's' })
 
     cards = document.querySelectorAll('[data-stack-card]')
     // Selection indicator should be removed
-    expect(cards[0].className).not.toMatch(/ring-yellow|border-yellow/)
+    expect(cards[0].className).not.toContain(SELECTION_CLASSES.selected)
   })
 })
 

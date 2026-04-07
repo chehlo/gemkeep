@@ -11,7 +11,3 @@
 export const KEEP_SELECTOR = '.decision-keep'
 export const ELIMINATE_SELECTOR = '.decision-eliminate'
 export const DIM_OVERLAY_SELECTOR = '.decision-dim-overlay'
-
-// Border selectors (from DECISION_BORDERS in decisions.ts)
-export const KEEP_BORDER_SELECTOR = '.border-green-500'
-export const ELIMINATE_BORDER_SELECTOR = '.border-red-500'

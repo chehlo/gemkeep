@@ -6,7 +6,8 @@ import { navigate, navigation } from '$lib/stores/navigation.svelte.js'
 import type { LogicalPhotoSummary } from '$lib/api/index.js'
 import { PHOTO_1, PHOTO_2, PHOTO_3, makeDecisionResult, makePhotoList, OPEN_ROUND, THREE_ROUND_LIST, ROUND_1_COMMITTED, ROUND_3_OPEN, makeRoundStatus, makeRoundSummary } from '$test/fixtures'
 import { mockStackFocusRouter } from '$test/helpers'
-import { DECISION_SELECTORS } from '$test/decision-helpers'
+import { DECISION_SELECTORS, assertDecisionKept, assertDecisionEliminated, queryKeepIndicator, queryEliminateIndicator } from '$test/decision-helpers'
+import { assertFocused, assertNotFocused, assertSelected, assertNotSelected } from '$test/selection-helpers'
 import StackFocus from './StackFocus.svelte'
 import { formatCaptureTime } from '$lib/utils/photos.js'
 
@@ -15,6 +16,11 @@ const mockInvoke = vi.mocked(invoke)
 /** Get the className of the PhotoFrame inside a photo-card (visual classes live there, not on the wrapper) */
 function frameClass(card: Element): string {
   return card.querySelector('[data-testid="photo-frame"]')?.className ?? ''
+}
+
+/** Get the PhotoFrame element inside a photo-card */
+function getFrame(card: Element): HTMLElement {
+  return card.querySelector('[data-testid="photo-frame"]') as HTMLElement
 }
 
 const mockPhotos: LogicalPhotoSummary[] = [PHOTO_1, PHOTO_2, PHOTO_3]
@@ -141,7 +147,7 @@ describe('StackFocus — Sprint 7: decision badges', () => {
     })
   })
 
-  it('V2: keep indicator has border-green-500 class on container', async () => {
+  it('V2: keep indicator has kept decision styling on container', async () => {
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
       get_round_decisions: [[
@@ -159,14 +165,12 @@ describe('StackFocus — Sprint 7: decision badges', () => {
 
     await waitFor(() => {
       const cards = screen.getAllByTestId('photo-card')
-      const badge = cards[0].querySelector(DECISION_SELECTORS.keep) as HTMLElement
-      expect(badge).toBeInTheDocument()
-      expect(badge.className).toContain('border-green-500')
-      expect(badge.className).toContain('border-2')
+      const frame = getFrame(cards[0])
+      assertDecisionKept(frame)
     })
   })
 
-  it('V2: eliminate indicator has border-red-500 class on container', async () => {
+  it('V2: eliminate indicator has eliminated decision styling on container', async () => {
     // Use committed round so eliminated photos are visible in the grid
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
@@ -189,11 +193,8 @@ describe('StackFocus — Sprint 7: decision badges', () => {
 
     await waitFor(() => {
       const cards = screen.getAllByTestId('photo-card')
-      const badge = cards[0].querySelector(DECISION_SELECTORS.eliminate) as HTMLElement
-      expect(badge).toBeInTheDocument()
-      expect(badge.className).toContain('border-red-500')
-      // Absorbed into PhotoFrame container: border-2 on frame, no inset-0 overlay
-      expect(badge.className).toContain('border-2')
+      const frame = getFrame(cards[0])
+      assertDecisionEliminated(frame)
     })
   })
 
@@ -350,13 +351,13 @@ describe('StackFocus — Sprint 7: decision badges', () => {
 
     await waitFor(() => {
       const cards = screen.getAllByTestId('photo-card')
-      // Card at index 1 is the eliminated photo — it should have a red badge
-      const redBadge = cards[1].querySelector(`${DECISION_SELECTORS.eliminate}, .bg-red-500`)
-      expect(redBadge).toBeInTheDocument()
+      // Card at index 1 is the eliminated photo — it should carry the eliminate marker
+      const marker = cards[1].querySelector(DECISION_SELECTORS.eliminate)
+      expect(marker).toBeInTheDocument()
     })
   })
 
-  it('Tab moves ring-blue-500 class to next undecided photo', async () => {
+  it('Tab moves focus indicator to next undecided photo', async () => {
     const PHOTO_4: LogicalPhotoSummary = {
       logical_photo_id: 4,
       thumbnail_path: null,
@@ -395,11 +396,11 @@ describe('StackFocus — Sprint 7: decision badges', () => {
     await waitFor(() => {
       const cards = screen.getAllByTestId('photo-card')
       // Card at index 1 should now have the blue focus ring
-      expect(frameClass(cards[1])).toContain('ring-blue-500')
+      assertFocused(getFrame(cards[1]))
     })
   })
 
-  it('Shift+Tab moves ring-blue-500 class to previous undecided photo', async () => {
+  it('Shift+Tab moves focus indicator to previous undecided photo', async () => {
     const PHOTO_4: LogicalPhotoSummary = {
       logical_photo_id: 4,
       thumbnail_path: null,
@@ -442,7 +443,7 @@ describe('StackFocus — Sprint 7: decision badges', () => {
 
     await waitFor(() => {
       const cards = screen.getAllByTestId('photo-card')
-      expect(frameClass(cards[1])).toContain('ring-blue-500')
+      assertFocused(getFrame(cards[1]))
     })
   })
 
@@ -574,7 +575,7 @@ describe('StackFocus — SF-44: keyboard listener cleanup on destroy', () => {
 // ── K2: hjkl vim navigation in StackFocus ──────────────────────────────────
 
 describe('StackFocus — K2: hjkl vim navigation', () => {
-  it('l key moves ring-blue-500 class to next card', async () => {
+  it('l key moves focus indicator to next card', async () => {
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
     }))
@@ -583,17 +584,17 @@ describe('StackFocus — K2: hjkl vim navigation', () => {
 
     // Focus starts at index 0
     let cards = screen.getAllByTestId('photo-card')
-    expect(frameClass(cards[0])).toContain('ring-blue-500')
+    assertFocused(getFrame(cards[0]))
 
     // Press 'l' to move right
     await fireEvent.keyDown(document, { key: 'l' })
 
     cards = screen.getAllByTestId('photo-card')
-    expect(frameClass(cards[1])).toContain('ring-blue-500')
-    expect(frameClass(cards[0])).not.toContain('ring-blue-500')
+    assertFocused(getFrame(cards[1]))
+    assertNotFocused(getFrame(cards[0]))
   })
 
-  it('h key moves ring-blue-500 class to previous card', async () => {
+  it('h key moves focus indicator to previous card', async () => {
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
     }))
@@ -603,17 +604,17 @@ describe('StackFocus — K2: hjkl vim navigation', () => {
     // Move right first
     await fireEvent.keyDown(document, { key: 'ArrowRight' })
     let cards = screen.getAllByTestId('photo-card')
-    expect(frameClass(cards[1])).toContain('ring-blue-500')
+    assertFocused(getFrame(cards[1]))
 
     // Press 'h' to move left
     await fireEvent.keyDown(document, { key: 'h' })
 
     cards = screen.getAllByTestId('photo-card')
-    expect(frameClass(cards[0])).toContain('ring-blue-500')
-    expect(frameClass(cards[1])).not.toContain('ring-blue-500')
+    assertFocused(getFrame(cards[0]))
+    assertNotFocused(getFrame(cards[1]))
   })
 
-  it('j key moves ring-blue-500 class down by 4 positions', async () => {
+  it('j key moves focus indicator down by 4 positions', async () => {
     // Need more than 4 photos for a 4-col grid to test down movement
     const photos8: LogicalPhotoSummary[] = Array.from({ length: 8 }, (_, i) => ({
       logical_photo_id: i + 1,
@@ -642,11 +643,11 @@ describe('StackFocus — K2: hjkl vim navigation', () => {
     await fireEvent.keyDown(document, { key: 'j' })
 
     const cards = screen.getAllByTestId('photo-card')
-    expect(frameClass(cards[4])).toContain('ring-blue-500')
-    expect(frameClass(cards[0])).not.toContain('ring-blue-500')
+    assertFocused(getFrame(cards[4]))
+    assertNotFocused(getFrame(cards[0]))
   })
 
-  it('k key moves ring-blue-500 class up by 4 positions', async () => {
+  it('k key moves focus indicator up by 4 positions', async () => {
     const photos8: LogicalPhotoSummary[] = Array.from({ length: 8 }, (_, i) => ({
       logical_photo_id: i + 1,
       thumbnail_path: null,
@@ -673,17 +674,17 @@ describe('StackFocus — K2: hjkl vim navigation', () => {
     // Move down first
     await fireEvent.keyDown(document, { key: 'ArrowDown' })
     let cards = screen.getAllByTestId('photo-card')
-    expect(frameClass(cards[4])).toContain('ring-blue-500')
+    assertFocused(getFrame(cards[4]))
 
     // Press 'k' to move up
     await fireEvent.keyDown(document, { key: 'k' })
 
     cards = screen.getAllByTestId('photo-card')
-    expect(frameClass(cards[0])).toContain('ring-blue-500')
-    expect(frameClass(cards[4])).not.toContain('ring-blue-500')
+    assertFocused(getFrame(cards[0]))
+    assertNotFocused(getFrame(cards[4]))
   })
 
-  it('Ctrl+h does not move ring-blue-500 class (modifier guard)', async () => {
+  it('Ctrl+h does not move focus indicator (modifier guard)', async () => {
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
     }))
@@ -693,16 +694,16 @@ describe('StackFocus — K2: hjkl vim navigation', () => {
     // Move right first
     await fireEvent.keyDown(document, { key: 'ArrowRight' })
     let cards = screen.getAllByTestId('photo-card')
-    expect(frameClass(cards[1])).toContain('ring-blue-500')
+    assertFocused(getFrame(cards[1]))
 
     // Press Ctrl+h — should NOT move focus
     await fireEvent.keyDown(document, { key: 'h', ctrlKey: true })
 
     cards = screen.getAllByTestId('photo-card')
-    expect(frameClass(cards[1])).toContain('ring-blue-500')
+    assertFocused(getFrame(cards[1]))
   })
 
-  it('Shift+h does not move ring-blue-500 class (modifier guard)', async () => {
+  it('Shift+h does not move focus indicator (modifier guard)', async () => {
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
     }))
@@ -712,20 +713,20 @@ describe('StackFocus — K2: hjkl vim navigation', () => {
     // Move right first
     await fireEvent.keyDown(document, { key: 'ArrowRight' })
     let cards = screen.getAllByTestId('photo-card')
-    expect(frameClass(cards[1])).toContain('ring-blue-500')
+    assertFocused(getFrame(cards[1]))
 
     // Press Shift+h — should NOT move focus (H is uppercase)
     await fireEvent.keyDown(document, { key: 'H', shiftKey: true })
 
     cards = screen.getAllByTestId('photo-card')
-    expect(frameClass(cards[1])).toContain('ring-blue-500')
+    assertFocused(getFrame(cards[1]))
   })
 })
 
 // ── K4: Home/End in StackFocus ─────────────────────────────────────────────
 
 describe('StackFocus — K4: Home/End navigation', () => {
-  it('Home key moves ring-blue-500 class to first card', async () => {
+  it('Home key moves focus indicator to first card', async () => {
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
     }))
@@ -736,17 +737,17 @@ describe('StackFocus — K4: Home/End navigation', () => {
     await fireEvent.keyDown(document, { key: 'ArrowRight' })
     await fireEvent.keyDown(document, { key: 'ArrowRight' })
     let cards = screen.getAllByTestId('photo-card')
-    expect(frameClass(cards[2])).toContain('ring-blue-500')
+    assertFocused(getFrame(cards[2]))
 
     // Press Home
     await fireEvent.keyDown(document, { key: 'Home' })
 
     cards = screen.getAllByTestId('photo-card')
-    expect(frameClass(cards[0])).toContain('ring-blue-500')
-    expect(frameClass(cards[2])).not.toContain('ring-blue-500')
+    assertFocused(getFrame(cards[0]))
+    assertNotFocused(getFrame(cards[2]))
   })
 
-  it('End key moves ring-blue-500 class to last card', async () => {
+  it('End key moves focus indicator to last card', async () => {
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
     }))
@@ -755,14 +756,14 @@ describe('StackFocus — K4: Home/End navigation', () => {
 
     // Focus starts at 0
     let cards = screen.getAllByTestId('photo-card')
-    expect(frameClass(cards[0])).toContain('ring-blue-500')
+    assertFocused(getFrame(cards[0]))
 
     // Press End
     await fireEvent.keyDown(document, { key: 'End' })
 
     cards = screen.getAllByTestId('photo-card')
-    expect(frameClass(cards[2])).toContain('ring-blue-500')
-    expect(frameClass(cards[0])).not.toContain('ring-blue-500')
+    assertFocused(getFrame(cards[2]))
+    assertNotFocused(getFrame(cards[0]))
   })
 })
 
@@ -1022,7 +1023,7 @@ describe('StackFocus — auto-advance', () => {
     })
   })
 
-  it('auto-advance OFF: Y key decides but ring-blue-500 class stays on same card', async () => {
+  it('auto-advance OFF: Y key decides but focus indicator stays on same card', async () => {
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
       get_round_decisions: [[
@@ -1049,10 +1050,10 @@ describe('StackFocus — auto-advance', () => {
 
     // Focus should still be on card 0 (no auto-advance)
     const cards = screen.getAllByTestId('photo-card')
-    expect(frameClass(cards[0])).toContain('ring-blue-500')
+    assertFocused(getFrame(cards[0]))
   })
 
-  it('auto-advance ON: Y key decides and moves ring-blue-500 class to next undecided', async () => {
+  it('auto-advance ON: Y key decides and moves focus indicator to next undecided', async () => {
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
       get_round_decisions: [[
@@ -1082,7 +1083,7 @@ describe('StackFocus — auto-advance', () => {
     // Focus should advance to card 1 (next undecided)
     await waitFor(() => {
       const cards = screen.getAllByTestId('photo-card')
-      expect(frameClass(cards[1])).toContain('ring-blue-500')
+      assertFocused(getFrame(cards[1]))
     })
   })
 })
@@ -1377,7 +1378,7 @@ describe('StackFocus — Tab shows toast when all photos decided', () => {
 // ─── Multi-select (Shift+Arrow, S key) ───────────────────────────────────────
 
 describe('StackFocus — multi-select', () => {
-  it('Shift+ArrowRight adds ring-yellow class to current and next card', async () => {
+  it('Shift+ArrowRight selects current and next card', async () => {
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
     }))
@@ -1391,12 +1392,12 @@ describe('StackFocus — multi-select', () => {
     await fireEvent.keyDown(document, { key: 'ArrowRight', shiftKey: true })
 
     const cards = screen.getAllByTestId('photo-card')
-    expect(frameClass(cards[0])).toContain('ring-yellow')
-    expect(frameClass(cards[1])).toContain('ring-yellow')
-    expect(frameClass(cards[2])).not.toContain('ring-yellow')
+    assertSelected(getFrame(cards[0]))
+    assertSelected(getFrame(cards[1]))
+    assertNotSelected(getFrame(cards[2]))
   })
 
-  it('plain ArrowRight removes ring-yellow classes after Shift+Arrow', async () => {
+  it('plain ArrowRight clears selection after Shift+Arrow', async () => {
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
     }))
@@ -1411,18 +1412,18 @@ describe('StackFocus — multi-select', () => {
 
     // Verify selection exists
     let cards = screen.getAllByTestId('photo-card')
-    expect(frameClass(cards[0])).toContain('ring-yellow')
+    assertSelected(getFrame(cards[0]))
 
-    // Plain ArrowRight should clear all yellow rings
+    // Plain ArrowRight should clear all selections
     await fireEvent.keyDown(document, { key: 'ArrowRight' })
 
     cards = screen.getAllByTestId('photo-card')
     for (const card of cards) {
-      expect(frameClass(card)).not.toContain('ring-yellow')
+      assertNotSelected(getFrame(card))
     }
   })
 
-  it('S key toggles ring-yellow class on focused card', async () => {
+  it('S key toggles selection on focused card', async () => {
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [mockPhotos],
     }))
@@ -1436,16 +1437,16 @@ describe('StackFocus — multi-select', () => {
     await fireEvent.keyDown(document, { key: 's' })
 
     let cards = screen.getAllByTestId('photo-card')
-    expect(frameClass(cards[0])).toContain('ring-yellow')
+    assertSelected(getFrame(cards[0]))
 
     // Press S again to deselect
     await fireEvent.keyDown(document, { key: 's' })
 
     cards = screen.getAllByTestId('photo-card')
-    expect(frameClass(cards[0])).not.toContain('ring-yellow')
+    assertNotSelected(getFrame(cards[0]))
   })
 
-  it('third Shift+Arrow does not add ring-yellow class beyond 2 cards', async () => {
+  it('third Shift+Arrow does not select beyond 2 cards', async () => {
     const fourPhotos = makePhotoList(4)
     mockInvoke.mockImplementation(mockStackFocusRouter({
       list_logical_photos: [fourPhotos],
@@ -1476,7 +1477,7 @@ describe('StackFocus — multi-select', () => {
     await fireEvent.keyDown(document, { key: 's' })
 
     const cards = screen.getAllByTestId('photo-card')
-    const selectedCount = Array.from(cards).filter(c => frameClass(c).includes('ring-yellow')).length
+    const selectedCount = Array.from(cards).filter(c => getFrame(c).matches('.selection-selected')).length
     expect(selectedCount).toBe(2)
   })
 
@@ -1498,9 +1499,9 @@ describe('StackFocus — multi-select', () => {
     await fireEvent.keyDown(document, { key: 'ArrowRight' })
     await fireEvent.keyDown(document, { key: 's' })
 
-    // Verify 2 cards are selected (yellow ring)
+    // Verify 2 cards are selected
     const cards = screen.getAllByTestId('photo-card')
-    const selectedCount = Array.from(cards).filter(c => frameClass(c).includes('ring-yellow')).length
+    const selectedCount = Array.from(cards).filter(c => getFrame(c).matches('.selection-selected')).length
     expect(selectedCount).toBe(2)
 
     // Press C to enter comparison mode with the 2 selected photos
@@ -1517,7 +1518,7 @@ describe('StackFocus — multi-select', () => {
 // ─── Bug 1: Selection cleared after commit ────────────────────────────────
 
 describe('StackFocus — Bug 1: selection cleared after commit', () => {
-  it('S key to select, then Ctrl+Enter clears ring-yellow from all cards', async () => {
+  it('S key to select, then Ctrl+Enter clears selection from all cards', async () => {
     const survivorPhotos: LogicalPhotoSummary[] = [PHOTO_1, PHOTO_2]
 
     mockInvoke.mockImplementation(mockStackFocusRouter({
@@ -1547,16 +1548,16 @@ describe('StackFocus — Bug 1: selection cleared after commit', () => {
 
     // Verify selection exists
     let cards = screen.getAllByTestId('photo-card')
-    expect(frameClass(cards[0])).toContain('ring-yellow')
+    assertSelected(getFrame(cards[0]))
 
     // Commit the round
     await fireEvent.keyDown(document, { key: 'Enter', ctrlKey: true })
 
-    // After commit, no card should have ring-yellow (selection cleared)
+    // After commit, no card should be selected (selection cleared)
     await waitFor(() => {
       const updatedCards = screen.getAllByTestId('photo-card')
       for (const card of updatedCards) {
-        expect(frameClass(card)).not.toContain('ring-yellow')
+        assertNotSelected(getFrame(card))
       }
     })
   })
@@ -1677,8 +1678,11 @@ describe('StackFocus — Bug 4: Tab navigates in filtered grid after commit', ()
 
     await waitFor(() => {
       const cards = screen.getAllByTestId('photo-card')
-      // The undecided photo should be focused (ring-blue-500)
-      const focusedCard = cards.find(c => frameClass(c).includes('ring-blue-500'))
+      // The undecided photo should be focused
+      const focusedCard = cards.find(c => {
+        const frame = getFrame(c)
+        return frame?.matches('.selection-focused') || !!frame?.querySelector('.selection-focused')
+      })
       expect(focusedCard).toBeDefined()
     })
   })

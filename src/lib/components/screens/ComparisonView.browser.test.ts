@@ -8,6 +8,13 @@ import type { LogicalPhotoSummary } from '$lib/api/index.js'
 import { invoke } from '@tauri-apps/api/core'
 import { PHOTO_1, PHOTO_2, PHOTO_3, OPEN_ROUND, UNDECIDED_DECISIONS, makeDecisionResult } from '$test/fixtures'
 import { resetInvokeMock, createMockRouter } from '$test/helpers'
+import {
+  assertVisuallyFocused, assertNotVisuallyFocused, waitForVisualFocus,
+} from '$test/selection-visual-helpers'
+import {
+  assertVisuallyKept, assertVisuallyEliminated,
+  assertVisuallyDimmed, assertVisuallyUndecided,
+} from '$test/decision-visual-helpers'
 import ComparisonView from './ComparisonView.svelte'
 
 const mockInvoke = vi.mocked(invoke)
@@ -48,28 +55,20 @@ async function waitForPanels(): Promise<{ left: HTMLElement; right: HTMLElement 
   return { left: left!, right: right! }
 }
 
-// ─── Focus rings (visual) ────────────────────────────────────────────────────
+// ─── Focus indicator (visual) ────────────────────────────────────────────────
 
-describe('ComparisonView — focus ring (visual)', () => {
-  it('left panel has visible blue border by default', async () => {
+describe('ComparisonView — focus indicator (visual)', () => {
+  it('left panel is focused by default', async () => {
     mockInvoke.mockImplementation(mockComparisonRouter())
     render(ComparisonView)
 
     const { left, right } = await waitForPanels()
 
-    // Left panel should have blue border (focused)
-    const leftFrame = left.querySelector('[data-testid="photo-frame"]') as HTMLElement
-    const rightFrame = right.querySelector('[data-testid="photo-frame"]') as HTMLElement
-
-    const leftBorder = getComputedStyle(leftFrame).borderColor
-    const rightBorder = getComputedStyle(rightFrame).borderColor
-
-    // Blue = rgb(59, 130, 246) (blue-500)
-    expect(leftBorder).toBe('rgb(59, 130, 246)')
-    expect(rightBorder).not.toBe('rgb(59, 130, 246)')
+    await assertVisuallyFocused(left)
+    await assertNotVisuallyFocused(right)
   })
 
-  it('ArrowRight moves blue border to right panel', async () => {
+  it('ArrowRight moves focus indicator to right panel', async () => {
     mockInvoke.mockImplementation(mockComparisonRouter())
     render(ComparisonView)
 
@@ -77,38 +76,103 @@ describe('ComparisonView — focus ring (visual)', () => {
 
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
 
-    await vi.waitFor(() => {
-      const rightFrame = right.querySelector('[data-testid="photo-frame"]') as HTMLElement
-      const border = getComputedStyle(rightFrame).borderColor
-      if (border !== 'rgb(59, 130, 246)') throw new Error('Right panel not yet focused')
-    }, { timeout: 3000 })
-
-    const leftFrame = left.querySelector('[data-testid="photo-frame"]') as HTMLElement
-    expect(getComputedStyle(leftFrame).borderColor).not.toBe('rgb(59, 130, 246)')
+    await waitForVisualFocus(right)
+    await assertNotVisuallyFocused(left)
   })
 })
 
 // ─── Decision indicators (visual) ───────────────────────────────────────────
 
 describe('ComparisonView — decision indicators (visual)', () => {
-  it('Y key shows green keep indicator on focused panel', async () => {
+  it('Y key marks focused panel as kept', async () => {
     mockInvoke.mockImplementation(mockComparisonRouter({
       make_decision: makeDecisionResult({ action: 'keep', current_status: 'keep' }),
       get_round_status: { ...OPEN_ROUND, decided: 1, kept: 1, undecided: 2 },
     }))
     render(ComparisonView)
 
-    await waitForPanels()
+    const { left } = await waitForPanels()
 
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'y', bubbles: true }))
 
-    await vi.waitFor(() => {
-      const left = document.querySelector('[data-testid="comparison-left"]') as HTMLElement
-      const frame = left.querySelector('[data-testid="photo-frame"]') as HTMLElement
-      const border = getComputedStyle(frame).borderColor
-      // Green = rgb(34, 197, 94) (green-500)
-      if (border !== 'rgb(34, 197, 94)') throw new Error(`Keep border not green: ${border}`)
-    }, { timeout: 3000 })
+    await vi.waitFor(() => assertVisuallyKept(left), { timeout: 3000 })
+  })
+})
+
+// ─── Rule 22: focus + decision combinations ────────────────────────────────
+
+describe('ComparisonView — Rule 22: focus + decision combinations', () => {
+  it('CV-Rule22: undecided + focused-right panel shows focus indicator without decision', async () => {
+    mockInvoke.mockImplementation(mockComparisonRouter())
+    render(ComparisonView)
+
+    const { left, right } = await waitForPanels()
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+
+    await waitForVisualFocus(right)
+    await assertVisuallyFocused(right)
+    await assertNotVisuallyFocused(left)
+    await assertVisuallyUndecided(right)
+  })
+
+  it('CV-Rule22: keep + focused-right panel shows focus + kept indicator', async () => {
+    mockInvoke.mockImplementation(mockComparisonRouter({
+      make_decision: makeDecisionResult({ action: 'keep', current_status: 'keep' }),
+      get_round_status: { ...OPEN_ROUND, decided: 1, kept: 1, undecided: 2 },
+    }))
+    render(ComparisonView)
+
+    const { right } = await waitForPanels()
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+    await waitForVisualFocus(right)
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'y', bubbles: true }))
+
+    await vi.waitFor(() => assertVisuallyKept(right), { timeout: 3000 })
+    await assertVisuallyFocused(right)
+  })
+
+  it('CV-Rule22: eliminate + focused-left panel shows focus + eliminated indicator + dim', async () => {
+    mockInvoke.mockImplementation(mockComparisonRouter({
+      make_decision: makeDecisionResult({ action: 'eliminate', current_status: 'eliminate' }),
+      get_round_status: { ...OPEN_ROUND, decided: 1, eliminated: 1, undecided: 2 },
+    }))
+    render(ComparisonView)
+
+    const { left } = await waitForPanels()
+
+    // Press L to lock the pair first — otherwise auto-fill replaces the
+    // eliminated photo with the next undecided and the panel no longer
+    // shows the eliminated decision.
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'l', bubbles: true }))
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'x', bubbles: true }))
+
+    await vi.waitFor(() => assertVisuallyEliminated(left), { timeout: 3000 })
+    await assertVisuallyFocused(left)
+    assertVisuallyDimmed(left)
+  })
+
+  it('CV-Rule22: eliminate + focused-right panel shows focus + eliminated indicator + dim', async () => {
+    mockInvoke.mockImplementation(mockComparisonRouter({
+      make_decision: makeDecisionResult({ action: 'eliminate', current_status: 'eliminate' }),
+      get_round_status: { ...OPEN_ROUND, decided: 1, eliminated: 1, undecided: 2 },
+    }))
+    render(ComparisonView)
+
+    const { right } = await waitForPanels()
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+    await waitForVisualFocus(right)
+
+    // Lock before eliminating (see note above).
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'l', bubbles: true }))
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'x', bubbles: true }))
+
+    await vi.waitFor(() => assertVisuallyEliminated(right), { timeout: 3000 })
+    await assertVisuallyFocused(right)
+    assertVisuallyDimmed(right)
   })
 })
 

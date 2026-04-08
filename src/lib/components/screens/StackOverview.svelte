@@ -447,9 +447,9 @@
             data-stack-card
             class="flex flex-col rounded-lg overflow-hidden border transition-all text-left
               {i === focusedIndex
-                ? 'border-blue-500 ring-2 ring-blue-500/30 bg-gray-800'
-                : 'border-gray-800 bg-gray-900 hover:border-gray-600'}
-              {selection.selected.has(stack.stack_id) ? 'ring-2 ring-yellow-400 border-yellow-400' : ''}"
+                ? 'border-2 border-blue-500 bg-gray-800 selection-focused'
+                : 'border-2 border-transparent bg-gray-900 hover:border-gray-600'}
+              {selection.selected.has(stack.stack_id) ? 'border-2 border-yellow-500 selection-selected' : ''}"
             onclick={() => {
               focusedIndex = i
               if (selection.selected.size > 0) {

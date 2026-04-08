@@ -1,9 +1,7 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 
-use super::model::{
-    DecisionAction, PhotoDetail, PhotoSnapshot, RoundStatus, RoundSummary,
-};
+use super::model::{DecisionAction, PhotoDetail, PhotoSnapshot, RoundStatus, RoundSummary};
 
 /// Find or auto-create an open round for a stack.
 /// Returns (round_id, was_created).
@@ -2724,5 +2722,4 @@ mod tests {
             "restored photo must survive into R3 as a kept photo"
         );
     }
-
 }

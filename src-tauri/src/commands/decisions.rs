@@ -1,7 +1,7 @@
 use crate::decisions::engine;
 use crate::decisions::model::{
-    DecisionAction, DecisionResult, PhotoDecisionStatus, PhotoDetail,
-    PhotoSnapshot, RestoreResult, RoundStatus, RoundSummary,
+    DecisionAction, DecisionResult, PhotoDecisionStatus, PhotoDetail, PhotoSnapshot, RestoreResult,
+    RoundStatus, RoundSummary,
 };
 use crate::projects::manager;
 use crate::state::AppState;
@@ -213,4 +213,3 @@ pub fn restore_eliminated_photo(
     engine::restore_eliminated_photo(conn, project.id, logical_photo_id, round_id)
         .map_err(|e| e.to_string())
 }
-

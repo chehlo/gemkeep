@@ -160,30 +160,74 @@ fn generate_thumbnail_from_bytes(
     generate_thumbnail_from_image(img, out_path, orientation)
 }
 
+/// Return true if two images share the same aspect ratio (within 5% tolerance).
+/// A mismatch indicates the embedded thumbnail is a crop, not a downscale.
+fn aspect_ratios_match(ew: u32, eh: u32, mw: u32, mh: u32) -> bool {
+    if ew == 0 || eh == 0 || mw == 0 || mh == 0 {
+        return false;
+    }
+    // Compare as cross-multiplication to avoid floating point:
+    // ew/eh ≈ mw/mh  ⟺  |ew*mh - eh*mw| / (eh*mh) < 0.05
+    let cross1 = ew as f64 * mh as f64;
+    let cross2 = eh as f64 * mw as f64;
+    let ratio = if cross1 > cross2 {
+        cross1 / cross2
+    } else {
+        cross2 / cross1
+    };
+    ratio < 1.05
+}
+
 fn generate_jpeg_thumbnail(
     source_path: &Path,
     out_path: &Path,
     orientation: Option<u16>,
 ) -> Option<PathBuf> {
     // Fast path: EXIF IFD1 embedded thumbnail.
-    // Reject if short side < 200px — tiny embedded previews produce blurry upscales.
+    // Reject if short side < 200px (blurry upscales) or if the aspect ratio
+    // differs from the main image (indicates a crop, not a downscale).
     if let Some(bytes) = extract_exif_embedded_thumbnail(source_path) {
-        if let Ok(img) = image::load_from_memory(&bytes) {
-            let short_side = img.width().min(img.height());
+        if let Ok(embedded_img) = image::load_from_memory(&bytes) {
+            let short_side = embedded_img.width().min(embedded_img.height());
             if short_side >= 200 {
-                if let Some(result) = generate_thumbnail_from_image(img, out_path, orientation) {
+                // Read main image dimensions via turbojpeg header (cheap, no decode)
+                let main_dims = std::fs::read(source_path).ok().and_then(|buf| {
+                    let mut d = turbojpeg::Decompressor::new().ok()?;
+                    let h = d.read_header(&buf).ok()?;
+                    Some((h.width as u32, h.height as u32))
+                });
+
+                let ratio_ok = main_dims
+                    .map(|(mw, mh)| {
+                        aspect_ratios_match(embedded_img.width(), embedded_img.height(), mw, mh)
+                    })
+                    .unwrap_or(true);
+
+                if ratio_ok {
+                    if let Some(result) =
+                        generate_thumbnail_from_image(embedded_img, out_path, orientation)
+                    {
+                        tracing::debug!(
+                            "thumbnail: embedded EXIF path (short={}px) for {:?}",
+                            short_side,
+                            source_path
+                        );
+                        return Some(result);
+                    }
+                } else {
                     tracing::debug!(
-                        "thumbnail: embedded EXIF path (short={}px) for {:?}",
-                        short_side,
+                        "thumbnail: embedded aspect ratio mismatch ({}×{} vs main {:?}), skipping for {:?}",
+                        embedded_img.width(),
+                        embedded_img.height(),
+                        main_dims,
                         source_path
                     );
-                    return Some(result);
                 }
             } else {
                 tracing::debug!(
                     "thumbnail: embedded too small ({}×{}, short={}px), falling back for {:?}",
-                    img.width(),
-                    img.height(),
+                    embedded_img.width(),
+                    embedded_img.height(),
                     short_side,
                     source_path
                 );

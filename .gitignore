@@ -183,7 +183,13 @@ src-tauri/target/
 # Playwright
 playwright-report/
 test-results/
-screens/
+/screens/
+
+# Vitest browser-mode failure screenshots (generated on test runs)
+__screenshots__/
+
+# macOS
+.DS_Store
 
 # Mobile platform icons (not needed for desktop app)
 src-tauri/icons/android/

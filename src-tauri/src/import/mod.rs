@@ -15,5 +15,7 @@ pub mod stacks_tests;
 pub mod test_fixtures;
 #[cfg(test)]
 pub mod test_fixtures_validation;
+#[cfg(test)]
+pub mod thumbnail_composition_tests;
 pub mod thumbnails;
 pub mod util;

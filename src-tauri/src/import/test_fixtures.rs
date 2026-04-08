@@ -122,7 +122,10 @@ fn try_download_fixture(filename: &str, url: &str, dest: &Path) -> bool {
 
     // If another thread/process is downloading, wait for it
     if lock_path.exists() {
-        eprintln!("AUTO-DOWNLOAD: {} — waiting for parallel download to finish", filename);
+        eprintln!(
+            "AUTO-DOWNLOAD: {} — waiting for parallel download to finish",
+            filename
+        );
         for _ in 0..240 {
             std::thread::sleep(std::time::Duration::from_millis(500));
             if !lock_path.exists() {
@@ -147,20 +150,17 @@ fn try_download_fixture(filename: &str, url: &str, dest: &Path) -> bool {
         let _ = write!(f, "{}", std::process::id());
     }
 
-    eprintln!(
-        "AUTO-DOWNLOAD: {} from {}",
-        filename, url
-    );
+    eprintln!("AUTO-DOWNLOAD: {} from {}", filename, url);
 
     let tmp_dest = dest.with_extension("partial");
     let result = std::process::Command::new("curl")
         .args([
-            "-L",           // follow redirects
-            "-f",           // fail on HTTP errors
-            "-s",           // silent
-            "-S",           // show errors even when silent
+            "-L", // follow redirects
+            "-f", // fail on HTTP errors
+            "-s", // silent
+            "-S", // show errors even when silent
             "--max-time",
-            "300",          // 5 minute timeout for large RAW files
+            "300", // 5 minute timeout for large RAW files
             "-o",
         ])
         .arg(tmp_dest.as_os_str())

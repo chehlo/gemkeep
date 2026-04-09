@@ -67,6 +67,17 @@ Items to address before starting Sprint 11:
 12. **MIS-04** — Cache dir path construction repeated 5+ places
 13. **INC-05** — Orientation applied after resize in thumbnails
 
+### Thumbnail performance regression (PERF-01)
+
+Profiling on macOS (M-series, debug build, 967 Canon 6000×4000 JPEGs, 10 rayon threads) shows **61ms/photo** — dominated by:
+- `resize_to_fill` with Lanczos3: **198ms** per photo (debug, no optimizations)
+- turbojpeg DCT 1/8 decode: **130ms** per photo (debug)
+- EXIF extract + header: **< 1ms** (negligible)
+
+The Linux baseline (same photos, debug build, AMD Ryzen 5 5625U) was **12ms/photo**. The 5× gap is unexpected since the Mac hardware is faster. Likely cause: the Linux benchmark was hitting the EXIF embedded thumbnail fast path (tiny thumbnail, skip decode+resize entirely) while on Mac embedded thumbnails are < 200px short side and get rejected — every photo goes through the expensive turbo+Lanczos3 path.
+
+**Suggested fix:** Add `[profile.test.package.image]` with `opt-level = 2` in Cargo.toml so the `image` crate's Lanczos3 resize runs optimized even in test builds. This is a common Rust pattern for CPU-heavy dependencies. Alternatively, consider using a lighter filter (e.g. `CatmullRom`) for thumbnails where Lanczos3 quality is overkill at 256×256.
+
 ---
 
 ## Future Sprints

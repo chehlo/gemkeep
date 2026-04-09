@@ -852,115 +852,6 @@ mod tests {
         assert_eq!(img.height(), 256);
     }
 
-    #[test]
-    #[ignore = "PoC: generates DCT 1/8 thumbnail for visual quality inspection"]
-    fn poc_turbojpeg_dct_thumbnail_quality() {
-        // Proof of concept: generate a thumbnail using turbojpeg DCT 1/8 downscaling
-        // and save it alongside the original's EXIF thumbnail for visual comparison.
-        use std::time::Instant;
-
-        let source = std::path::Path::new(
-            "/home/ilya/ssd_disk/photo/venice 2022/old/to review/IMG_3747.JPG",
-        );
-        if !source.exists() {
-            println!("SKIP: source photo not found");
-            return;
-        }
-
-        let out_dir = std::path::Path::new("/tmp/gemkeep-poc-thumbnails");
-        std::fs::create_dir_all(out_dir).unwrap();
-
-        // Method 1: Current full decode (image::open)
-        let start = Instant::now();
-        let img_full = image::open(source).unwrap();
-        let full_decode_ms = start.elapsed().as_millis();
-        let full_resized = img_full.resize_to_fill(256, 256, image::imageops::FilterType::Lanczos3);
-        let full_total_ms = start.elapsed().as_millis();
-        full_resized
-            .save(out_dir.join("method1_full_decode.jpg"))
-            .unwrap();
-        println!(
-            "Full decode: {}×{} → 256×256 in {}ms (decode {}ms)",
-            img_full.width(),
-            img_full.height(),
-            full_total_ms,
-            full_decode_ms
-        );
-
-        // Method 2: turbojpeg DCT 1/8 downscale
-        let start = Instant::now();
-        let jpeg_bytes = std::fs::read(source).unwrap();
-        let mut decompressor = turbojpeg::Decompressor::new().unwrap();
-        let header = decompressor.read_header(&jpeg_bytes).unwrap();
-        let scaling = turbojpeg::ScalingFactor::ONE_EIGHTH;
-        decompressor.set_scaling_factor(scaling).unwrap();
-        let scaled = header.scaled(scaling);
-        println!(
-            "Original: {}×{}, DCT 1/8 target: {}×{}",
-            header.width, header.height, scaled.width, scaled.height
-        );
-
-        // Allocate output buffer and decompress at 1/8 scale
-        let mut turbo_image = turbojpeg::Image {
-            pixels: vec![0u8; 3 * scaled.width * scaled.height],
-            width: scaled.width,
-            pitch: 3 * scaled.width,
-            height: scaled.height,
-            format: turbojpeg::PixelFormat::RGB,
-        };
-        decompressor
-            .decompress(&jpeg_bytes, turbo_image.as_deref_mut())
-            .unwrap();
-        let dct_decode_ms = start.elapsed().as_millis();
-
-        // Convert to image::DynamicImage
-        let rgb_img = image::RgbImage::from_raw(
-            turbo_image.width as u32,
-            turbo_image.height as u32,
-            turbo_image.pixels,
-        )
-        .unwrap();
-        let dyn_img = image::DynamicImage::ImageRgb8(rgb_img);
-        let turbo_resized = dyn_img.resize_to_fill(256, 256, image::imageops::FilterType::Lanczos3);
-        let turbo_total_ms = start.elapsed().as_millis();
-        turbo_resized
-            .save(out_dir.join("method2_dct_eighth.jpg"))
-            .unwrap();
-        println!(
-            "DCT 1/8: {}×{} → 256×256 in {}ms (decode {}ms)",
-            dyn_img.width(),
-            dyn_img.height(),
-            turbo_total_ms,
-            dct_decode_ms
-        );
-
-        // Method 3: EXIF embedded thumbnail (for reference)
-        if let Some(exif_bytes) = extract_exif_embedded_thumbnail(source) {
-            if let Ok(exif_img) = image::load_from_memory(&exif_bytes) {
-                let exif_resized =
-                    exif_img.resize_to_fill(256, 256, image::imageops::FilterType::Lanczos3);
-                exif_resized
-                    .save(out_dir.join("method3_exif_embedded.jpg"))
-                    .unwrap();
-                println!(
-                    "EXIF embedded: {}×{} → 256×256",
-                    exif_img.width(),
-                    exif_img.height()
-                );
-            }
-        }
-
-        println!(
-            "\nSpeedup: {:.1}x faster",
-            full_total_ms as f64 / turbo_total_ms as f64
-        );
-        println!("Output dir: {}", out_dir.display());
-        println!("Compare visually:");
-        println!("  method1_full_decode.jpg  (gold standard)");
-        println!("  method2_dct_eighth.jpg   (new DCT 1/8 path)");
-        println!("  method3_exif_embedded.jpg (current EXIF, if any)");
-    }
-
     // ── BUG-10: RAW preview extraction tests ────────────────────────────────
 
     #[test]
@@ -1127,21 +1018,39 @@ mod tests {
         );
     }
 
+    /// Thumbnail generation performance benchmark.
+    ///
+    /// Configure via env vars:
+    ///   GEMKEEP_BENCH_PHOTO_DIR — path to a directory of camera JPEGs
+    ///   GEMKEEP_BENCH_THRESHOLD_SECS — max allowed seconds (default: 36)
+    ///
+    /// Platform defaults (used when GEMKEEP_BENCH_PHOTO_DIR is unset):
+    ///   macOS:  ~/Pictures/venice/il/2
+    ///   Linux:  ~/ssd_disk/photo/venice 2026/il/2
     #[test]
-    #[ignore = "requires real camera JPEGs at /home/ilya/ssd_disk/photo/venice 2026/il/2"]
-    fn test_jpeg_thumbnail_performance_968_photos_under_30s() {
-        // WHY (Rule 7): threshold = 3× measured time.
-        // Baseline: ~12ms/photo with Lanczos3 resize on 10 rayon threads → ~12s total.
-        // Threshold: 36s (3×). Re-measure after any resize algorithm change.
-        // Measured 2026-02-22, AMD Ryzen 5 5625U.
+    #[ignore = "requires real camera JPEGs — set GEMKEEP_BENCH_PHOTO_DIR or use platform default"]
+    fn test_jpeg_thumbnail_performance() {
         use rayon::prelude::*;
         use std::time::Instant;
 
-        let photo_dir = std::path::Path::new("/home/ilya/ssd_disk/photo/venice 2026/il/2");
+        let photo_dir_str = std::env::var("GEMKEEP_BENCH_PHOTO_DIR").unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_default();
+            if cfg!(target_os = "macos") {
+                format!("{}/Pictures/venice/il/2", home)
+            } else {
+                format!("{}/ssd_disk/photo/venice 2026/il/2", home)
+            }
+        });
+        let photo_dir = std::path::Path::new(&photo_dir_str);
         if !photo_dir.exists() {
-            println!("SKIP: photo dir not found");
+            println!("SKIP: photo dir not found at {}", photo_dir.display());
             return;
         }
+
+        let threshold_secs: u64 = std::env::var("GEMKEEP_BENCH_THRESHOLD_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(36);
 
         let jpegs: Vec<_> = std::fs::read_dir(photo_dir)
             .unwrap()
@@ -1155,7 +1064,11 @@ mod tests {
             })
             .collect();
 
-        assert!(!jpegs.is_empty());
+        assert!(
+            !jpegs.is_empty(),
+            "no JPEGs found in {}",
+            photo_dir.display()
+        );
         let cache_dir = TempDir::new().unwrap();
 
         let start = Instant::now();
@@ -1178,8 +1091,9 @@ mod tests {
         );
 
         assert!(
-            elapsed.as_secs() < 36,
-            "thumbnail generation must complete in < 36s, took {:.1}s for {} photos",
+            elapsed.as_secs() < threshold_secs,
+            "thumbnail generation must complete in < {}s, took {:.1}s for {} photos",
+            threshold_secs,
             elapsed.as_secs_f64(),
             jpegs.len()
         );

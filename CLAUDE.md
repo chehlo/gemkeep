@@ -9,24 +9,23 @@ GemKeep is a keyboard-first photo culling tool for photographers handling large 
 ## Build & Test Commands
 
 ```bash
-# Rust backend
-cargo test                    # Run all tests
+# Preferred: use justfile targets (consistent across platforms)
+just test-all                 # Full regression: lint → rust → frontend → e2e → gates
+just lint                     # Clippy + fmt check
+just lint-fix                 # Auto-fix lint + format
+just test-rust [filter]       # Rust tests (optionally filter by name)
+just test-frontend [filter]   # All frontend tests (jsdom + browser)
+just test-e2e [filter]        # Playwright E2E tests
+just dev                      # Start development server
+just build                    # Production build
+
+# Direct commands (when needed)
+cargo test                    # Run all Rust tests
 cargo test test_name          # Run specific test
 cargo fmt                     # Format code
 cargo clippy --fix            # Lint and auto-fix
-cargo bench                   # Run benchmarks
-
-# Frontend
-npm run dev                   # Development server
-npm run build                 # Production build
-npm test                      # Frontend tests (if any)
-
-# Full app
-cargo tauri dev               # Run app in development
-cargo tauri build             # Build distributable
-
-# E2E tests
-npm run test:e2e
+npm run dev                   # Frontend dev server only
+npm run test:e2e              # E2E tests
 ```
 
 ## Architecture

@@ -1,8 +1,8 @@
 # Sprint 10 — Multi-Round Engine & Restoration
 
-**User Stories:** §8 (multi-round, immutable snapshots, overrides, round navigation), §5.1 (show only active photos in current round), §14.1 (crash resilience for round decisions) (Phases A-C delivered; Phase D deferred: restoration, commit/finalize)
+**User Stories:** §8 (multi-round, immutable snapshots, overrides, round navigation), §5.1 (show only active photos in current round), §14.1 (crash resilience for round decisions). Phases A-D delivered. Phase D: restore eliminated (kept), finalize/reopen (added then removed — unnecessary complexity).
 
-**Goal:** The user can do multiple refinement passes on a stack and reconsider earlier decisions. Round history is immutable and navigable. Phases A-C: round-scoping, multi-round progression, overrides, snapshots, and navigation. Phase D (deferred): restoration of eliminated photos and finalize/reopen.
+**Goal:** The user can do multiple refinement passes on a stack and reconsider earlier decisions. Round history is immutable and navigable. Phases A-C: round-scoping, multi-round progression, overrides, snapshots, and navigation. Phase D: restoration of eliminated photos.
 
 **Branch:** `sprint-10`
 **Depends on:** S1–S9

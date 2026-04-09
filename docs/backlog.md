@@ -19,9 +19,9 @@ Single source of truth for all pending work. Items sourced from sprint-plan, scr
 | S7 | main | Done | Decision engine, SingleView, camera params, stack merge, visual feedback |
 | S8 | main | Done | Bug fixes: viewport overflow, sticky headers, RAW preview quality |
 | S9 | main | Done | Comparison View, auto-fill, lock, undo, stack progress, auto-advance |
-| S10 | main | Done | Multi-round engine (A: round-scoping, B: progression/overrides/snapshots, C: round navigation UI, D: restore eliminated + finalize/reopen) |
+| S10 | main | Done | Multi-round engine (A: round-scoping, B: progression/overrides/snapshots, C: round navigation UI, D: restore eliminated — finalize/reopen added then removed) |
 
-**Test counts (current):** 452 Rust + 480 frontend + 10 E2E = 942 total.
+**Test counts (current):** 438 Rust + 512 frontend + 9 E2E = 959 total.
 
 ---
 
@@ -42,14 +42,13 @@ Single source of truth for all pending work. Items sourced from sprint-plan, scr
 Items to address before starting Sprint 11:
 
 ### Missing E2E tests
-- No E2E coverage for multi-round workflow (Sprint 10 spec called for 2 Playwright journeys: full multi-round R1 → commit → R2 → finalize, and restore eliminated + re-eliminate)
+- No E2E coverage for multi-round workflow (R1 → commit → R2, and restore eliminated + re-eliminate)
 - No E2E coverage for round navigation ([ ] keys, round tab bar clicks, read-only mode in committed rounds)
 - Existing 10 E2E specs cover S1-S9 flows only
 
 ### Stale docs updates
-- `docs/sprints/sprint-10.md` header still says "Phases A-C delivered; Phase D deferred" — Phase D is now complete
-- `docs/keyboard-map.md` — verify R key (restore), Ctrl+Shift+Enter (finalize/reopen), [ ] (round nav) are documented
-- `docs/ui-wireframes.md` — verify round tab bar, finalized badge, restore UX wireframes exist
+- `docs/keyboard-map.md` — remove Ctrl+Shift+Enter "Finalize stack" (finalize was removed from codebase)
+- `docs/ui-wireframes.md` — verify round tab bar, restore UX wireframes exist (remove finalized badge wireframe if present)
 - `docs/user_stories.md` — update Sprint 10 user story statuses to Done
 
 ### Quick wins from code-improvements.md (13 trivial items)

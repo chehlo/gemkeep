@@ -109,7 +109,6 @@ parameters. This is where most decisions begin.
 | `A` | Toggle auto-advance | S8 | When ON, Y/X auto-advances to next undecided. Shows `[AUTO >>]` indicator. Default OFF. |
 | `G` | Promote survivors to GemStack | S11 | Promotes all current-round survivors to GemStack. Re-pressing replaces previous promotions from this stack. |
 | `Ctrl+Enter` | Commit current round | S7 | Seals the round. Decisions become read-only. Non-reversible. |
-| `Ctrl+Shift+Enter` | Finalize stack | S9 | Marks stack as done. Survivors locked. Shows confirmation inline. |
 | `[` | Previous round | S9 | Navigate to earlier round snapshot (read-only) |
 | `]` | Next round / current round | S9 | Navigate forward through rounds |
 | `R` | Restore eliminated photo | S9 | Only in round-history view on a dimmed photo. Creates a keep in the current round. |
@@ -313,7 +312,7 @@ Compact lookup table. Sorted by key.
 | `Ctrl+B` | Burst config | Open panel | Open panel | Open panel | Open panel | Open panel |
 | `Ctrl+Z` | Undo | -- | Undo last | Undo last | Undo last | Undo last |
 | `Ctrl+Enter` | Commit round | -- | Commit | Commit | Commit | Commit |
-| `Ctrl+Shift+Enter` | Finalize | -- | Finalize stack | -- | -- | Finalize GemStack |
+| `Ctrl+Shift+Enter` | Finalize | -- | -- | -- | -- | Finalize GemStack |
 
 ---
 
